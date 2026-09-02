@@ -9,6 +9,7 @@ Design:
 
 from __future__ import annotations
 
+import hashlib
 import re
 import unicodedata as ud
 from dataclasses import dataclass
@@ -457,13 +458,37 @@ class NayoseEngine:
         self._record_to_nayose: dict[str, str] = {}
 
     @classmethod
+    def _data_fingerprint(cls, frame: pd.DataFrame) -> str:
+        """Same canonical fingerprint nayose.ipynb writes into run/training manifests."""
+        return hashlib.sha256(
+            pd.util.hash_pandas_object(frame, index=False).values.tobytes()
+        ).hexdigest()
+
+    @classmethod
     def load(cls, model_dir: str | Path = "models", data_dir: str | Path = "data") -> NayoseEngine:
-        """Load all artifacts and return a ready-to-use engine."""
+        """Load a model bundle and its matching reference, then return a ready engine.
+
+        Enforces dataset<->model generation linkage: a run/training manifest next to
+        the model artifacts must fingerprint-match the loaded reference, otherwise the
+        bundle is refused (a stale model silently matches the wrong corpus).
+        """
         config = InferenceConfig(model_dir=Path(model_dir), data_dir=Path(data_dir))
         engine = cls(config)
 
-        # Load reference data
-        engine._reference = pd.read_parquet(config.data_dir / "reference_snapshot.parquet")
+        # Load reference data (current contract; legacy name tolerated)
+        ref_path = config.data_dir / "reference_records.parquet"
+        if not ref_path.exists():
+            legacy = config.data_dir / "reference_snapshot.parquet"
+            if legacy.exists():
+                print("WARN: loading legacy reference_snapshot.parquet; regenerate data with the current pipeline.")
+                ref_path = legacy
+            else:
+                raise FileNotFoundError(
+                    f"Missing {ref_path}: generate data first "
+                    "(python scripts/generate_data.py --profile mac)"
+                )
+        engine._reference = pd.read_parquet(ref_path)
+        cls._guard_generation_match(config, engine._reference)
 
         # Load sparse artifacts
         engine._sparse_matrix = load_npz(config.model_dir / "reference_tfidf.npz")
@@ -491,6 +516,28 @@ class NayoseEngine:
         engine._record_to_nayose = dict(zip(mapping.record_id.astype(str), mapping.nayose_id))
 
         return engine
+
+    @classmethod
+    def _guard_generation_match(cls, config, reference: pd.DataFrame) -> None:
+        manifest_hits = [config.model_dir / n for n in ("run_manifest.json", "training_manifest.json")]
+        manifest_path = next((p for p in manifest_hits if p.exists()), None)
+        if manifest_path is None:
+            print("WARN: no run/training manifest next to the model bundle; generation linkage not verified.")
+            return
+        import json as _json
+        stored = _json.loads(manifest_path.read_text(encoding="utf-8")).get("data_fingerprint")
+        if not stored:
+            print("WARN: manifest has no data_fingerprint; skipping generation linkage check.")
+            return
+        actual = cls._data_fingerprint(reference)
+        if stored != actual:
+            raise RuntimeError(
+                f"Model bundle {config.model_dir} was trained on data generation fingerprint "
+                f"{stored[:12]}... but the loaded reference ({len(reference):,} rows) has "
+                f"fingerprint {actual[:12]}... Refusing to infer with a stale model. Regenerate "
+                "the dataset and retrain, or point model_dir/data_dir at a matching pair."
+            )
+        print(f"OK: model bundle matches reference data (fingerprint {stored[:12]}...)")
 
     def _build_block_indexes(self) -> dict[str, dict[str, list[int]]]:
         """Build block indexes from reference data."""

@@ -26,12 +26,17 @@ NAYOSE_MODEL_FAMILY=off NAYOSE_DEVICE=cpu NAYOSE_UI=0     jupyter nbconvert --to
 
 ### 3. Run Inference
 
-### 3. Run Inference
+`nayose.ipynb` writes a model bundle (models + index + run_manifest) into its
+output directory. `NayoseEngine.load` **fingerprint-checks the bundle against
+the reference data** and refuses stale combinations:
 
 ```python
 from nayose_inference import load_engine
 
-engine = load_engine()
+engine = load_engine()  # models/ + data/ (after a fresh nayose run)
+# or point at a specific bundle + generation:
+# engine = load_engine(model_dir="nayose_output/run_20260902_abcdef", data_dir="data")
+
 result = engine.recommend(
     {
         "name_kanji": "山田太郎",
