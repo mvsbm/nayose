@@ -214,6 +214,25 @@ MPS-serving alternative.
 - Candidate (retrieval) recall is reported *separately* from classifier
   precision exactly so retrieval ease is not mistaken for matching accuracy.
 
+## Dense vs sparse — measured at scale
+
+A/B on regenerated 100k-hard data (113,499 parties, 24,522 same-name twin rows,
+249,201 records; fuzzy-only retrieval, ruri-v3-130m, exact blocks off):
+
+| Metric | sparse+dense | sparse-only |
+|---|---|---|
+| Candidate recall | 99.34% | 99.12% |
+| Top-1 identity (existing) | **90.9%** | 79.8% |
+| MRR | **0.933** | 0.809 |
+| No-match rate | 16.9% | 24.1% |
+| B³ F1 | 0.971 | 0.970 |
+| Embedding encode | 47 min once (cached) | 0 |
+
+The dense-vs-sparse identity gap grows with scale+hardness (smoke +2.8pts,
+mac +5.6, 100k **+11.1**): sparse char-ngrams saturate retrieval on small data
+but cannot disambiguate same-name twins at scale. Dense embeddings are the
+ranking/robustness layer; keep them on by default.
+
 ## Model saving / inference (run bundles)
 
 `nayose.ipynb` writes each train/evaluate into an immutable model bundle and promotes it via a symlink:
