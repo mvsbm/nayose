@@ -5,6 +5,8 @@ Pure-ish functions taking an injected ``rng``; deterministic per seed.
 
 from __future__ import annotations
 
+import time
+
 import numpy as np
 import pandas as pd
 
@@ -13,6 +15,20 @@ from .jp import ascii_romaji, ocr_mutate
 from .noise import QueryCorruptor, RecordCorruptor
 from .providers import AddressSource, BuildingComposer, CompanySource, PersonaSource
 
+
+def _eta_line(name: str, done: int, total: int, t0: float) -> str:
+    elapsed = time.perf_counter() - t0
+    rate = done / max(elapsed, 1e-9)
+    remaining = int((total - done) / max(rate, 1e-9))
+    pct = 100.0 * done / max(total, 1)
+    return (
+        f"  [{name}] {done:,}/{total:,} ({pct:.0f}%) "
+        f"eta {remaining // 60:02d}:{remaining % 60:02d}"
+    )
+
+
+def _progress_interval(total: int) -> int:
+    return max(1, total // 20)
 
 def generate_mobile(rng: np.random.Generator) -> str:
     prefix = str(rng.choice(["090", "080", "070"]))
@@ -76,6 +92,8 @@ def generate_parties(
 ) -> pd.DataFrame:
     """Clean party truth: one row per customer entity."""
     rows = []
+    t0 = time.perf_counter()
+    step = _progress_interval(cfg.n_parties)
     for i in range(cfg.n_parties):
         is_person = rng.random() < cfg.person_share
         if is_person:
@@ -125,8 +143,8 @@ def generate_parties(
                 **old,
             }
         )
-        if (i + 1) % 10000 == 0:
-            print(f"  generated {i + 1:,} parties")
+        if (i + 1) % step == 0:
+            print(_eta_line("parties", i + 1, cfg.n_parties, t0))
     return pd.DataFrame(rows)
 
 
@@ -163,6 +181,9 @@ def build_observations(
     agency_rows = agencies.to_dict("records")
     rows, party_of, lineage_by_item = [], {}, {}
     record_idx = 0
+    t0 = time.perf_counter()
+    expected = int(len(parties) * max(1.0, cfg.mean_records))
+    rec_interval = max(1, expected // 20)
     for party_idx, party in parties.iterrows():
         n_records = max(1, int(rng.poisson(cfg.mean_records - 1)) + 1)
         for _ in range(n_records):
@@ -197,6 +218,8 @@ def build_observations(
             party_of[record_id] = party_idx
             lineage_by_item[record_id] = result.lineage
             record_idx += 1
+            if record_idx % rec_interval == 0:
+                print(_eta_line("observations", record_idx, expected, t0))
     return pd.DataFrame(rows), pd.Series(party_of, dtype="int64"), lineage_by_item
 
 
@@ -225,6 +248,8 @@ def generate_queries(
     multi_members = [m for m in relation_members.values() if len(m) >= 2]
     party_truth_idx = party_truth.set_index("truth_id")
     n = len(parties)
+    t0 = time.perf_counter()
+    q_interval = max(1, n_queries // 20)
 
     for i in range(n_queries):
         query_id = f"Q{i:010d}"
@@ -318,4 +343,6 @@ def generate_queries(
                 "value_owner_truth_id": owner,
             }
         )
+        if (i + 1) % q_interval == 0:
+            print(_eta_line("queries", i + 1, n_queries, t0))
     return pd.DataFrame(rows), meta, lineage
