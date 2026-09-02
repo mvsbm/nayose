@@ -367,6 +367,7 @@ def logit_clip(probability: np.ndarray, precision: float = 1e-6) -> np.ndarray:
 
 # ─── Dense query encoder (SRP: F2LLM via sentence-transformers, lazy) ─────────
 _QUERY_ENCODER: Any = None
+_QUERY_MODEL_ID: str | None = None  # embedding model recorded in the bundle manifest
 
 
 def _resolve_device(requested: str) -> str:
@@ -388,7 +389,7 @@ def _load_query_encoder() -> Any:
     from sentence_transformers import SentenceTransformer
 
     device = _resolve_device(os.getenv("NAYOSE_DEVICE", "auto"))
-    model_id = os.getenv("NAYOSE_EMBEDDING_MODEL", "codefuse-ai/F2LLM-v2-1.7B")
+    model_id = _QUERY_MODEL_ID or os.getenv("NAYOSE_EMBEDDING_MODEL", "cl-nagoya/ruri-v3-130m")
     kwargs: dict[str, Any] = {"device": device}
     if device in {"mps", "cuda"}:
         import torch
@@ -669,6 +670,7 @@ class NayoseEngine:
         engine._pair_calibrator = joblib.load(config.model_dir / "pair_calibrator.joblib")
 
         _apply_manifest_thresholds(config)
+        _apply_manifest_embedding_model(config)
 
         # Load entity mappings (current bundle names; legacy names tolerated)
         canonical_path = next(
@@ -891,6 +893,17 @@ class NayoseEngine:
 
 
 # ─── Convenience ──────────────────────────────────────────────────────────────
+
+
+def _apply_manifest_embedding_model(config) -> None:
+    """Use the EXACT embedding model the bundle was encoded with (serve parity)."""
+    global _QUERY_MODEL_ID
+    manifest_path = config.model_dir / "run_manifest.json"
+    if manifest_path.exists():
+        embedded = json.loads(manifest_path.read_text(encoding="utf-8")).get("embedding_model")
+        if embedded:
+            _QUERY_MODEL_ID = embedded
+            print(f"embedding model from bundle: {embedded}")
 
 
 def _apply_manifest_thresholds(config) -> None:
