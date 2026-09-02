@@ -10,6 +10,7 @@ Design:
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import unicodedata as ud
@@ -359,6 +360,11 @@ def load_pair_model(model_dir: Path) -> Any:
     return joblib.load(legacy)
 
 
+def logit_clip(probability: np.ndarray, precision: float = 1e-6) -> np.ndarray:
+    p = np.clip(np.asarray(probability, dtype=np.float64), precision, 1.0 - precision)
+    return np.log(p / (1.0 - p))
+
+
 # ─── Dense query encoder (SRP: F2LLM via sentence-transformers, lazy) ─────────
 _QUERY_ENCODER: Any = None
 
@@ -662,6 +668,8 @@ class NayoseEngine:
         engine._pair_model = load_pair_model(config.model_dir)
         engine._pair_calibrator = joblib.load(config.model_dir / "pair_calibrator.joblib")
 
+        _apply_manifest_thresholds(config)
+
         # Load entity mappings (current bundle names; legacy names tolerated)
         canonical_path = next(
             (
@@ -793,13 +801,22 @@ class NayoseEngine:
         )
         features = compute_pair_features(query, cand_records, retrieval)
 
-        # Score with pair model
+        # Score with pair model: base probabilities -> calibrator (3 inputs in the
+        # current bundle: logit(base), reranker_score, reranker_present).
         try:
-            pair_probs = self._pair_calibrator.predict_proba(
-                self._pair_model.predict(features[PAIR_FEATURE_COLS]).reshape(-1, 1)
-            )[:, 1]
-        except Exception:
-            pair_probs = retrieval["retrieval_score"].values
+            base = np.asarray(self._pair_model.predict_proba(features[PAIR_FEATURE_COLS])[:, 1])
+            n_in = getattr(self._pair_calibrator, "n_features_in_", 1)
+            if n_in == 3:  # current bundle contract (reranker disabled at serve time)
+                cal_x = np.column_stack([logit_clip(base), np.zeros(len(base)), np.zeros(len(base))])
+            elif n_in == 1:  # legacy calibrator trained directly on base probability
+                cal_x = base.reshape(-1, 1)
+            else:
+                cal_x = base.reshape(-1, 1)
+            pair_probs = self._pair_calibrator.predict_proba(cal_x)[:, 1]
+        except Exception as exc:
+            print(f"WARN: pair scoring fallback ({type(exc).__name__}): {str(exc)[:80]}")
+            pair_probs = np.clip(retrieval["retrieval_score"].to_numpy(dtype=np.float64), 0.0, 1.0)
+        pair_probs = np.clip(np.asarray(pair_probs, dtype=np.float64), 0.0, 1.0)
 
         # Aggregate to entities
         entity_scores: dict[str, list[float]] = {}
@@ -874,6 +891,21 @@ class NayoseEngine:
 
 
 # ─── Convenience ──────────────────────────────────────────────────────────────
+
+
+def _apply_manifest_thresholds(config) -> None:
+    """Use the trained thresholds from the bundle's run_manifest (env overrides win)."""
+    manifest_path = config.model_dir / "run_manifest.json"
+    if not manifest_path.exists():
+        return
+    thresholds = json.loads(manifest_path.read_text(encoding="utf-8")).get("thresholds", {})
+    for attr, key in (("entity_auto_threshold", "entity_auto"),
+                      ("entity_review_threshold", "entity_review")):
+        if key in thresholds and os.getenv("NAYOSE_ENTITY_OVERRIDE", "0") != "1":
+            object.__setattr__(config, attr, float(thresholds[key]))
+    if "entity_auto" in thresholds:
+        print(f"thresholds from manifest: entity_auto={thresholds['entity_auto']:.4f} "
+              f"entity_review={thresholds.get('entity_review', thresholds.get('entity_auto', 0.0)):.4f}")
 
 
 def load_engine(model_dir: str = "models", data_dir: str = "data") -> NayoseEngine:
