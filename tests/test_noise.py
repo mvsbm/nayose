@@ -1,0 +1,98 @@
+"""Unit tests for the dirty-data engine (no external data)."""
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from synthetic.config import NoiseConfig, SyntheticConfig
+from synthetic.noise import CUSTOMER_FIELDS, QueryCorruptor, RecordCorruptor
+
+PARTY = pd.Series(
+    {
+        "party_type": "person",
+        "name_kanji": "佐藤 太郎",
+        "name_kana": "サトウ タロウ",
+        "name_romaji": "Sato Taro",
+        "date_birth": "1990-04-01",
+        "postal_code": "1000001",
+        "address": "東京都千代田区千代田1丁目2番3号",
+        "phone": "090-1234-5678",
+        "email": "sato.taro@example.com",
+        "old_name_kanji": "鈴木 次郎",
+        "old_name_kana": "スズキ ジロウ",
+        "old_name_romaji": "Suzuki Jiro",
+        "old_postal_code": "1500001",
+        "old_address": "東京都渋谷区神宮前1丁目1番1号",
+        "old_phone": "080-9999-8888",
+        "old_email": "suzuki.jiro@example.com",
+    }
+)
+AGENCY = {"missing_factor": 1.0, "ocr_factor": 0.25, "format_factor": 1.0}
+
+
+@pytest.fixture
+def cfg():
+    return SyntheticConfig(profile="preflight", difficulty="realistic")
+
+
+def _corrupt(cfg, seed=0, quality="average"):
+    rng = np.random.default_rng(seed)
+    result = RecordCorruptor(cfg, NoiseConfig()).corrupt(PARTY, AGENCY, quality, rng)
+    return result.values, result.lineage
+
+
+def test_party_type_never_blank(cfg):
+    for seed in range(30):
+        values, _ = _corrupt(cfg, seed)
+        assert values["party_type"] in {"person", "company"}
+
+
+def test_missing_values_are_labeled(cfg):
+    for seed in range(30):
+        values, lineage = _corrupt(cfg, seed)
+        labels = dict(lineage)
+        for field in CUSTOMER_FIELDS:
+            if values[field] == "":
+                assert labels.get(field) == "missing", (field, values[field], labels.get(field))
+            else:
+                assert field not in labels or labels[field] != "missing"
+
+
+def test_stale_rename_is_coherent(cfg):
+    corruptor = RecordCorruptor(cfg, NoiseConfig())
+    found = False
+    for seed in range(200):
+        rng = np.random.default_rng(seed)
+        result = corruptor.corrupt(PARTY, AGENCY, "poor", rng)
+        values, lineage = result.values, result.lineage
+        if any(label == "stale_rename" for _, label in lineage):
+            found = True
+            assert values["name_kanji"] == "鈴木 次郎"
+            assert values["name_kana"] == "スズキ ジロウ"
+        if any(label == "stale_move" for _, label in lineage):
+            assert values["address"] == "東京都渋谷区神宮前1丁目1番1号"
+            assert values["postal_code"] == "1500001"
+    assert found
+
+
+def test_catastrophic_misses_more_than_average(cfg):
+    miss = {}
+    for quality in ("average", "catastrophic"):
+        counts = []
+        for seed in range(40):
+            values, _ = _corrupt(cfg, seed, quality)
+            counts.append(sum(values[f] == "" for f in CUSTOMER_FIELDS))
+        miss[quality] = np.mean(counts)
+    assert miss["catastrophic"] > miss["average"] * 2
+
+
+def test_insufficient_query_is_sparse(cfg):
+    rng = np.random.default_rng(3)
+    result = QueryCorruptor(NoiseConfig()).corrupt("insufficient", PARTY, rng)
+    assert sum(result.values[f] == "" for f in CUSTOMER_FIELDS) >= 5
+
+
+def test_existing_stable_query_is_clean(cfg):
+    rng = np.random.default_rng(3)
+    result = QueryCorruptor(NoiseConfig()).corrupt("existing_stable", PARTY, rng)
+    assert all(result.values[f] == PARTY[f] for f in CUSTOMER_FIELDS)

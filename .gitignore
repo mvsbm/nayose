@@ -1,0 +1,49 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+
+# --- Jupyter ---
+.ipynb_checkpoints/
+*_executed.ipynb
+
+# --- Generated data / models / outputs (regenerable, too large for git) ---
+data/
+models/
+nayose_data/
+nayose_data_v2/
+nayose_output/
+nayose_output_v2/
+e2e_data/
+e2e_tandem*/
+*.bench*.parquet
+
+# --- Caches & tooling ---
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# --- OS / IDE ---
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# --- Environment & secrets ---
+.env
+.env.*
+*.pem
+*.key
+
+# --- Logs ---
+*.log
