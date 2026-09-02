@@ -65,6 +65,9 @@ class SyntheticConfig:
     n_agencies: int = 18
     person_share: float = 0.90
     query_share: float = 0.16
+    twin_rate: float = float(
+        os.getenv("NAYOSE_TWIN_RATE", "0.15")
+    )  # same-name twin entities (hard cases)
     lineage_mode: str = "changed_plus_queries"
     query_mix: dict[str, float] = field(default_factory=lambda: dict(QUERY_MIX))
 
@@ -117,6 +120,8 @@ class NoiseConfig:
             "rename_stale": 0.06,  # whole name replaced by old name (recent rename)
             "move_stale": 0.06,  # address + postal replaced by old values together
             "contact_change": 0.05,  # phone + email replaced by old values together
+            "full_snapshot": 0.05,  # coherent pre-move/pre-re-contact snapshot of the truth
+            "contact_omission": 0.04,  # phone+email missing together (scanned-card omission)
             "paper_ocr": 0.10,  # OCR confusion burst on names / address
             "legacy_format": 0.08,  # era dates + half-width + old phone/postal shapes
             "doc_damage": 0.04,  # correlated missing: whole name trio or contact trio

@@ -153,6 +153,47 @@ class RecordCorruptor:
                 values[field] = ""
                 self.lineage.append((field, "missing"))
 
+    def _e_full_snapshot(self, values, party, rng) -> None:
+        """Record is a coherent PRE-MOVE / PRE-RE-CONTACT snapshot of the truth:
+        name, address(+postal) and phone(+email) all show the entity's OLD values
+        (captured before the canonical update). Internally consistent; the old
+        values come from the truth itself (party.old_*)."""
+        old_name = party.get("old_name_kanji", "")
+        old_addr = party.get("old_address", "")
+        old_phone = party.get("old_phone", "")
+        if old_name and old_name != values["name_kanji"]:
+            values["name_kanji"] = old_name
+            values["name_kana"] = str(party.get("old_name_kana", "")) or values["name_kana"]
+            values["name_romaji"] = str(party.get("old_name_romaji", "")) or values["name_romaji"]
+        if old_addr and old_addr != values["address"]:
+            values["address"] = old_addr
+            values["postal_code"] = str(party.get("old_postal_code", "")) or values["postal_code"]
+        if old_phone and old_phone != values["phone"]:
+            values["phone"] = old_phone
+            values["email"] = str(party.get("old_email", "")) or values["email"]
+        fields = (
+            "name_kanji",
+            "name_kana",
+            "name_romaji",
+            "postal_code",
+            "address",
+            "phone",
+            "email",
+        )
+        for f in fields:
+            self.protected.add(f)
+            self.lineage.append((f, "full_snapshot"))
+
+    def _e_contact_omission(self, values, party, rng) -> None:
+        """A data-entry omission: the whole contact block (phone + email) is
+        absent together (no partial contact info on a scanned card)."""
+        values["phone"] = ""
+        values["email"] = ""
+        self.lineage.append(("phone", "missing"))
+        self.lineage.append(("email", "missing"))
+        self.protected.add("phone")
+        self.protected.add("email")
+
     def _e_wrong_party_type(self, values, party, rng) -> None:
         values["party_type"] = "company" if values["party_type"] == "person" else "person"
 
@@ -176,6 +217,8 @@ class RecordCorruptor:
 
     EVENT_HANDLERS = {
         "rename_stale": _e_rename_stale,
+        "full_snapshot": _e_full_snapshot,
+        "contact_omission": _e_contact_omission,
         "move_stale": _e_move_stale,
         "contact_change": _e_contact_change,
         "paper_ocr": _e_paper_ocr,

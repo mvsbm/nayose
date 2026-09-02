@@ -22,13 +22,13 @@ def _eta_line(name: str, done: int, total: int, t0: float) -> str:
     remaining = int((total - done) / max(rate, 1e-9))
     pct = 100.0 * done / max(total, 1)
     return (
-        f"  [{name}] {done:,}/{total:,} ({pct:.0f}%) "
-        f"eta {remaining // 60:02d}:{remaining % 60:02d}"
+        f"  [{name}] {done:,}/{total:,} ({pct:.0f}%) eta {remaining // 60:02d}:{remaining % 60:02d}"
     )
 
 
 def _progress_interval(total: int) -> int:
     return max(1, total // 20)
+
 
 def generate_mobile(rng: np.random.Generator) -> str:
     prefix = str(rng.choice(["090", "080", "070"]))
@@ -115,6 +115,22 @@ def generate_parties(
                 buildings,
                 is_person=True,
             )
+            if rng.random() < cfg.twin_rate:
+                # Hard-case twin: two customers with the SAME name/kana/romaji but
+                # different identity fields (dob, address, contacts). Exact-name
+                # anchors become ambiguous; resolution must use other fields.
+                dna = int(rng.integers(1, 10))
+                t_dob = _dob(max(p.age - dna, 18), rng, cfg)
+                t_postal, t_addr = address.format(address.sample(rng, p.prefecture), rng, buildings)
+                rows.append({
+                    "party_type": "person",
+                    "name_kanji": kanji, "name_kana": kana, "name_romaji": romaji,
+                    "date_birth": t_dob, "postal_code": t_postal, "address": t_addr,
+                    "phone": generate_mobile(rng),
+                    "email": f"user{int(rng.integers(100000, 999999))}@example.com",
+                    "old_name_kanji": "", "old_name_kana": "", "old_name_romaji": "",
+                    "old_postal_code": "", "old_address": "", "old_phone": "", "old_email": "",
+                })
         else:
             c = companies.sample(rng)
             postal, full_addr = address.format(address.sample(rng, None), rng, buildings)
@@ -145,7 +161,15 @@ def generate_parties(
         )
         if (i + 1) % step == 0:
             print(_eta_line("parties", i + 1, cfg.n_parties, t0))
-    return pd.DataFrame(rows)
+    frame = pd.DataFrame(rows)
+    dup = frame.name_kanji.value_counts()
+    frame["name_dup_count"] = frame.name_kanji.map(dup).to_numpy()
+    print(
+        f"  [parties] {len(frame):,} rows, {(frame.name_dup_count > 1).sum():,} rows share a "
+        f"name with another entity (twin_rate {cfg.twin_rate:.0%}), "
+        f"unique names {frame.name_kanji.nunique():,}"
+    )
+    return frame
 
 
 def generate_agencies(cfg: SyntheticConfig, rng: np.random.Generator) -> pd.DataFrame:

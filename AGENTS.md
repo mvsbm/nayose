@@ -50,6 +50,12 @@ python scripts/generate_data.py --profile smoke   # headless pipeline (CLI == no
 - Do not install new deps into the shared `.venv` without adding them to
   `pyproject.toml` first.
 - Do not change random-seed defaults silently — outputs must be seed-reproducible.
+- Dirtying must stay **truth-driven and logical** (coherent events, exact
+  lineage); never add label noise — truth tables are the ground truth.
+- New corruption must register as an event in `noise.py` + `config.py` rates
+  (OCP), and be explainable from the entity's truth values.
+- Keep `NAYOSE_EXACT_MODE` honored in graph + retrieval when running
+  channel-attribution experiments; keep the HARDNESS telemetry print.
 - Do not joblib-pickle the LightGBM pair model for new bundles — write the
   native text booster (`booster_.save_model`); pickle+torch(MPS) deadlock.
   For pure-sklearn serving bundles use `NAYOSE_PAIR_MODEL=sklearn`.

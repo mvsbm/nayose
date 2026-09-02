@@ -123,6 +123,36 @@ Optimizations for MPS + time complexity:
 
 > One-time cold-encode cost (Apple MPS, 1.7B): ~50–120 ms/text → ~2–4 h for 100k records, paid once per generation and cached. Use `f2llm_0.6b` for quick exploratory runs.
 
+## Hardness engineering (organized, truth-driven chaos)
+
+The synthetic dirty data is **driven from truth, not random noise**:
+every observed record is a *logical, explainable derivation* of its canonical
+entity (name renames, moves, re-contacts, pre-update snapshots, OCR scans,
+legacy era formats), and the truth tables + `field_lineage` remain the exact
+answer for each value.
+
+Hardness levers (all in `synthetic/noise.py` / `engine.py`):
+
+- **Coherent events**: `rename_stale`, `move_stale`, `contact_change`,
+  `full_snapshot` (pre-move/pre-re-contact record using the entity's old
+  values), `contact_omission` (phone+email missing together), `paper_ocr`,
+  `legacy_format`, `doc_damage` — each internally consistent and labelled.
+- **Twin entities** (`NAYOSE_TWIN_RATE`, default 0.15): additional customers
+  with the SAME name/kana/romaji but different dob/address/contacts —
+  `hard_case=twin`, exact-name anchors become ambiguous.
+- **Channel attribution**: `NAYOSE_EXACT_MODE = hybrid | fuzzy_only | exact_only`
+  — run the matcher with exact blocks disabled to measure how much retrieval
+  relies on fuzzy (sparse+dense) evidence.
+- **Hardness telemetry**: the run prints e.g.
+  `HARDNESS: 37% of TRUE pairs carry ZERO exact-block anchors and must be found fuzzily`
+  and the generator prints name-duplication/twin stats; the derive target is
+  retrieval-hard data where dense embeddings visibly matter.
+
+Encoding decision: index the **normalized observed** record (distribution
+matches serve-time dirty queries; `party_truth` is hidden at deploy time).
+Entity-consensus (centroid) embeddings over observed records are the planned
+upgrade for clean-like anchoring without truth leakage.
+
 ## Tunable parameters (hyperparameters) — all env-overridable
 
 | Group | Env | Default | Meaning |
