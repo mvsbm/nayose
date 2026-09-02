@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """CLI for Nayose entity matching inference."""
+
 import argparse
 import json
 import sys
@@ -32,24 +33,31 @@ def main():
     if args.interactive:
         interactive_mode(engine)
     elif args.name or args.kana or args.phone or args.email:
-        result = engine.recommend({
-            "party_type": "person",
-            "name_kanji": args.name or "",
-            "name_kana": args.kana or "",
-            "phone": args.phone or "",
-            "email": args.email or "",
-            "address": args.address or "",
-            "date_birth": args.dob or "",
-            "postal_code": args.postal or "",
-        })
+        result = engine.recommend(
+            {
+                "party_type": "person",
+                "name_kanji": args.name or "",
+                "name_kana": args.kana or "",
+                "phone": args.phone or "",
+                "email": args.email or "",
+                "address": args.address or "",
+                "date_birth": args.dob or "",
+                "postal_code": args.postal or "",
+            }
+        )
         if args.json:
-            print(json.dumps({
-                "action": result.action,
-                "top_nayose_id": result.top_nayose_id,
-                "top_probability": result.top_probability,
-                "margin": result.margin,
-                "candidates": len(result.candidates),
-            }, indent=2))
+            print(
+                json.dumps(
+                    {
+                        "action": result.action,
+                        "top_nayose_id": result.top_nayose_id,
+                        "top_probability": result.top_probability,
+                        "margin": result.margin,
+                        "candidates": len(result.candidates),
+                    },
+                    indent=2,
+                )
+            )
         else:
             print(f"Action: {result.action}")
             print(f"Top Entity: {result.top_nayose_id or 'None'}")
@@ -88,7 +96,7 @@ def interactive_mode(engine):
         if not result.candidates.empty:
             print(result.candidates.to_string(index=False))
 
-        if input("\nAnother? (y/n): ").strip().lower() != 'y':
+        if input("\nAnother? (y/n): ").strip().lower() != "y":
             break
 
 

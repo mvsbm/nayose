@@ -20,6 +20,7 @@ def default_data_dir() -> Path:
     """data/ living at the repository root, independent of the working directory."""
     return REPO_ROOT / "data"
 
+
 # --------------------------------------------------------------------------
 # Size / difficulty presets (data, not code)
 # --------------------------------------------------------------------------
@@ -79,9 +80,7 @@ class SyntheticConfig:
     def __post_init__(self) -> None:
         if self.output_dir is None:
             env_dir = os.getenv("NAYOSE_DATA_DIR")
-            object.__setattr__(
-                self, "output_dir", Path(env_dir) if env_dir else default_data_dir()
-            )
+            object.__setattr__(self, "output_dir", Path(env_dir) if env_dir else default_data_dir())
         if self.profile not in PROFILES:
             raise ValueError(f"Unknown profile {self.profile!r}; choose from {list(PROFILES)}")
         if self.difficulty not in DIFFICULTY:

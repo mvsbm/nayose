@@ -32,13 +32,15 @@ NAYOSE_MODEL_FAMILY=off NAYOSE_DEVICE=cpu NAYOSE_UI=0     jupyter nbconvert --to
 from nayose_inference import load_engine
 
 engine = load_engine()
-result = engine.recommend({
-    "name_kanji": "山田太郎",
-    "phone": "090-1234-5678",
-})
+result = engine.recommend(
+    {
+        "name_kanji": "山田太郎",
+        "phone": "090-1234-5678",
+    }
+)
 
-print(result.action)           # AUTO_LINK
-print(result.top_nayose_id)    # N000012345
+print(result.action)  # AUTO_LINK
+print(result.top_nayose_id)  # N000012345
 print(result.top_probability)  # 0.856
 ```
 
