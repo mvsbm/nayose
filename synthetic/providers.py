@@ -123,6 +123,23 @@ class PersonaSource:
         return [self.persons[i] for i in idx]
 
 
+def build_homophone_map(
+    persona: PersonaSource, min_variants: int = 2
+) -> dict[str, tuple[str, ...]]:
+    """kana(reading) -> distinct kanji spellings actually present in the real
+    name corpus (同音異字: e.g. 佐藤/左藤 both read サトウ). Data-driven; no
+    hardcoded lexicon. Reading (kana) is the identity; kanji may diverge."""
+    groups: dict[str, set[str]] = {}
+    for person in persona.persons:
+        key = re.sub(r"\s+", "", person.name_kana)
+        groups.setdefault(key, set()).add(person.name_kanji.replace(" ", ""))
+    return {
+        key: tuple(sorted(spellings))
+        for key, spellings in groups.items()
+        if len(spellings) >= min_variants
+    }
+
+
 # --------------------------------------------------------------------------
 # Companies (real legal names from EDINET)
 # --------------------------------------------------------------------------

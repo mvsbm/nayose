@@ -54,6 +54,10 @@ python scripts/generate_data.py --profile smoke   # headless pipeline (CLI == no
   lineage); never add label noise — truth tables are the ground truth.
 - New corruption must register as an event in `noise.py` + `config.py` rates
   (OCP), and be explainable from the entity's truth values.
+- Name realism: reading (kana) is identity; observed kanji may diverge through
+  the data-driven homophone pools (`build_homophone_map`) and kana-form events.
+- Missingness is SYSTEMATIC: tune `field_availability` per channel; legacy has
+  no email (keep=0.0). Keep `channel_events` as the source-document bundles.
 - Keep `NAYOSE_EXACT_MODE` honored in graph + retrieval when running
   channel-attribution experiments; keep the HARDNESS telemetry print.
 - Do not joblib-pickle the LightGBM pair model for new bundles — write the

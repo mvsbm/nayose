@@ -123,6 +123,27 @@ Optimizations for MPS + time complexity:
 
 > One-time cold-encode cost (Apple MPS, 1.7B): ~50–120 ms/text → ~2–4 h for 100k records, paid once per generation and cached. Use `f2llm_0.6b` for quick exploratory runs.
 
+### Realism upgrades: kana-driven names + source-driven corruption (config-tuned)
+
+Reading (kana) is the identity; observed kanji may diverge realistically:
+
+- **同音異字 (homophone kanji)**: same kana reading, different kanji, drawn from
+  the REAL name corpus (e.g. 前田道枝 → 前田美知恵, both マエダ ミチエ). Pools are
+  built data-driven from the persona cache (`build_homophone_map`), no lexicon.
+- **kana forms**: same reading rendered hiragana or half-width katakana.
+- **digit transposes / email typos**: the classic typist mistakes.
+- **Systematic (vintage/system) field availability**: legacy records never hold
+  email (keep=0.0), paper rarely do (0.45), web always -- missingness is
+  channel/system-driven, not uniformly random.
+- **Source-document bundles**: a record typed from a channel's form carries the
+  channel's characteristic disorders together (web: email+digit typos;
+  agent_pc: homophone+digit; paper_ocr: OCR+kana-form; legacy: era+width+no email).
+
+Tuning: every rate/table lives in `NoiseConfig` in `synthetic/config.py`
+(`event_rates`, `field_availability`, `channel_events`, `band_scale`,
+`missing_rates`) and the twin rate via `NAYOSE_TWIN_RATE`. Truth stays
+canonical (party_truth) and lineage-exact; records are explainable derivations.
+
 ## Hardness engineering (organized, truth-driven chaos)
 
 The synthetic dirty data is **driven from truth, not random noise**:

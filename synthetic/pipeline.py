@@ -29,7 +29,13 @@ from .engine import (
     generate_queries,
 )
 from .noise import CUSTOMER_FIELDS
-from .providers import AddressSource, BuildingComposer, CompanySource, PersonaSource
+from .providers import (
+    AddressSource,
+    BuildingComposer,
+    CompanySource,
+    PersonaSource,
+    build_homophone_map,
+)
 from .truth import (
     build_field_lineage,
     build_households,
@@ -78,13 +84,16 @@ def generate(cfg: SyntheticConfig, rng: np.random.Generator | None = None) -> Pi
     raw_dir = cfg.raw_dir or default_data_dir() / "raw"
 
     persona = PersonaSource(raw_dir)
+    homophones = build_homophone_map(persona)
     companies = CompanySource()
     address = AddressSource(raw_dir)
     buildings = BuildingComposer()
 
     parties = generate_parties(cfg, rng, persona, companies, address, buildings)
     agencies = generate_agencies(cfg, rng)
-    observations, party_of, record_lineage = build_observations(cfg, noise, parties, agencies, rng)
+    observations, party_of, record_lineage = build_observations(
+        cfg, noise, parties, agencies, rng, homophones=homophones
+    )
 
     name_dups = parties.name_kanji.value_counts()
     relation_of = build_households(len(parties), rng)

@@ -122,15 +122,26 @@ def generate_parties(
                 dna = int(rng.integers(1, 10))
                 t_dob = _dob(max(p.age - dna, 18), rng, cfg)
                 t_postal, t_addr = address.format(address.sample(rng, p.prefecture), rng, buildings)
-                rows.append({
-                    "party_type": "person",
-                    "name_kanji": kanji, "name_kana": kana, "name_romaji": romaji,
-                    "date_birth": t_dob, "postal_code": t_postal, "address": t_addr,
-                    "phone": generate_mobile(rng),
-                    "email": f"user{int(rng.integers(100000, 999999))}@example.com",
-                    "old_name_kanji": "", "old_name_kana": "", "old_name_romaji": "",
-                    "old_postal_code": "", "old_address": "", "old_phone": "", "old_email": "",
-                })
+                rows.append(
+                    {
+                        "party_type": "person",
+                        "name_kanji": kanji,
+                        "name_kana": kana,
+                        "name_romaji": romaji,
+                        "date_birth": t_dob,
+                        "postal_code": t_postal,
+                        "address": t_addr,
+                        "phone": generate_mobile(rng),
+                        "email": f"user{int(rng.integers(100000, 999999))}@example.com",
+                        "old_name_kanji": "",
+                        "old_name_kana": "",
+                        "old_name_romaji": "",
+                        "old_postal_code": "",
+                        "old_address": "",
+                        "old_phone": "",
+                        "old_email": "",
+                    }
+                )
         else:
             c = companies.sample(rng)
             postal, full_addr = address.format(address.sample(rng, None), rng, buildings)
@@ -196,12 +207,13 @@ def build_observations(
     parties: pd.DataFrame,
     agencies: pd.DataFrame,
     rng: np.random.Generator,
+    homophones: dict[str, tuple[str, ...]] | None = None,
 ) -> tuple[pd.DataFrame, pd.Series, dict[str, list[tuple[str, str]]]]:
     """Dirty multi-record observations per party (the reference universe).
 
     Returns (observations, party_of[record_id -> party idx], record lineage).
     """
-    corruptor = RecordCorruptor(cfg, noise_cfg)
+    corruptor = RecordCorruptor(cfg, noise_cfg, homophones)
     agency_rows = agencies.to_dict("records")
     rows, party_of, lineage_by_item = [], {}, {}
     record_idx = 0

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import jaconv
 import numpy as np
 import pandas as pd
 
@@ -63,12 +64,17 @@ class CorruptionResult:
 
 
 class RecordCorruptor:
-    """Applies correlated corruption events + single-field backfill to one
-    reference record derived from a party."""
+    """Applies source-driven, truth-derivable corruption to one reference record.
 
-    def __init__(self, cfg: SyntheticConfig, noise: NoiseConfig):
+    ``homophones`` maps a kana reading to the distinct kanji spellings observed
+    in the real name corpus (同音異字), enabling kana-driven kanji divergence.
+    """
+
+    def __init__(self, cfg: SyntheticConfig, noise: NoiseConfig,
+                 homophones: dict[str, tuple[str, ...]] | None = None):
         self.cfg = cfg
         self.noise = noise
+        self.homophones = homophones
 
     def _baseline(self, party: pd.Series) -> dict[str, str]:
         return {
@@ -194,6 +200,62 @@ class RecordCorruptor:
         self.protected.add("phone")
         self.protected.add("email")
 
+    def _e_homophone_kanji(self, values, party, rng) -> None:
+        """Reading (kana) stays; kanji diverges to a REAL homophone spelling
+        (佐藤 -> 左藤, same サトウ reading). Truth keeps the canonical kanji;
+        the observed record carries the typist's spelling."""
+        if self.homophones is None:
+            return
+        key = values["name_kana"].replace(" ", "")
+        pool = self.homophones.get(key)
+        if not pool:
+            return
+        current = values["name_kanji"].replace(" ", "")
+        candidates = [k for k in pool if k != current]
+        if not candidates:
+            return
+        chosen = str(rng.choice(candidates))
+        values["name_kanji"] = chosen
+        self.lineage.append(("name_kanji", "homophone_kanji"))
+        self.protected.add("name_kanji")
+
+    def _e_kana_form(self, values, party, rng) -> None:
+        """Same reading, different kana script: hiragana or half-width katakana."""
+        if not values["name_kana"]:
+            return
+        if rng.random() < 0.5:
+            values["name_kana"] = jaconv.kata2hira(values["name_kana"])
+        else:
+            values["name_kana"] = mixed_width(values["name_kana"])
+        self.lineage.append(("name_kana", "kana_form"))
+        self.protected.add("name_kana")
+
+    def _e_digit_transpose(self, values, party, rng) -> None:
+        """Classic typist typo: two adjacent digits swapped in the phone number."""
+        chars = list(values["phone"])
+        digit_idx = [i for i, ch in enumerate(chars) if ch.isdigit()]
+        if len(digit_idx) < 2:
+            return
+        pos = int(rng.integers(len(digit_idx) - 1))
+        a, b = digit_idx[pos], digit_idx[pos + 1]
+        chars[a], chars[b] = chars[b], chars[a]
+        values["phone"] = "".join(chars)
+        self.lineage.append(("phone", "digit_transpose"))
+        self.protected.add("phone")
+
+    def _e_email_typo(self, values, party, rng) -> None:
+        """Local-part typo in email (stays the same person; domain often intact)."""
+        if "@" not in values["email"]:
+            return
+        local, _, domain = values["email"].partition("@")
+        if len(local) < 3:
+            return
+        target = int(rng.integers(len(local)))
+        local = local[:target] + "x" + local[target + 1:]
+        values["email"] = f"{local}@{domain}"
+        self.lineage.append(("email", "email_typo"))
+        self.protected.add("email")
+
     def _e_wrong_party_type(self, values, party, rng) -> None:
         values["party_type"] = "company" if values["party_type"] == "person" else "person"
 
@@ -219,6 +281,10 @@ class RecordCorruptor:
         "rename_stale": _e_rename_stale,
         "full_snapshot": _e_full_snapshot,
         "contact_omission": _e_contact_omission,
+        "homophone_kanji": _e_homophone_kanji,
+        "kana_form": _e_kana_form,
+        "digit_transpose": _e_digit_transpose,
+        "email_typo": _e_email_typo,
         "move_stale": _e_move_stale,
         "contact_change": _e_contact_change,
         "paper_ocr": _e_paper_ocr,
@@ -237,39 +303,52 @@ class RecordCorruptor:
         self.lineage: list[tuple[str, str]] = []
         self.protected: set[str] = set()  # fields already carrying event values
         noise, scale = self.noise, self.noise.band_scale[quality]
+        channel = agency.get("channel", "web")
 
-        # event bursts (scale with severity; doc_damage first so a stale value
-        # that survives damage is never blanked afterwards)
-        event_order = ["doc_damage"] + [k for k in noise.event_rates if k != "doc_damage"]
+        # (A) SYSTEMATIC / vintage availability: some fields are absent for a
+        # whole channel (legacy never had email), not randomly missing.
+        availability = noise.field_availability.get(channel, {})
+        for field, keep in availability.items():
+            if values[field] and keep < 1.0 and rng.random() > keep:
+                values[field] = ""
+                self.lineage.append((field, "missing"))
+
+        # (B) doc_damage first so a stale value that survives damage is never
+        # blanked afterwards.
+        if rng.random() < min(1.0, noise.event_rates["doc_damage"] * scale):
+            self._e_doc_damage(values, party, rng)
+
+        # (C) SOURCE-DOCUMENT BUNDLE: the channel's characteristic disorders
+        # fire as one coherent group (typed-from-this-form errors).
+        bundle = noise.channel_events.get(channel, ())
+        if bundle and rng.random() < min(1.0, 0.6 * scale):
+            for name in bundle:
+                p = noise.event_rates.get(name, 0.05) * scale
+                if rng.random() < min(1.0, p):
+                    self.EVENT_HANDLERS[name](self, values, party, rng)
+
+        # (D) GLOBAL events (stale/history events apply regardless of channel).
+        event_order = [k for k in noise.event_rates if k not in ("doc_damage", *bundle)]
         for name in event_order:
-            base_rate = noise.event_rates[name]
-            p = base_rate * scale
+            p = noise.event_rates[name] * scale
             if rng.random() < min(1.0, p):
                 self.EVENT_HANDLERS[name](self, values, party, rng)
 
-        # single-field backfill: missing / width / ocr / format (fields already
-        # purposefully corrupted by an event are left coherent)
+        # (E) Fields a system can NEVER hold stay absent (legacy email = "").
+        for field, keep in availability.items():
+            if keep == 0.0:
+                values[field] = ""
+                self.lineage.append((field, "missing"))
+
+        # (F) residual band-driven omission only (accidental per-record blank);
+        # fields already purposefully corrupted by an event stay coherent.
         touched = {f for f, _ in self.lineage}
         for field in CUSTOMER_FIELDS:
-            value = values[field]
-            if not value or field in touched:
+            if not values[field] or field in touched:
                 continue
             if rng.random() < min(0.9, noise.missing_rates[quality] * agency["missing_factor"]):
                 values[field] = ""
                 self.lineage.append((field, "missing"))
-            elif field == "phone" and rng.random() < min(0.9, 0.05 * agency["format_factor"]):
-                values[field] = phone_variant(value, rng)
-                self.lineage.append((field, "format_phone"))
-            elif field == "postal_code" and rng.random() < min(0.9, 0.05 * agency["format_factor"]):
-                values[field] = postal_variant(value, rng)
-                self.lineage.append((field, "format_postal"))
-            elif field == "name_kana" and rng.random() < min(0.9, 0.03 * agency["format_factor"]):
-                values[field] = mixed_width(value)
-                self.lineage.append((field, "width_flip"))
-            elif rng.random() < min(0.9, 0.05 * agency["ocr_factor"]):
-                values[field], label = ocr_mutate(value, 0.3, rng)
-                if label != "unchanged":
-                    self.lineage.append((field, label))
 
         return CorruptionResult(values=values, lineage=self.lineage)
 

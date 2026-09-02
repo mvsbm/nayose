@@ -129,6 +129,31 @@ class NoiseConfig:
             "alpha_in_kana": 0.04,
             "combined_kana": 0.03,
             "kana_in_romaji": 0.03,
+            # realism additions: kana-driven names + source-correlated bundles
+            "homophone_kanji": 0.12,  # same kana reading, different kanji (同音異字)
+            "kana_form": 0.08,  # kana rendered hiragana / half-width (same reading)
+            "digit_transpose": 0.06,  # adjacent-digit swap in phone (typist typo)
+            "email_typo": 0.05,  # local-part substitute in email (domain typo realism)
+        }
+    )
+    # Vintage / system-driven field availability: channel -> field -> keep probability.
+    # Missingness is SYSTEMATIC (a legacy system never had email), not random per field.
+    field_availability: dict[str, dict[str, float]] = field(
+        default_factory=lambda: {
+            "web": {},
+            "agent_pc": {"email": 0.92, "name_romaji": 0.95},
+            "paper_ocr": {"email": 0.45, "name_romaji": 0.70},
+            "legacy_migration": {"email": 0.0, "name_romaji": 0.15},
+        }
+    )
+    # Source-document error bundles: a record typed from a channel's form carries the
+    # channel's characteristic disorders together (coherent document-level errors).
+    channel_events: dict[str, tuple[str, ...]] = field(
+        default_factory=lambda: {
+            "web": ("email_typo", "digit_transpose"),
+            "agent_pc": ("homophone_kanji", "digit_transpose"),
+            "paper_ocr": ("paper_ocr", "kana_form"),
+            "legacy_migration": ("legacy_format",),
         }
     )
     # per-band severity multipliers  (light / medium / heavy)
