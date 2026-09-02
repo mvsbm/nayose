@@ -56,6 +56,9 @@ class SyntheticConfig:
     profile: str = os.getenv("NAYOSE_PROFILE", "generate_only")
     difficulty: str = os.getenv("NAYOSE_DIFFICULTY", "realistic")
     output_dir: Path | None = None  # resolved in __post_init__ (env NAYOSE_DATA_DIR or repo data/)
+    raw_dir: Path | None = (
+        None  # immutable reference-data cache (env NAYOSE_RAW_DIR or repo data/raw)
+    )
     n_parties_override: int = int(os.getenv("NAYOSE_N_PARTIES", "0"))
     snapshot_date: str = os.getenv("NAYOSE_SNAPSHOT_DATE", "2025-12-31")
     query_date: str = os.getenv("NAYOSE_QUERY_DATE", "2026-08-25")
@@ -81,6 +84,11 @@ class SyntheticConfig:
         if self.output_dir is None:
             env_dir = os.getenv("NAYOSE_DATA_DIR")
             object.__setattr__(self, "output_dir", Path(env_dir) if env_dir else default_data_dir())
+        if self.raw_dir is None:
+            env_raw = os.getenv("NAYOSE_RAW_DIR")
+            object.__setattr__(
+                self, "raw_dir", Path(env_raw) if env_raw else REPO_ROOT / "data" / "raw"
+            )
         if self.profile not in PROFILES:
             raise ValueError(f"Unknown profile {self.profile!r}; choose from {list(PROFILES)}")
         if self.difficulty not in DIFFICULTY:

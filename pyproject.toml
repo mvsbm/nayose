@@ -31,6 +31,7 @@ neural = [
     "torch>=2.2",
     "transformers>=4.40",
     "sentence-transformers>=2.7",
+    "usearch>=2.1",
 ]
 dev = [
     "pytest>=8",

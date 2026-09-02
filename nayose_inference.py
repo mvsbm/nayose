@@ -10,6 +10,7 @@ Design:
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import unicodedata as ud
 from dataclasses import dataclass
@@ -29,8 +30,8 @@ from sklearn.neighbors import NearestNeighbors
 class InferenceConfig:
     """Immutable configuration for inference."""
 
-    model_dir: Path = Path("models")
-    data_dir: Path = Path("data")
+    model_dir: Path = Path("models/current")
+    data_dir: Path = Path("data/current")
     sparse_top_k: int = 16
     exact_block_cap: int = 50
     candidate_cap: int = 50
@@ -329,6 +330,78 @@ def compute_pair_features(
     return pd.DataFrame(rows)
 
 
+class LightGBMBoosterAdapter:
+    """Binary classifier view over a native LightGBM booster (no pickle)."""
+
+    def __init__(self, booster):
+        self.booster = booster
+
+    def predict_proba(self, features: pd.DataFrame) -> np.ndarray:
+        positive = np.asarray(self.booster.predict(features, raw_score=False), dtype=np.float64)
+        return np.column_stack([1.0 - positive, positive])
+
+
+def load_pair_model(model_dir: Path) -> Any:
+    """Pair verifier: native LightGBM text booster (current) or legacy joblib pickle."""
+    native = model_dir / "pair_model.txt"
+    if native.exists():
+        import lightgbm as lgb
+
+        return LightGBMBoosterAdapter(lgb.Booster(model_file=str(native)))
+    legacy = next(
+        (
+            model_dir / n
+            for n in ("pair_model.joblib", "pair_verifier.joblib")
+            if (model_dir / n).exists()
+        ),
+        model_dir / "pair_verifier.joblib",
+    )
+    return joblib.load(legacy)
+
+
+# ─── Dense query encoder (SRP: F2LLM via sentence-transformers, lazy) ─────────
+_QUERY_ENCODER: Any = None
+
+
+def _resolve_device(requested: str) -> str:
+    if requested != "auto":
+        return requested
+    try:
+        import torch
+
+        if torch.backends.mps.is_available():
+            return "mps"
+        if torch.cuda.is_available():
+            return "cuda"
+    except Exception:
+        pass
+    return "cpu"
+
+
+def _load_query_encoder() -> Any:
+    from sentence_transformers import SentenceTransformer
+
+    device = _resolve_device(os.getenv("NAYOSE_DEVICE", "auto"))
+    model_id = os.getenv("NAYOSE_EMBEDDING_MODEL", "codefuse-ai/F2LLM-v2-1.7B")
+    kwargs: dict[str, Any] = {"device": device}
+    if device in {"mps", "cuda"}:
+        import torch
+
+        kwargs["model_kwargs"] = {"torch_dtype": torch.float16}
+    return SentenceTransformer(model_id, **kwargs)
+
+
+def dense_enabled() -> bool:
+    return os.getenv("NAYOSE_USE_DENSE", "1").strip().lower() not in {"0", "false", "no"}
+
+
+def encode_query(text: str) -> np.ndarray:
+    global _QUERY_ENCODER
+    if _QUERY_ENCODER is None:
+        _QUERY_ENCODER = _load_query_encoder()
+    return _QUERY_ENCODER.encode([text], normalize_embeddings=True).astype(np.float32, copy=False)
+
+
 # ─── Candidate Index (SRP: retrieval only) ───────────────────────────────────
 
 
@@ -342,12 +415,16 @@ class CandidateIndex:
         vectorizer,
         block_indexes: dict,
         config: InferenceConfig,
+        reference_embeddings: np.ndarray | None = None,
+        dense_nn: Any | None = None,
     ):
         self.reference = reference
         self.sparse_matrix = sparse_matrix
         self.vectorizer = vectorizer
         self.block_indexes = block_indexes
         self.config = config
+        self.reference_embeddings = reference_embeddings
+        self.dense_nn = dense_nn
         self.sparse_nn = NearestNeighbors(
             n_neighbors=min(config.sparse_top_k + 1, len(reference)),
             metric="cosine",
@@ -381,6 +458,24 @@ class CandidateIndex:
             if float(score) > s["sparse_score"]:
                 s["sparse_score"] = float(score)
 
+        # Dense candidates (F2LLM embeddings; ANN via usearch when present)
+        if dense_enabled() and self.reference_embeddings is not None and self.dense_nn is not None:
+            q_vec = encode_query(str(query.get("retrieval_text", "")))
+            k_d = min(self.config.candidate_cap, len(self.reference))
+            try:
+                matches = self.dense_nn.search(q_vec, k_d)
+                dense_keys = np.asarray(matches.keys, dtype=np.int32).reshape(-1)
+                dense_scores = 1.0 - np.asarray(matches.distances, dtype=np.float32).reshape(-1)
+            except Exception:
+                distances, idxs = self.dense_nn.kneighbors(q_vec, n_neighbors=k_d)
+                dense_keys, dense_scores = idxs.reshape(-1), (1.0 - distances).reshape(-1)
+            for rank, (tgt, score) in enumerate(zip(dense_keys, dense_scores), 1):
+                s = states.setdefault(
+                    int(tgt), {"exact_blocks": set(), "sparse_score": 0.0, "dense_score": 0.0}
+                )
+                if float(score) > s["dense_score"]:
+                    s["dense_score"] = float(score)
+
         # Build result
         rows = []
         for idx, s in states.items():
@@ -392,7 +487,9 @@ class CandidateIndex:
                     "sparse_score": s["sparse_score"],
                     "dense_score": s["dense_score"],
                     "retrieval_score": max(s["sparse_score"], s["dense_score"]) + 0.08 * min(ec, 3),
-                    "channel_count": int(ec > 0) + int(s["sparse_score"] > 0),
+                    "channel_count": int(ec > 0)
+                    + int(s["sparse_score"] > 0)
+                    + int(s["dense_score"] > 0),
                 }
             )
         df = pd.DataFrame(rows)
@@ -434,6 +531,38 @@ class Recommendation:
     margin: float
     candidates: pd.DataFrame
     diagnostics: dict[str, Any]
+
+
+def _load_dense_artifacts(config, reference: pd.DataFrame) -> tuple[np.ndarray | None, Any | None]:
+    """Reference F2LLM embeddings + ANN index from the model bundle (optional)."""
+    candidate_paths = [
+        config.model_dir / "reference_embeddings.f16.npy",
+        config.model_dir / "reference_embeddings.npy",
+    ]
+    emb_path = next((p for p in candidate_paths if p.exists()), None)
+    if emb_path is None or len(reference) == 0:
+        if emb_path is None:
+            print("WARN: no reference embeddings in the bundle; dense retrieval disabled.")
+        return None, None
+    embeddings = np.load(emb_path)
+    if embeddings.shape[0] != len(reference):
+        raise RuntimeError(
+            f"embedding file {emb_path} has {embeddings.shape[0]} rows but reference has "
+            f"{len(reference)}; bundle is inconsistent with the reference"
+        )
+    try:
+        from usearch.index import Index
+
+        index = Index(ndim=embeddings.shape[1], metric="cos", dtype="f16")
+        index.add(np.arange(len(reference), dtype=np.int64), embeddings)
+        print(f"OK: dense retrieval enabled ({emb_path.name}, {embeddings.shape}, usearch HNSW)")
+        return embeddings.astype(np.float32, copy=False), index
+    except Exception:
+        nn = NearestNeighbors(metric="cosine", algorithm="brute", n_jobs=-1).fit(embeddings)
+        print(
+            f"OK: dense retrieval enabled ({emb_path.name}); usearch unavailable -> sklearn brute"
+        )
+        return embeddings.astype(np.float32, copy=False), nn
 
 
 # ─── Nayose Engine (Facade) ───────────────────────────────────────────────────
@@ -480,7 +609,9 @@ class NayoseEngine:
         if not ref_path.exists():
             legacy = config.data_dir / "reference_snapshot.parquet"
             if legacy.exists():
-                print("WARN: loading legacy reference_snapshot.parquet; regenerate data with the current pipeline.")
+                print(
+                    "WARN: loading legacy reference_snapshot.parquet; regenerate data with the current pipeline."
+                )
                 ref_path = legacy
             else:
                 raise FileNotFoundError(
@@ -490,12 +621,31 @@ class NayoseEngine:
         engine._reference = pd.read_parquet(ref_path)
         cls._guard_generation_match(config, engine._reference)
 
-        # Load sparse artifacts
-        engine._sparse_matrix = load_npz(config.model_dir / "reference_tfidf.npz")
-        engine._vectorizer = joblib.load(config.model_dir / "tfidf_vectorizer.joblib")
+        # Load sparse artifacts (current bundle names; legacy names tolerated)
+        sparse_path = next(
+            (
+                config.model_dir / n
+                for n in ("reference_tfidf.npz", "reference_sparse_matrix.npz")
+                if (config.model_dir / n).exists()
+            ),
+            config.model_dir / "reference_tfidf.npz",
+        )
+        engine._sparse_matrix = load_npz(sparse_path)
+        vectorizer_path = next(
+            (
+                config.model_dir / n
+                for n in ("sparse_vectorizer.joblib", "tfidf_vectorizer.joblib")
+                if (config.model_dir / n).exists()
+            ),
+            config.model_dir / "tfidf_vectorizer.joblib",
+        )
+        engine._vectorizer = joblib.load(vectorizer_path)
 
         # Build block indexes
         engine._block_indexes = engine._build_block_indexes()
+
+        # Load F2LLM dense embeddings + ANN index (SOTA path; optional)
+        reference_embeddings, dense_nn = _load_dense_artifacts(config, engine._reference)
 
         # Create candidate index
         engine._index = CandidateIndex(
@@ -504,27 +654,50 @@ class NayoseEngine:
             engine._vectorizer,
             engine._block_indexes,
             config,
+            reference_embeddings=reference_embeddings,
+            dense_nn=dense_nn,
         )
 
-        # Load models
-        engine._pair_model = joblib.load(config.model_dir / "pair_verifier.joblib")
+        # Load models (native LightGBM booster; legacy joblib tolerated)
+        engine._pair_model = load_pair_model(config.model_dir)
         engine._pair_calibrator = joblib.load(config.model_dir / "pair_calibrator.joblib")
 
-        # Load entity mappings
-        engine._canonical = pd.read_parquet(config.model_dir / "entity_index.parquet")
-        mapping = pd.read_parquet(config.model_dir / "record_entity_mapping.parquet")
+        # Load entity mappings (current bundle names; legacy names tolerated)
+        canonical_path = next(
+            (
+                config.model_dir / n
+                for n in ("canonical_entities.parquet", "entity_index.parquet")
+                if (config.model_dir / n).exists()
+            ),
+            config.model_dir / "entity_index.parquet",
+        )
+        mapping_path = next(
+            (
+                config.model_dir / n
+                for n in ("record_to_nayose.parquet", "record_entity_mapping.parquet")
+                if (config.model_dir / n).exists()
+            ),
+            config.model_dir / "record_entity_mapping.parquet",
+        )
+        engine._canonical = pd.read_parquet(canonical_path)
+        mapping = pd.read_parquet(mapping_path)
         engine._record_to_nayose = dict(zip(mapping.record_id.astype(str), mapping.nayose_id))
 
         return engine
 
     @classmethod
     def _guard_generation_match(cls, config, reference: pd.DataFrame) -> None:
-        manifest_hits = [config.model_dir / n for n in ("run_manifest.json", "training_manifest.json")]
+        manifest_hits = [
+            config.model_dir / n for n in ("run_manifest.json", "training_manifest.json")
+        ]
         manifest_path = next((p for p in manifest_hits if p.exists()), None)
         if manifest_path is None:
-            print("WARN: no run/training manifest next to the model bundle; generation linkage not verified.")
+            print(
+                "WARN: no run/training manifest next to the model bundle; generation linkage not verified."
+            )
             return
         import json as _json
+
         stored = _json.loads(manifest_path.read_text(encoding="utf-8")).get("data_fingerprint")
         if not stored:
             print("WARN: manifest has no data_fingerprint; skipping generation linkage check.")

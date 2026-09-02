@@ -20,14 +20,22 @@ python scripts/generate_data.py --profile smoke   # headless pipeline (CLI == no
 | `tests/` | Unit tests only — must never require external data or downloads |
 | `scripts/generate_data.py` | Headless generation CLI; writes the exact same tables as the notebook |
 | `synthetic_data.ipynb` / `nayose.ipynb` | Thin drivers / reports (do **not** add logic here) |
-| `data/`, `models/`, `nayose_output*/` | Gitignored runtime artifacts (regenerate, never commit) |
+| `data/raw` | Immutable reference-data cache (ken_all, personas, EDINET) — never mutate |
+| `data/generations/gen_*` + `data/current` | Immutable dataset products; `current` is the consumer alias |
+| `models/runs/run_*` + `models/current` + `registry.json` | Immutable model bundles & promotion alias |
+| `data/`, `models/` | Gitignored runtime artifacts (regenerate, never commit) |
 
 ## Contract (do not break)
 
-- The generator writes `reference_records`, `incoming_queries` + six hidden
-  tables under `data/ground_truth/` (`record_truth`, `party_truth`,
+- The generator writes to a new `data/generations/gen_<ts>_<hash>/` and points
+  `data/current` at it: `reference_records`, `incoming_queries` + six hidden
+  tables under `ground_truth/` (`record_truth`, `party_truth`,
   `relation_truth`, `query_truth`, `evaluation_truth`, `field_lineage`) +
-  `generation_manifest.json` — exactly what `nayose.ipynb` reads.
+  `generation_manifest.json` (with `data_fingerprint`).
+- The matcher reads `data/current` and writes bundles under
+  `models/runs/run_<ts>_<hash>`, promoting `models/current`.
+- `NayoseEngine.load` refuses a bundle whose fingerprint doesn't match the
+  reference — never disable that guard.
 - Visible tables must never leak hidden columns
   (`truth_id`, `scenario`, `split`, `record_quality`, `transformation`, ...).
 - Every record/query field must have a lineage row
@@ -42,3 +50,8 @@ python scripts/generate_data.py --profile smoke   # headless pipeline (CLI == no
 - Do not install new deps into the shared `.venv` without adding them to
   `pyproject.toml` first.
 - Do not change random-seed defaults silently — outputs must be seed-reproducible.
+- Do not joblib-pickle the LightGBM pair model for new bundles — write the
+  native text booster (`booster_.save_model`); pickle+torch(MPS) deadlock.
+  For pure-sklearn serving bundles use `NAYOSE_PAIR_MODEL=sklearn`.
+- Embeddings are cached per (data fingerprint, model id) inside the generation
+  dir; do not recompute them for an unchanged generation.

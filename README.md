@@ -65,11 +65,11 @@ python nayose_cli.py --interactive
 ├── nayose_cli.py               # CLI interface
 │
 ├── data/                       # Training data (gitignored)
-│   ├── reference_records.parquet   # model-visible customer records (dirty)
-│   ├── incoming_queries.parquet   # model-visible benchmark queries
-│   ├── agencies.parquet
-│   ├── ken_all.zip / ken_all.csv / persona_names.parquet   # cached real data
-│   └── ground_truth/              # hidden truth (never model-visible)
+│   ├── raw/                        # immutable reference data (ken_all, personas, EDINET)
+│   ├── generations/gen_<ts>_<hash>/   # one immutable dataset product per run
+│   │   ├── reference_records.parquet / incoming_queries.parquet / agencies.parquet
+│   │   └── ground_truth/          # six hidden truth tables + field lineage
+│   └── current -> generations/gen_<ts>_<hash>   # promoted generation (consumer-facing)
 │       ├── record_truth.parquet
 │       ├── party_truth.parquet
 │       ├── relation_truth.parquet
@@ -102,14 +102,55 @@ python nayose_cli.py --interactive
 | `NayoseEngine` | Facade | Single entry point |
 | `normalize_*()` | SRP | Field normalization |
 
+## Model family (SOTA path)
+
+`NAYOSE_MODEL_FAMILY` (default `f2llm`) selects the dense embedding path:
+
+| Family | Embedding | Notes |
+|---|---|---|
+| `f2llm` (default) | `codefuse-ai/F2LLM-v2-1.7B` (Qwen3-based, dim 2048) | SOTA semantic retrieval; weights auto-cache (~3.2 GB); offline fallback to `-0.6B` |
+| `f2llm_0.6b` | `codefuse-ai/F2LLM-v2-0.6B` | ~3–4× faster encode, dim 1024 |
+| `ruri` | F2LLM-v2-0.6B + ruri cross-encoder reranker | legacy/A-B entry |
+| `qwen` | Qwen3-Embedding/Reranker-0.6B | optional |
+| `off` | — | SVD fallback baseline |
+
+Optimizations for MPS + time complexity:
+
+- embedding encode on **MPS in fp16**, batched (`NAYOSE_NEURAL_BATCH`);
+- **reference embeddings cached on disk** keyed by (data fingerprint, model id) — encode once per generation, later runs are O(reload);
+- **usearch (HNSW)** ANN index for dense retrieval instead of brute-force;
+- exact blocks + character sparse retrieval remain as high-precision anchors.
+
+> One-time cold-encode cost (Apple MPS, 1.7B): ~50–120 ms/text → ~2–4 h for 100k records, paid once per generation and cached. Use `f2llm_0.6b` for quick exploratory runs.
+
+## Model saving / inference (run bundles)
+
+`nayose.ipynb` writes each train/evaluate into an immutable model bundle and promotes it via a symlink:
+
+```
+models/
+├── registry.json                     # run_id → bundle, config/data hashes, backends, stage metrics
+├── runs/run_<ts>_<hash>/             # frames + models + reference_sparse_matrix + embeddings + run_manifest
+└── current -> runs/run_<ts>_<hash>   # promoted bundle (consumer-facing)
+```
+
+`NayoseEngine.load(model_dir="models/current", data_dir="data/current")`:
+1. **fingerprint-checks** bundle vs reference (refuses stale data↔model pairings);
+2. loads sparse TF-IDF + **F2LLM dense embeddings with usearch HNSW**;
+3. loads the pair verifier — **native LightGBM text booster** when available, else joblib;
+4. serves `recommend()` = normalize → blocks ∪ sparse ∪ dense retrieval → calibrated pair probabilities → entity decision.
+
+> MPS note: joblib-restored LightGBM and sentence-transformers encoding deadlock in one process on Apple Silicon. Serve the pair model via the native text booster (default when trained with LightGBM), or train with `NAYOSE_PAIR_MODEL=sklearn` for a pure-sklearn serving bundle. Both are recorded in `registry.json`.
+
 ## Performance
 
 | Metric | Value |
 |--------|-------|
-| Load time | ~5 seconds |
-| Inference | ~0.2 seconds/query |
-| Training | ~34 minutes (214k records) |
-| B³ F1 | 76.1% |
+| Bundle load | ~0.6 s (guard passes, usearch index ready) |
+| Inference (warm) | ~0.1 s/query |
+| Inference (cold, first) | ~12 s (1.7B encoder load, cached engine) |
+| Training (smoke, f2llm+MPS) | ~48 s end-to-end (embeddings cached) |
+| B³ F1 (smoke) | 96.8–96.9 %; top-1 identity 96.8 % (f2llm) vs 94.7 % (off) |
 
 ## Dependencies
 

@@ -41,9 +41,11 @@ jobs:
           uv run python - <<'PY'
           import json, pandas as pd
           for t in ("record_truth", "evaluation_truth", "query_truth", "field_lineage"):
-              df = pd.read_parquet(f"/tmp/smoke/ground_truth/{t}.parquet")
+              df = pd.read_parquet(f"/tmp/smoke/current/ground_truth/{t}.parquet")
               assert len(df) > 0, t
-          ref = pd.read_parquet("/tmp/smoke/reference_records.parquet")
+          ref = pd.read_parquet("/tmp/smoke/current/reference_records.parquet")
+          manifest = json.load(open("/tmp/smoke/current/generation_manifest.json"))
           assert ref.record_id.is_unique and "truth_id" not in ref.columns
+          assert manifest.get("data_fingerprint"), "fingerprint missing"
           print("contract OK")
           PY
