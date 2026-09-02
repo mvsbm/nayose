@@ -123,6 +123,46 @@ Optimizations for MPS + time complexity:
 
 > One-time cold-encode cost (Apple MPS, 1.7B): ~50–120 ms/text → ~2–4 h for 100k records, paid once per generation and cached. Use `f2llm_0.6b` for quick exploratory runs.
 
+## Tunable parameters (hyperparameters) — all env-overridable
+
+| Group | Env | Default | Meaning |
+|---|---|---|---|
+| Data gen | `NAYOSE_SEED` | 42 | RNG seed (reproducibility) |
+| | `NAYOSE_PROFILE` | generate_only | preflight/smoke/mac/large_mac/generate_only (size) |
+| | `NAYOSE_DIFFICULTY` | realistic | debug/realistic/severe (dirtiness rates) |
+| | `NAYOSE_N_PARTIES` | 0 | override party count |
+| Retrieval | `NAYOSE_EXACT_BLOCK_CAP` | 80 | block-exhaustive cap (skips oversized blocks) |
+| | `NAYOSE_SPARSE_TOPK` / `NAYOSE_DENSE_TOPK` | 24 / 16 | k per retrieval channel |
+| | `NAYOSE_CANDIDATE_CAP` | 80 | max candidate records per query |
+| | `NAYOSE_SPARSE_BATCH` / `NAYOSE_NEURAL_BATCH` | 512 / 16 | batch sizes |
+| Embeddings | `NAYOSE_EMBEDDING_MODEL` | F2LLM-v2-1.7B | dense encoder (0.6B/1.7B) |
+| | `NAYOSE_DEVICE` | auto | mps/cuda/cpu |
+| | `NAYOSE_USE_DENSE` | 1 | dense channel on/off |
+| | `NAYOSE_SVD_DIM` | 32 | SVD fallback dims (`off` model) |
+| Pair model | `NAYOSE_PAIR_MODEL` | auto | auto/lightgbm/sklearn |
+| | `NAYOSE_NEG_PER_POS` | 6 | negatives per positive in training sample |
+| | `NAYOSE_MODEL_THREADS` | 2 | worker threads |
+| Calibration/decision | `NAYOSE_PAIR_AUTO_PRECISION` | 0.985 | Wilson lower-bound target (train-set-proof) |
+| | `NAYOSE_PAIR_REVIEW_PRECISION` | 0.80 | review threshold target |
+| | `NAYOSE_ENTITY_AUTO_PRECISION` | 0.97 | entity auto precision target |
+| | `NAYOSE_ENTITY_MARGIN` | 0.06 | margin over second entity |
+| | `NAYOSE_ENTITY_OVERRIDE` | 0 | force manifest thresholds off |
+
+LightGBM internals (n_estimators=260, lr=0.035, num_leaves=31, …) live in the
+matcher notebook's `train_pair_model`; the sklearn HistGB backend is the
+MPS-serving alternative.
+
+## Confusion matrices & evaluation discipline
+
+- **Unseen test set**: edges/queries with `pair_split`/`query_split == test` are
+  never used for training or threshold calibration (also reported per-split).
+- Every run saves `pair_confusion_test.parquet` (TP/FP/TN/FN, precision,
+  recall, specificity, F1, AUC @ auto threshold) and `query_confusion.parquet`
+  (predicted action × expected-existence per scenario) into the bundle, and
+  prints both with the run.
+- Candidate (retrieval) recall is reported *separately* from classifier
+  precision exactly so retrieval ease is not mistaken for matching accuracy.
+
 ## Model saving / inference (run bundles)
 
 `nayose.ipynb` writes each train/evaluate into an immutable model bundle and promotes it via a symlink:
