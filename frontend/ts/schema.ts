@@ -59,3 +59,6 @@ export const num = (v: unknown, fallback = 0): number => {
 };
 
 export const str = (v: unknown): string => (v == null ? "" : String(v));
+
+export const esc = (s: unknown): string =>
+  String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));

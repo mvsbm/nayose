@@ -12,21 +12,25 @@ REPO = Path(__file__).resolve().parents[1]
 def _py_contract() -> dict[str, list[str]]:
     mod = ast.parse((REPO / "api" / "main.py").read_text(encoding="utf-8"))
     for node in mod.body:
-        if not isinstance(node, ast.Assign):
+        if isinstance(node, ast.Assign):
+            targets = [t for t in node.targets if isinstance(t, ast.Name)]
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            targets = [node.target]
+        else:
             continue
-        for target in node.targets:
-            if not (isinstance(target, ast.Name) and target.id == "REQUIRED_COLUMNS"):
-                continue
-            if not isinstance(node.value, ast.Dict):
-                raise AssertionError("REQUIRED_COLUMNS must be a dict literal")
-            contract: dict[str, list[str]] = {}
-            for key, val in zip(node.value.keys, node.value.values, strict=True):
-                if not (isinstance(key, ast.Constant) and isinstance(val, ast.List)):
-                    raise AssertionError("REQUIRED_COLUMNS entries must be str -> list")
-                contract[str(key.value)] = [
-                    str(c.value) for c in val.elts if isinstance(c, ast.Constant)
-                ]
-            return contract
+        if "REQUIRED_COLUMNS" not in {t.id for t in targets}:
+            continue
+        value = node.value
+        if not isinstance(value, ast.Dict):
+            raise AssertionError("REQUIRED_COLUMNS must be a dict literal")
+        contract: dict[str, list[str]] = {}
+        for key, val in zip(value.keys, value.values, strict=True):
+            if not (isinstance(key, ast.Constant) and isinstance(val, ast.List)):
+                raise AssertionError("REQUIRED_COLUMNS entries must be str -> list")
+            contract[str(key.value)] = [
+                str(item.value) for item in val.elts if isinstance(item, ast.Constant)
+            ]
+        return contract
     raise AssertionError("REQUIRED_COLUMNS not found")
 
 

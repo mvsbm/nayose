@@ -232,8 +232,27 @@ NAYOSE_MODELS_DIR=models NAYOSE_DATA_DIR=data/current \
 Views: 検索（既定画面）・照合テスト (live `/api/recommend`) · レビュー待機
 （件数・確率フィルタ・既読保存）・レコード比較（パンくず・エンティティ連携）・
 混同行列（ヒート・内訳ドリル）・指標（バー付き）・エンティティ（lineage 表示）。
-API: `/api/runs`, `/api/query` (SELECT/WITH whitelist, row cap, bundle/data
-roots), `/api/recommend` (fingerprint-guarded engine).
+Architecture (hexagonal): `domain/` (pure schema+core) · `port.ts`
+(QueryPort/Storage interfaces) · `infra/` (ApiAdapter + cache, LocalStorageStore) ·
+`features/` (views depend only on the port) · `store.ts` (observable store with
+Command/undo for decisions) · `app.ts` composition root (`boot()` injects
+port/store/runs; **no import side effects**).
+
+API (typed domain endpoints; raw SQL only behind `NAYOSE_DEBUG_SQL=1`):
+`/api/runs` · `/api/entities?q=` · `/api/entity/{id}` (lineage) ·
+`/api/review?min_p=&offset=` · `/api/metrics` · `/api/confusion` ·
+`/api/compare` · `/api/recommend` (fingerprint-guarded) · `/api/stats`
+(per-endpoint hits+ms). Caching: server-side per-run LRU + client adapter memo;
+`lineage_summary.parquet` materialized at matcher save for fast drill.
+
+Testing policy (hermetic, deterministic, enforced):
+- TS unit: `frontend/test/core.test.mjs` (pure core, node:test).
+- TS functional: `frontend/test/view.test.mjs` — boots the app with a MockPort
+  in jsdom; asserts real flows (default route, search, palette keyboard,
+  review check+undo, confusion drill). No network.
+- Python: API functional tests over a fake bundle + cross-language schema
+  contract test (schema.ts ↔ REQUIRED_COLUMNS) + `tests/test_frontend_gate.py`
+  runs `npm test` (skips when node/npm absent).
 
 Frontend is **strict TypeScript** compiled to ESM (`tsc`), no bundler:
 

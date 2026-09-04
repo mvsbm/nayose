@@ -62,6 +62,14 @@ python scripts/generate_data.py --profile smoke   # headless pipeline (CLI == no
   typecheck`, keep `frontend/js/` generated (build & commit). Keep
   `frontend/ts/schema.ts` in sync with `api/main.py REQUIRED_COLUMNS`
   (test_schema_contract.py enforces).
+- Frontend architecture is hexagonal: views depend only on `port.ts` interfaces;
+  state flows through `store.ts` (Command/undo); `app.ts` is a composition root
+  with `boot({port, store, runs})` and no import side effects. New views → new
+  feature module + port method; never call fetch/SQL/localStorage directly in views.
+- Server API is typed domain endpoints (no raw SQL to clients; `NAYOSE_DEBUG_SQL=1`
+  only for debugging). Every endpoint records stats; keep the fake-bundle API
+  tests green for new endpoints. Run `npm test` (tsc + node:test) — pytest's
+  frontend gate enforces it.
 - The web dashboard (`frontend/` + `api/main.py`) must keep the F1-F5 views,
   validate inputs, and stay no-build (vanilla ESM). DuckDB queries are
   SELECT/WITH-only over 'bundle/' and 'data/' roots with a row cap; the data

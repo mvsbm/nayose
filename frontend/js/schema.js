@@ -29,3 +29,4 @@ export const num = (v, fallback = 0) => {
     return Number.isFinite(n) ? n : fallback;
 };
 export const str = (v) => (v == null ? "" : String(v));
+export const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
