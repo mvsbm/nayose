@@ -33,6 +33,25 @@ DATA_DIR = Path(os.getenv("NAYOSE_DATA_DIR", "data/current"))
 FRONTEND_DIR = Path(os.path.dirname(__file__)).parent / "frontend"
 MAX_ROWS = 10000
 
+REQUIRED_COLUMNS = {
+    "full_dataset_summary": ["metric", "value"],
+    "full_dataset_metrics": ["section", "metric", "value"],
+    "pair_confusion_test": ["metric", "value"],
+    "query_confusion": ["scenario", "action", "expected_no", "expected_yes"],
+    "review_queue": ["left_record_id", "right_record_id"],
+    "canonical_entities": ["nayose_id", "name_kanji", "name_kana", "record_count"],
+    "record_to_nayose": ["record_id", "nayose_id"],
+}
+
+
+def validate_frame_columns(stem: str, signature: dict[str, list[str]], columns: list[str]) -> None:
+    """Fail fast (server-side) when a bundle frame drifts from the contract."""
+    required = signature.get(stem)
+    if required:
+        missing = [c for c in required if c not in columns]
+        if missing:
+            raise HTTPException(400, f"bundle frame {stem} missing columns {missing}")
+
 
 # --------------------------------------------------------------------------
 # Repository: run bundles

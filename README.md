@@ -229,10 +229,24 @@ NAYOSE_MODELS_DIR=models NAYOSE_DATA_DIR=data/current \
     .venv/bin/python -m api.main        # → http://127.0.0.1:8000
 ```
 
-Views: 検索・照合テスト (live `/api/recommend`) · レビュー待機・レコード比較 ·
-混同行列 · 指標 · エンティティ（lineage 由来表示）。 API: `/api/runs`,
-`/api/query` (SELECT/WITH whitelist, row cap), `/api/recommend`
-(fingerprint-guarded engine).
+Views: 検索（既定画面）・照合テスト (live `/api/recommend`) · レビュー待機
+（件数・確率フィルタ・既読保存）・レコード比較（パンくず・エンティティ連携）・
+混同行列（ヒート・内訳ドリル）・指標（バー付き）・エンティティ（lineage 表示）。
+API: `/api/runs`, `/api/query` (SELECT/WITH whitelist, row cap, bundle/data
+roots), `/api/recommend` (fingerprint-guarded engine).
+
+Frontend is **strict TypeScript** compiled to ESM (`tsc`), no bundler:
+
+```bash
+(cd frontend && npm install)          # once (typescript)
+(cd frontend && npm run typecheck)    # strict type gate
+(cd frontend && npm run build)        # ts/ -> js/ (committed, served directly)
+```
+
+Contracts are Rust-disciplined: `frontend/ts/schema.ts` mirrors
+`api/main.py REQUIRED_COLUMNS`, and `tests/test_schema_contract.py` fails CI
+if they drift; the data adapter validates shapes at runtime before render.
+Never hand-edit `frontend/js/` (generated).
 
 | View | Content |
 |---|---|

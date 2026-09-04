@@ -58,6 +58,10 @@ python scripts/generate_data.py --profile smoke   # headless pipeline (CLI == no
   the data-driven homophone pools (`build_homophone_map`) and kana-form events.
 - Missingness is SYSTEMATIC: tune `field_availability` per channel; legacy has
   no email (keep=0.0). Keep `channel_events` as the source-document bundles.
+- Frontend is strict-TS only: edit `frontend/ts/`, run `npm --prefix frontend run
+  typecheck`, keep `frontend/js/` generated (build & commit). Keep
+  `frontend/ts/schema.ts` in sync with `api/main.py REQUIRED_COLUMNS`
+  (test_schema_contract.py enforces).
 - The web dashboard (`frontend/` + `api/main.py`) must keep the F1-F5 views,
   validate inputs, and stay no-build (vanilla ESM). DuckDB queries are
   SELECT/WITH-only over 'bundle/' and 'data/' roots with a row cap; the data
