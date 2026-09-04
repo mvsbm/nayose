@@ -42,6 +42,31 @@ python scripts/generate_data.py --profile smoke   # headless pipeline (CLI == no
   (`field_lineage`: item_id × field, canonical vs observed, owner, transformation).
 - Notebook cell 9 and `tests/` enforce this; run them before changing the schema.
 
+## How to add a feature (repeatable path)
+
+New VIEW (#/route):
+1. `port.ts`: add the `QueryPort` method(s) the view needs.
+2. `api/main.py`: add the typed endpoint (DuckDB SQL lives HERE, server-owned);
+   wrap with `op("name", lambda: ...)`; add a fixture-backed test in `tests/test_api.py`.
+3. `ts/infra.ts`: implement the port method on `ApiAdapter` (+ memo key).
+4. `ts/features.ts`: new `mountX(el, port, store)`; register in `app.ts` VIEWS +
+   palette nav; add the sidebar link in `index.html`.
+5. Tests: `MockPort` in `test/view.test.mjs` + a flow test; server test above.
+6. `python scripts/audit_repo.py` — all gates green.
+
+New decision/state (e.g., review verdicts):
+- Store it in `Store` + `port.saveDecisions/loadDecisions` (server: models/decisions).
+- Commands live in `store.ts`; keep undo (never mutate without a Command).
+
+FIX a bug:
+- Write the failing test first (unit `core`, functional `view`, API, or E2E).
+- Reproduce, fix at the layer that owns the fact (port/backend/view), no shotgun edits.
+
+Definition of done (EVERY change):
+- `python scripts/audit_repo.py` PASS (ruff, mypy, tsc, npm test, pytest incl.
+  schema-contract + frontend gate). E2E (NAYOSE_E2E=1) when touch server/urls/views.
+- No new raw SQL on the client; no new dependencies without pyproject/package.json entry.
+
 ## Do not
 
 - Do not add logic to notebooks (thin driver rule).
@@ -86,3 +111,8 @@ python scripts/generate_data.py --profile smoke   # headless pipeline (CLI == no
   For pure-sklearn serving bundles use `NAYOSE_PAIR_MODEL=sklearn`.
 - Embeddings are cached per (data fingerprint, model id) inside the generation
   dir; do not recompute them for an unchanged generation.
+## Legacy (refactor targets, do not extend)
+
+- `nayose_cli.py`, `nayose_inference.py` — the original app layer (paired CLI +
+  engine). Kept stable and excluded from lint/type gates (ruff/mypy per-file
+  ignores); new logic goes into `api/` + `frontend/` + `synthetic/` instead.

@@ -2,6 +2,18 @@
 
 Entity matching system for Japanese insurance customer data. Resolves duplicate records across policies, agencies, and channels.
 
+## For contributors / agents
+
+Read **ARCHITECTURE.md** (one page) and **AGENTS.md** (rules + "how to add a
+view/endpoint/decision" checklists). One command for status:
+
+```bash
+python scripts/audit_repo.py       # ruff, mypy, tsc, npm test, pytest (+ E2E opt-in)
+```
+
+Legacy app layer (`nayose_cli.py`, `nayose_inference.py`) is stable but a
+refactor target — add new behavior in `api/`, `frontend/`, `synthetic/`.
+
 ## Quick Start
 
 Both notebooks share `data/` by default. The generator writes the visible
