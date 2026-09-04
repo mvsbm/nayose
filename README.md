@@ -214,10 +214,25 @@ MPS-serving alternative.
 - Candidate (retrieval) recall is reported *separately* from classifier
   precision exactly so retrieval ease is not mistaken for matching accuracy.
 
-## Audit dashboard (F1-F5, checklist-mapped)
+## Web dashboard (F1-F5, modern frontend)
 
-Each run bundle ships a self-contained `dashboard.html` (rendered by
-`synthetic/report.py` into `runs/run_*/dashboard.html`):
+A no-build modern frontend (`frontend/`) + thin API (`api/main.py`), served
+locally by one process. DuckDB executes read-only SQL over the run bundle
+parquets (single local process; swap the data adapter to DuckDB-WASM later).
+Design follows the 2025 consensus principles: calm tech, progressive
+disclosure, uncertainty-first (verdict + lineage shown in flow), URL-as-state
+routes (`#/entity/:id`, `#/compare/:l/:r`), ⌘K palette, local-first,
+reduced-motion + AA contrast (front-end checklist aligned).
+
+```bash
+NAYOSE_MODELS_DIR=models NAYOSE_DATA_DIR=data/current \
+    .venv/bin/python -m api.main        # → http://127.0.0.1:8000
+```
+
+Views: 検索・照合テスト (live `/api/recommend`) · レビュー待機・レコード比較 ·
+混同行列 · 指標 · エンティティ（lineage 由来表示）。 API: `/api/runs`,
+`/api/query` (SELECT/WITH whitelist, row cap), `/api/recommend`
+(fingerprint-guarded engine).
 
 | View | Content |
 |---|---|
@@ -256,6 +271,14 @@ The dense-vs-sparse identity gap grows with scale+hardness (smoke +2.8pts,
 mac +5.6, 100k **+11.1**): sparse char-ngrams saturate retrieval on small data
 but cannot disambiguate same-name twins at scale. Dense embeddings are the
 ranking/robustness layer; keep them on by default.
+
+## Structure (surface)
+
+```
+frontend/            no-build ESM app (index.html, styles.css, js/app.js)
+api/main.py          FastAPI: static + /api/runs + /api/query (DuckDB) + /api/recommend
+tests/test_api.py    API contract tests (self-contained fake bundle)
+```
 
 ## Model saving / inference (run bundles)
 

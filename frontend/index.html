@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="ja" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Nayose 照合監査ダッシュボード — エンティティ照合の検索・レビュー・監査">
+  <title>Nayose 照合監査</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <a class="skip" href="#view">本文へスキップ</a>
+  <header class="glass">
+    <h1>Nayose <span class="muted">照合監査</span></h1>
+    <label class="run"><span class="muted">run</span>
+      <select id="run" aria-label="実行バンドル選択"></select>
+    </label>
+    <button id="cmd" type="button" class="chip" aria-label="コマンドパレット">⌘K 検索</button>
+    <button id="theme" type="button" class="chip" aria-label="テーマ切替">テーマ</button>
+  </header>
+  <div class="shell">
+    <nav class="glass side" aria-label="セクション">
+      <a href="#/search" data-nav="search">検索</a>
+      <a href="#/review" data-nav="review">レビュー待機</a>
+      <a href="#/confusion" data-nav="confusion">混同行列</a>
+      <a href="#/metrics" data-nav="metrics">指標</a>
+      <a href="#/entities" data-nav="entities">エンティティ</a>
+    </nav>
+    <main id="view" tabindex="-1"></main>
+  </div>
+  <div id="palette" hidden aria-label="コマンドパレット">
+    <input id="palette-input" type="search" placeholder="検索・移動…（例：N0000123）" autocomplete="off">
+    <ul id="palette-results" role="listbox"></ul>
+  </div>
+  <template id="tpl">
+    <div class="card" data-anchor><h3 data-f="name"></h3><div class="members" data-f="meta"></div></div>
+  </template>
+  <script type="module" src="/static/js/app.js"></script>
+</body>
+</html>

@@ -68,7 +68,7 @@ check_untyped_defs = true
 no_implicit_optional = true
 warn_redundant_casts = true
 warn_unused_ignores = true
-exclude = ["build/", ".venv/"]
+exclude = ["build/", ".venv/", "nayose_inference.py", "nayose_cli.py"]
 
 # pandas ships no stubs in this env; numpy 2.x stubs require py3.12 syntax.
 # Both are treated as Any (their behavior is covered by runtime tests).
@@ -79,4 +79,13 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["pandas.*", "datasets", "pykakasi", "jaconv", "phonenumbers", "JP.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["joblib", "scipy.*", "sklearn.*", "duckdb", "fastapi", "starlette.*", "uvicorn.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["nayose_inference", "nayose_cli"]
+follow_imports = "skip"
 ignore_missing_imports = true
