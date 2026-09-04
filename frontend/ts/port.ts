@@ -54,9 +54,12 @@ export interface QueryPort {
   entity(id: string): Promise<EntityDetail>;
   review(minP: number, offset: number, limit: number): Promise<ReviewPage>;
   metrics(): Promise<MetricsViewData>;
+  metricsFor(run: string): Promise<MetricsViewData>;
   confusion(): Promise<ConfusionData>;
   compare(l: string, r: string): Promise<Record<string, unknown>[]>;
   recommend(record: Record<string, string>): Promise<RecommendResult>;
+  loadDecisions(): Promise<Array<{ left: string; right: string }>>;
+  saveDecisions(items: Array<{ left: string; right: string; ts: string }>): Promise<void>;
 }
 
 export interface Storage {

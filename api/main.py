@@ -313,6 +313,27 @@ class QueryService:
             con.close()
 
 
+class DecisionsStore:
+    """Operational review state per run (separate from immutable bundles)."""
+
+    def _path(self, run_id: str) -> Path:
+        root = MODELS_DIR / "decisions"
+        root.mkdir(parents=True, exist_ok=True)
+        return root / f"{run_id}.json"
+
+    def load(self, run_id: str) -> list[dict[str, Any]]:
+        path = self._path(run_id)
+        if not path.exists():
+            return []
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def save(self, run_id: str, items: list[dict[str, Any]]) -> None:
+        path = self._path(run_id)
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(items, ensure_ascii=False, indent=1), encoding="utf-8")
+        tmp.replace(path)
+
+
 class RecommendService:
     def __init__(self, repo: RunRepository, data_dir: Path):
         self.repo = repo
@@ -349,6 +370,7 @@ class RecommendService:
 RUNS = RunRepository(MODELS_DIR)
 QUERIES = QueryService(RUNS, DATA_DIR)
 RECOMMEND = RecommendService(RUNS, DATA_DIR)
+DECISIONS = DecisionsStore()
 
 app = FastAPI(title="Nayose — 照合監査ダッシュボード", version="0.5")
 app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
@@ -432,6 +454,30 @@ class RecommendIn(BaseModel):
 @app.post("/api/recommend")
 def recommend(payload: RecommendIn) -> dict[str, Any]:
     return op("recommend", lambda: RECOMMEND.recommend(payload.run_id, payload.record))
+
+
+class DecisionsIn(BaseModel):
+    run_id: str = Field(..., max_length=200)
+    items: list[dict[str, str]] = Field(default_factory=list)
+
+
+@app.get("/api/decisions")
+def decisions_get(run_id: str = "") -> dict[str, Any]:
+    return {"items": op("decisions", lambda: DECISIONS.load(run_id))}
+
+
+@app.put("/api/decisions")
+def decisions_put(payload: DecisionsIn) -> dict[str, Any]:
+    items = [
+        {
+            "left": str(i.get("left", "")),
+            "right": str(i.get("right", "")),
+            "ts": str(i.get("ts", "")),
+        }
+        for i in payload.items
+    ]
+    op("decisions_save", lambda: DECISIONS.save(payload.run_id, items))
+    return {"saved": len(items)}
 
 
 class QueryIn(BaseModel):

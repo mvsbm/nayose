@@ -193,6 +193,20 @@ def test_recommend_rejects_unsupported_bundle(client):
     assert res.status_code == 409
 
 
+def test_decisions_roundtrip(client):
+    assert client.get("/api/decisions?run_id=run_fake").json()["items"] == []
+    put = client.put(
+        "/api/decisions",
+        json={
+            "run_id": "run_fake",
+            "items": [{"left": "R0000000000", "right": "R0000000001", "ts": "now"}],
+        },
+    )
+    assert put.status_code == 200 and put.json()["saved"] == 1
+    items = client.get("/api/decisions?run_id=run_fake").json()["items"]
+    assert items[0]["left"] == "R0000000000" and items[0]["right"] == "R0000000001"
+
+
 def test_raw_sql_is_disabled_by_default(client):
     res = client.post(
         "/api/query",

@@ -66,6 +66,10 @@ python scripts/generate_data.py --profile smoke   # headless pipeline (CLI == no
   state flows through `store.ts` (Command/undo); `app.ts` is a composition root
   with `boot({port, store, runs})` and no import side effects. New views → new
   feature module + port method; never call fetch/SQL/localStorage directly in views.
+- Decision state persists server-side under `models/decisions/<run>.json`
+  (GET/PUT /api/decisions); the review Command keeps undo on the client.
+- New QueryPort operations need ApiAdapter + MockPort implementations and a
+  fixture-backed API test (server) + a mock-port view test (frontend).
 - Server API is typed domain endpoints (no raw SQL to clients; `NAYOSE_DEBUG_SQL=1`
   only for debugging). Every endpoint records stats; keep the fake-bundle API
   tests green for new endpoints. Run `npm test` (tsc + node:test) — pytest's

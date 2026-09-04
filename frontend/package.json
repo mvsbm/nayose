@@ -6,7 +6,8 @@
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
-    "test": "tsc && node --test test/core.test.mjs test/view.test.mjs"
+    "test": "tsc && node --test test/core.test.mjs test/view.test.mjs",
+    "test:e2e": "node --test test/e2e.test.mjs"
   },
   "keywords": [],
   "author": "",
@@ -17,6 +18,7 @@
   },
   "private": true,
   "devDependencies": {
-    "jsdom": "^30.0.1"
+    "jsdom": "^30.0.1",
+    "playwright": "^1.62.1"
   }
 }

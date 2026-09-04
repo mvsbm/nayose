@@ -245,6 +245,19 @@ API (typed domain endpoints; raw SQL only behind `NAYOSE_DEBUG_SQL=1`):
 (per-endpoint hits+ms). Caching: server-side per-run LRU + client adapter memo;
 `lineage_summary.parquet` materialized at matcher save for fast drill.
 
+**Cross-run diff** (`#/compare-runs`): pick run A/B, `ポート.metricsFor(run)` →
+side-by-side KPI table with Δ (green/red deltas, tabular numerals).
+
+**Decision persistence (server-side)**: review 既読 is a Command in the store,
+mirrored to `models/decisions/<run>.json` via `GET/PUT /api/decisions`
+(debounced) — decisions survive across machines/sessions; localStorage remains
+the offline fallback; `取り消し` undoes via the command history.
+
+E2E (real browser, opt-in): `NAYOSE_E2E=1 NAYOSE_E2E_MODELS=… NAYOSE_E2E_DATA=…
+npm --prefix frontend run test:e2e` — starts the server, drives Chromium
+(Playwright), asserts search→entity→review persistence→cross-run diff and the
+⌘K palette flow.
+
 Testing policy (hermetic, deterministic, enforced):
 - TS unit: `frontend/test/core.test.mjs` (pure core, node:test).
 - TS functional: `frontend/test/view.test.mjs` — boots the app with a MockPort

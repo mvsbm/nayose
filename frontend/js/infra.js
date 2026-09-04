@@ -37,7 +37,10 @@ export class ApiAdapter {
         return this.memo("review", `${minP}:${offset}:${limit}`, () => fetchJson(`/api/review?run_id=${encodeURIComponent(this.runId)}&min_p=${minP}&offset=${offset}&limit=${limit}`).then((d) => d));
     }
     metrics() {
-        return this.memo("metrics", "", () => fetchJson(`/api/metrics?run_id=${encodeURIComponent(this.runId)}`).then((d) => d));
+        return this.metricsFor(this.runId);
+    }
+    metricsFor(run) {
+        return this.memo("metrics", run, () => fetchJson(`/api/metrics?run_id=${encodeURIComponent(run)}`).then((d) => d));
     }
     confusion() {
         return this.memo("confusion", "", () => fetchJson(`/api/confusion?run_id=${encodeURIComponent(this.runId)}`).then((d) => d));
@@ -51,5 +54,19 @@ export class ApiAdapter {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ run_id: this.runId, record }),
         }).then((d) => d);
+    }
+    loadDecisions() {
+        return fetchJson(`/api/decisions?run_id=${encodeURIComponent(this.runId)}`).then((d) => d.items);
+    }
+    async saveDecisions(items) {
+        const res = await fetch("/api/decisions", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ run_id: this.runId, items }),
+        });
+        if (!res.ok) {
+            const detail = await res.json().catch(() => null);
+            throw new ApiError((detail && detail.detail) || res.statusText);
+        }
     }
 }

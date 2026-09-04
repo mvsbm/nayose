@@ -64,8 +64,11 @@ export class ApiAdapter implements QueryPort {
     );
   }
   metrics(): Promise<MetricsViewData> {
-    return this.memo("metrics", "", () =>
-      fetchJson(`/api/metrics?run_id=${encodeURIComponent(this.runId)}`).then((d) => d as MetricsViewData),
+    return this.metricsFor(this.runId);
+  }
+  metricsFor(run: string): Promise<MetricsViewData> {
+    return this.memo("metrics", run, () =>
+      fetchJson(`/api/metrics?run_id=${encodeURIComponent(run)}`).then((d) => d as MetricsViewData),
     );
   }
   confusion(): Promise<ConfusionData> {
@@ -86,5 +89,21 @@ export class ApiAdapter implements QueryPort {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ run_id: this.runId, record }),
     }).then((d) => d as RecommendResult);
+  }
+  loadDecisions(): Promise<Array<{ left: string; right: string }>> {
+    return fetchJson(`/api/decisions?run_id=${encodeURIComponent(this.runId)}`).then(
+      (d) => (d as { items: Array<{ left: string; right: string }> }).items,
+    );
+  }
+  async saveDecisions(items: Array<{ left: string; right: string; ts: string }>): Promise<void> {
+    const res = await fetch("/api/decisions", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ run_id: this.runId, items }),
+    });
+    if (!res.ok) {
+      const detail = await res.json().catch(() => null);
+      throw new ApiError((detail && detail.detail) || res.statusText);
+    }
   }
 }

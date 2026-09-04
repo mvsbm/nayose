@@ -211,3 +211,39 @@ export async function mountCompare(el, port, store, l, r) {
       <div class="card"><h3>${esc(r)}</h3>${side(right, left)}</div>
     </div><p class="members">差分行はハイライト表示。</p></div>`;
 }
+export async function mountCompareRuns(el, port, store) {
+    const runs = store.runs.map((r) => r.id);
+    const a = store.run;
+    const b = runs.find((r) => r !== a) ?? a;
+    const opts = (sel) => runs.map((r) => `<option value="${esc(r)}" ${r === sel ? "selected" : ""}>${esc(r)}</option>`).join("");
+    el.innerHTML = `<div class="panel">${crumb("#/compare-runs", "比較")}
+    <div class="card"><div class="toolbar">
+      <label class="members">run A<select id="runA">${opts(a)}</select></label>
+      <label class="members">run B<select id="runB">${opts(b)}</select></label>
+      <button type="button" class="more" id="go">比較</button></div>
+      <div id="out" role="region" aria-live="polite"><div class="members">実行バンドル間の主要指標を比較します。</div></div></div></div>`;
+    const out = el.querySelector("#out");
+    const go = async () => {
+        out.innerHTML = SKELETON(2);
+        try {
+            const [mA, mB] = await Promise.all([
+                port.metricsFor(el.querySelector("#runA").value),
+                port.metricsFor(el.querySelector("#runB").value),
+            ]);
+            const byA = new Map(mA.kpis), byB = new Map(mB.kpis);
+            const rows = [...new Set([...byA.keys(), ...byB.keys()])].map((label) => {
+                const va = byA.get(label) ?? 0, vb = byB.get(label) ?? 0;
+                const delta = vb - va;
+                const cls = Math.abs(delta) > 0.005 ? (delta > 0 ? "ok" : "bad") : "blank";
+                return `<tr><th scope="row">${esc(label)}</th><td>${(va * 100).toFixed(1)}%</td><td>${(vb * 100).toFixed(1)}%</td>
+          <td class="${cls}">${delta >= 0 ? "+" : ""}${(delta * 100).toFixed(1)}%</td></tr>`;
+            }).join("");
+            out.innerHTML = `<h4 class="muted">${esc(el.querySelector("#runA").value)} → ${esc(el.querySelector("#runB").value)}</h4>
+        <table><thead><tr><th>指標</th><th>A</th><th>B</th><th>Δ</th></tr></thead><tbody>${rows}</tbody></table>`;
+        }
+        catch (err) {
+            out.innerHTML = `<p class="members">エラー: ${esc(String(err?.message ?? err))}</p>`;
+        }
+    };
+    el.querySelector("#go").addEventListener("click", () => void go());
+}

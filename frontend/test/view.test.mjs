@@ -35,6 +35,16 @@ const mockPort = {
   metrics() {
     return Promise.resolve({ kpis: [["candidate recall", 0.99], ["B3 F1", 0.96]], extras: { entities: 2, edges: 3, singleton: 0.2 } });
   },
+  metricsFor(run) {
+    return Promise.resolve({ kpis: [["candidate recall", run === "runB" ? 0.95 : 0.99], ["B3 F1", 0.96]], extras: {} });
+  },
+  savedDecisions: [],
+  loadDecisions() {
+    return Promise.resolve(this.savedDecisions);
+  },
+  async saveDecisions(items) {
+    this.savedDecisions = items;
+  },
   confusion() {
     return Promise.resolve({
       pairs: { true_positives: 1, precision: 0.99 },
@@ -67,7 +77,7 @@ beforeEach(async () => {
 
 let bootSeq = 0;
 async function boot() {
-  const { boot } = await import(join(ROOT, "js/app.js") + "?b=" + bootSeq++);
+  const { boot } = await import(join(ROOT, "js/app.js") + "?boot=" + bootSeq++);
   await boot({ port: mockPort, runs: [{ id: "run_fake", current: true, fingerprint: "abc" }] });
   await new Promise((r) => setTimeout(r, 60));
 }
@@ -136,6 +146,31 @@ test("confusion: scenario row renders; click drills decisions", async () => {
   scen.click();
   await wait(20);
   assert.ok(document.querySelector("#drill tbody tr"), "decision drill rendered");
+});
+
+
+
+test("server decisions restore checked state at boot (cross-machine persistence)", async () => {
+  mockPort.savedDecisions = [{ left: "R0000000000", right: "R0000000001" }];
+  await boot();
+  window.location.hash = "#/review";
+  await wait(100);
+  const firstRow = document.querySelector("#view tbody tr");
+  assert.ok(firstRow.classList.contains("checked"), "restored decision marked checked");
+});
+
+test("cross-run diff view renders metrics delta table", async () => {
+  await boot();
+  window.location.hash = "#/compare-runs";
+  await wait(120);
+  const go = document.querySelector("#go");
+  assert.ok(go, "compare panel present");
+  go.click();
+  await wait(120);
+  const table = document.querySelector("#out table");
+  assert.ok(table, "diff table rendered");
+  assert.match(table.textContent, /candidate recall/);
+  assert.match(table.textContent, /−|\+|%/);
 });
 
 test("metrics: KPI cards + bars render from port", async () => {
