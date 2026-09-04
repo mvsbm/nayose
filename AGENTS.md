@@ -58,6 +58,10 @@ python scripts/generate_data.py --profile smoke   # headless pipeline (CLI == no
   the data-driven homophone pools (`build_homophone_map`) and kana-form events.
 - Missingness is SYSTEMATIC: tune `field_availability` per channel; legacy has
   no email (keep=0.0). Keep `channel_events` as the source-document bundles.
+- The audit dashboard (`synthetic.report.render`) must validate the bundle
+  schema before rendering and keep the F1-F5 views; it writes a single
+  self-contained `dashboard.html` into the run bundle (inline CSS/JS is a
+  documented checklist exception for a local offline artifact).
 - Keep `NAYOSE_EXACT_MODE` honored in graph + retrieval when running
   channel-attribution experiments; keep the HARDNESS telemetry print.
 - Do not joblib-pickle the LightGBM pair model for new bundles — write the

@@ -214,6 +214,30 @@ MPS-serving alternative.
 - Candidate (retrieval) recall is reported *separately* from classifier
   precision exactly so retrieval ease is not mistaken for matching accuracy.
 
+## Audit dashboard (F1-F5, checklist-mapped)
+
+Each run bundle ships a self-contained `dashboard.html` (rendered by
+`synthetic/report.py` into `runs/run_*/dashboard.html`):
+
+| View | Content |
+|---|---|
+| F1 指標 | candidate recall / B³ F1 / top-1 / MRR / review / no-match |
+| F2 混同行列 | pair verifier (unseen test) + query-decision confusion |
+| F3 レビュー待機 | uncertain twin/edge queue |
+| F4 エンティティ | cluster cards: canonical + members + field-lineage summary |
+| F5 検索 | debounced fuzzy search over names/phone/postal, capped results |
+
+Design: task-first progressive disclosure, light theme + Japanese labels
+(Noto Sans JP), semantic HTML (`role` landmarks, `aria-live`, AA contrast,
+`focus-visible`, container queries, reduced-motion).
+
+Front-end checklist mapping (thedaviddias/front-end-checklist):
+ticked where applicable (HTML semantics, CSS responsiveness, a11y,
+performance: no chart library, schema-validated at render); single-file
+inline CSS/JS is a documented exception for a local offline artifact;
+web-deployment-only rules (HTTP caching, CDN/SRI, SEO crawlers, PWA) are
+not-applicable to a file — mapping maintained in AGENTS.md.
+
 ## Dense vs sparse — measured at scale
 
 A/B on regenerated 100k-hard data (113,499 parties, 24,522 same-name twin rows,

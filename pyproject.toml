@@ -60,6 +60,7 @@ ignore = ["B008"]  # function calls in argument defaults (standard for dataclass
 [tool.ruff.lint.per-file-ignores]
 "nayose_cli.py" = ["E501", "E402", "B905", "B007"]
 "nayose_inference.py" = ["E501", "E402", "B905", "B007"]
+"synthetic/report.py" = ["E501"]  # template literals (CSS/JS/HTML strings)
 
 [tool.mypy]
 python_version = "3.12"
