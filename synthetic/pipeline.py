@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import subprocess
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -159,13 +160,34 @@ def generate(cfg: SyntheticConfig, rng: np.random.Generator | None = None) -> Pi
     )
 
 
+def _portable_path(path: Path) -> str:
+    try:
+        return path.resolve().relative_to(Path.cwd().resolve()).as_posix()
+    except ValueError:
+        return f"<external>/{path.name}"
+
+
+def _git_revision() -> str:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=Path(__file__).resolve().parents[1],
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+    except OSError:
+        return "unknown"
+    return result.stdout.strip() if result.returncode == 0 else "unknown"
+
+
 def build_manifest(
     cfg: SyntheticConfig, counts: dict[str, int], sources: dict[str, str] | None = None
 ) -> dict:
     """Reproducibility manifest; mirrors what the notebook writes."""
     cfg_json = asdict(cfg)
-    cfg_json["output_dir"] = str(cfg_json["output_dir"])
-    cfg_json["raw_dir"] = str(cfg_json["raw_dir"])
+    cfg_json["output_dir"] = _portable_path(cfg.output_dir or default_data_dir())
+    cfg_json["raw_dir"] = _portable_path(cfg.raw_dir or default_data_dir() / "raw")
     return {
         "schema_version": "3.1",
         "created_at_utc": pd.Timestamp.utcnow().isoformat(),
@@ -178,6 +200,10 @@ def build_manifest(
             "personas": "nvidia/Nemotron-Personas-Japan (CC-BY 4.0)",
             "postal": "Japan Post ken_all",
             "companies": "EDINET edinet2023",
+        },
+        "code": {
+            "git_commit": _git_revision(),
+            "pipeline_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         },
     }
 
@@ -217,7 +243,9 @@ def save_all(
     manifest = build_manifest(cfg, result.counts, sources)
     manifest["data_fingerprint"] = data_fingerprint(result.observations[REFERENCE_COLS])
     manifest_path = gen_dir / "generation_manifest.json"
-    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    manifest_tmp = manifest_path.with_name(f".{manifest_path.name}.tmp.{os.getpid()}")
+    manifest_tmp.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(manifest_tmp, manifest_path)
     written.append(manifest_path)
 
     _point_current(data_dir, gen_dir)
@@ -228,7 +256,7 @@ def save_all(
 def _point_current(data_dir: Path, gen_dir: Path) -> None:
     """Atomically retarget the consumer-facing ``current`` alias at the newest generation."""
     current = data_dir / "current"
-    tmp_link = data_dir / ".current.tmp"
+    tmp_link = data_dir / f".current.tmp.{os.getpid()}"
     try:
         tmp_link.unlink(missing_ok=True)
         tmp_link.symlink_to(os.path.relpath(gen_dir, data_dir))
