@@ -79,9 +79,12 @@ def atomic_directory_alias(target: Path, alias: Path) -> None:
 
 
 def data_generation_for_fingerprint(data_root: Path, fingerprint: str) -> Path | None:
-    root = data_root.resolve()
-    if root.name == "current":
-        root = root.parent
+    configured_root = Path(data_root)
+    root = (
+        configured_root.parent.resolve()
+        if configured_root.name == "current"
+        else configured_root.resolve()
+    )
     candidates: list[Path] = []
     current = root / "current"
     if current.exists():

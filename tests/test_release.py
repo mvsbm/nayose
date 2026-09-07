@@ -65,8 +65,10 @@ def test_data_generation_lookup_is_fingerprint_bound(tmp_path):
     generation = data_root / "generations" / "gen_a"
     generation.mkdir(parents=True)
     manifest(generation, "generation_manifest.json", "target")
+    atomic_directory_alias(generation, data_root / "current")
 
     assert data_generation_for_fingerprint(data_root, "target") == generation
+    assert data_generation_for_fingerprint(data_root / "current", "target") == generation
     assert data_generation_for_fingerprint(data_root, "missing") is None
 
 
