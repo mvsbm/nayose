@@ -8,7 +8,9 @@ rules, README.md the usage.
 
 ```
 data/raw/...  generations/gen_*/  current↙   immutable real data + generation products
-synthetic/    engine + providers + noise + truth + pipeline      (generator; notebook = driver)
+synthetic/    engine + providers + noise + truth + pipeline      (generator + CLI contract)
+synthetic_data.ipynb                                              (thin generation/report driver)
+nayose.ipynb                                                      (training reference; scripts/train.py is the headless adapter)
 models/runs/run_*/  current↙  + registry.json                     (matcher bundles)
 models/decisions/<run>.json                                       (operational review state)
 frontend/     hexagonal TS app (no bundler; tsc -> ESM in js/)
@@ -47,7 +49,7 @@ All queries are typed endpoints (`/api/entities`, `/api/entity/{id}`,
 ## Data flow (one loop)
 
 ```
-generate (synthetic/) → run matcher (nayose.ipynb) → bundle + lineage_summary
+generate (synthetic/) → run matcher (scripts/train.py / nayose.ipynb) → bundle + lineage_summary
 → API serves bundle parquet via DuckDB → Web views (search/review/audit)
 → decisions written back (models/decisions) → next audit reads them
 ```

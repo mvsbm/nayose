@@ -32,9 +32,9 @@ tables under `data/ground_truth/` exactly as `nayose.ipynb` consumes them.
 
 ```bash
 source .venv/bin/activate
-# profiles: preflight / smoke / mac / large_mac / generate_only (100k default)
-NAYOSE_PROFILE=mac jupyter nbconvert --to notebook --execute synthetic_data.ipynb
-# one-time downloads, cached in data/: Nemotron persona names, Japan Post ken_all, EDINET
+python scripts/generate_data.py --profile smoke --data-dir data --seed 42
+# profiles: preflight / smoke / mac / large_mac / generate_only
+# one-time downloads, cached in data/raw/: Nemotron persona names, Japan Post ken_all, EDINET
 ```
 
 ### 2. Train / Evaluate the Matcher
@@ -63,9 +63,9 @@ Headless training and serving (the supported paths — semantics identical to
 the notebooks):
 
 ```bash
-python scripts/train.py --data-dir data --models-dir models \
+python scripts/train.py --data-dir data/current --models-dir models \
   --seed 42 --device cpu --model-family off
-python -m api.main                          # then open http://127.0.0.1:8899
+NAYOSE_DASH_PORT=8899 python -m api.main  # then open http://127.0.0.1:8899
 ```
 
 ## Project Structure
