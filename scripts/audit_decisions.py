@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Review-decision audit: score operator decisions against hidden truth.
 
-The label feedback loop: decisions persisted by the dashboard
+The review audit: decisions persisted by the dashboard
 (models/decisions/<run>.json — reviewer identity included) are compared with
 the hidden ground truth (record_truth) to measure reviewer accuracy, and the
-verified pairs are exported as promoted labels for future retraining. Truth
+verified pairs are exported as an explicit artifact for a future retraining
+workflow. Training does not consume this export automatically. Truth
 tables are never mutated — this only reads them.
 
 Usage:
@@ -119,7 +120,7 @@ def main() -> int:
     out_path = models / "decisions" / f"promoted_{run_id}.parquet"
     promoted.to_parquet(out_path, index=False)
     print(
-        f"\npromoted labels (verified duplicates, feedable to retraining): "
+        f"\nverified duplicate export (not auto-consumed by training): "
         f"{len(promoted)} -> {out_path}"
     )
 

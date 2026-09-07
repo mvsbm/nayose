@@ -70,7 +70,8 @@ NAYOSE_DASH_PORT=8899 python -m api.main
 | `NAYOSE_EXACT_MODE` | channel-attribution experiments (honored in graph+retrieval) |
 
 - `GET /api/health` — readiness/hygiene probe (auth-exempt): current run,
-  fingerprint, run count, endpoint stats, timestamps. Docker healthcheck uses it.
+  data/model fingerprints, compatibility, run count, endpoint stats, and timestamps.
+  A missing or mismatched data/model alias is `degraded`; Docker healthcheck uses it.
 - `GET /api/admin/generation-config` — server-owned profiles, difficulties,
   corruption catalog, channel rules, and defaults.
 - `POST /api/admin/generation-preview` — validates controls and returns a
@@ -89,8 +90,8 @@ python scripts/audit_decisions.py --models-dir models --data-dir data/current
 
 Scores operator decisions against hidden `record_truth`: per-reviewer accuracy,
 wrong-decision samples, and an exported `models/decisions/promoted_<run>.parquet`
-of verified duplicate pairs — the feedable label set for retraining. Truth is
-read-only; nothing is mutated.
+of verified duplicate pairs. The export is an explicit review artifact; training
+does not consume it automatically. Truth is read-only; nothing is mutated.
 
 ## 5. Retrain & drift
 
@@ -108,6 +109,7 @@ docker compose logs -f nayose
 ```
 
 `Dockerfile` healthcheck curls `/api/health`; token/warmup via compose env.
+The image installs the frozen `uv.lock` dependency set.
 
 ## Notes
 
