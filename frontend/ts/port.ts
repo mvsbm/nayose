@@ -132,6 +132,14 @@ export interface HealthInfo {
   status: string;
   run?: string | null;
   fingerprint?: string;
+  data_fingerprint?: string | null;
+  model_fingerprint?: string | null;
+  fingerprint_match?: boolean;
+  release?: {
+    compatible: boolean;
+    data_target?: string | null;
+    model_target?: string | null;
+  };
   engine_warm?: boolean;
   now_utc?: string;
   stats?: Array<{ endpoint: string; hits: number; total_ms: number }>;
