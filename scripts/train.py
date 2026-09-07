@@ -59,7 +59,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--model-family",
-        default=os.getenv("NAYOSE_MODEL_FAMILY", "ruri"),
+        default=os.getenv("NAYOSE_MODEL_FAMILY", "off"),
         choices=["off", "ruri", "f2llm", "f2llm_0.6b", "qwen"],
     )
     parser.add_argument(

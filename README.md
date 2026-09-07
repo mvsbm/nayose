@@ -24,7 +24,7 @@ migrated to `api/engine.py`; all behavior lives in `api/`, `frontend/`,
 > Japanese/English UI: **[`docs/MATCHING_UI.md`](docs/MATCHING_UI.md)**.
 > 5-minute stakeholder demo: **[`docs/DEMO.md`](docs/DEMO.md)**.
 
-Both notebooks share `data/` by default. The generator writes the visible
+Both notebooks read `data/current` by default. The generator writes the visible
 snapshots (`reference_records`, `incoming_queries`) plus the six hidden truth
 tables under `data/ground_truth/` exactly as `nayose.ipynb` consumes them.
 
@@ -115,17 +115,19 @@ python -m api.main                          # then open http://127.0.0.1:8899
 | `NayoseEngine` | Facade | Single entry point |
 | `normalize_*()` | SRP | Field normalization |
 
-## Model family (SOTA path)
+## Model family
 
-`NAYOSE_MODEL_FAMILY` (default `f2llm`) selects the dense embedding path:
+`NAYOSE_MODEL_FAMILY` defaults to `off`, the reproducible CPU/SVD baseline. Neural families are explicit opt-ins:
 
 | Family | Embedding | Notes |
 |---|---|---|
-| `f2llm` (default) | `codefuse-ai/F2LLM-v2-1.7B` (Qwen3-based, dim 2048) | SOTA semantic retrieval; weights auto-cache (~3.2 GB); offline fallback to `-0.6B` |
-| `f2llm_0.6b` | `codefuse-ai/F2LLM-v2-0.6B` | ~3–4× faster encode, dim 1024 |
-| `ruri` | F2LLM-v2-0.6B + ruri cross-encoder reranker | legacy/A-B entry |
-| `qwen` | Qwen3-Embedding/Reranker-0.6B | optional |
-| `off` | — | SVD fallback baseline |
+| `off` (default) | — | SVD fallback baseline |
+| `f2llm` | `codefuse-ai/F2LLM-v2-1.7B` | Optional dense retrieval; weights are downloaded and cached by the runtime |
+| `f2llm_0.6b` | `codefuse-ai/F2LLM-v2-0.6B` | Smaller optional dense model |
+| `ruri` | Ruri encoder/reranker path | Optional A/B entry |
+| `qwen` | Qwen embedding/reranker path | Optional |
+
+The neural paths are engineering alternatives, not a benchmark claim. Record the selected family, backend, device, and degraded status in the run manifest before comparing runs.
 
 Optimizations for MPS + time complexity:
 

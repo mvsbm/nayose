@@ -368,7 +368,7 @@ class NayoseEngine:
         # Build block indexes
         engine._block_indexes = engine._build_block_indexes()
 
-        # Load F2LLM dense embeddings + ANN index (SOTA path; optional)
+        # Load optional F2LLM dense embeddings + ANN index
         reference_embeddings, dense_nn = _load_dense_artifacts(config, engine._reference)
 
         # Create candidate index
