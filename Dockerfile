@@ -7,20 +7,19 @@
 # ---- builder: install the app venv (cache-friendly layer) ----
 FROM python:3.13-slim AS builder
 ENV PIP_NO_CACHE_DIR=1
-# ARG lets CI pick the stack: matcher,serve (default) | add neural for CUDA/MPS boxes
-ARG EXTRAS="matcher,serve"
+# Runtime dependencies are resolved from uv.lock for reproducible serving images.
 RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
-COPY pyproject.toml README.md ./
+COPY pyproject.toml README.md uv.lock ./
 COPY synthetic/ synthetic/
 COPY api/ api/
 COPY frontend/ frontend/
-COPY scripts/generate_data.py scripts/train.py scripts/audit_decisions.py scripts/
+COPY scripts/ scripts/
 RUN python -m venv /opt/venv \
-    && /opt/venv/bin/pip install -U pip \
-    && /opt/venv/bin/pip install -e . --no-deps \
-    && /opt/venv/bin/pip install ".[${EXTRAS}]"
+    && /opt/venv/bin/pip install -U pip "uv==0.9.27" \
+    && UV_PROJECT_ENVIRONMENT=/opt/venv /opt/venv/bin/uv sync --frozen --no-dev --no-editable \
+        --extra matcher --extra serve
 
 # ---- runtime: slim, non-root, drop privileges via su-exec ----
 FROM python:3.13-slim AS runtime
