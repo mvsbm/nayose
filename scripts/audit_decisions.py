@@ -16,16 +16,18 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from pathlib import Path
 
-import duckdb
-import pandas as pd
-
-from api.release import data_generation_for_fingerprint
-
 REPO = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO))
+
+import duckdb  # noqa: E402
+import pandas as pd  # noqa: E402
+
+from api.release import data_generation_for_fingerprint, safe_run_id  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
@@ -44,8 +46,12 @@ def main() -> int:
     models = Path(args.models_dir)
     data = Path(args.data_dir)
 
+    try:
+        requested_run = safe_run_id(args.run) if args.run else ""
+    except ValueError as exc:
+        raise SystemExit("invalid run identifier") from exc
     current = (models / "current").resolve() if (models / "current").exists() else None
-    run_dir = current if not args.run else (models / "runs" / args.run).resolve()
+    run_dir = current if not requested_run else (models / "runs" / requested_run).resolve()
     if run_dir is None or not run_dir.is_dir():
         raise SystemExit("no run bundle found (models/current) — train first with scripts/train.py")
     run_id = run_dir.name
@@ -58,8 +64,20 @@ def main() -> int:
     if not decisions:
         print(f"decisions file empty: {decisions_path}")
         return 0
+    manifest_path = run_dir / "run_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    binding_path = decisions_path.with_suffix(".meta.json")
+    if not binding_path.exists():
+        raise SystemExit(f"decision file has no model binding: {binding_path}")
+    binding = json.loads(binding_path.read_text(encoding="utf-8"))
+    expected_manifest_hash = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    if (
+        binding.get("run_id") != run_id
+        or binding.get("data_fingerprint") != manifest.get("data_fingerprint")
+        or binding.get("manifest_sha256") != expected_manifest_hash
+    ):
+        raise SystemExit("decision binding does not match the selected model manifest")
 
-    manifest = json.loads((run_dir / "run_manifest.json").read_text(encoding="utf-8"))
     fingerprint = str(manifest.get("data_fingerprint", ""))
     generation = data_generation_for_fingerprint(data, fingerprint)
     if generation is None:
