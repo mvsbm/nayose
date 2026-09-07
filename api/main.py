@@ -9,6 +9,7 @@ Local-only: bound to 127.0.0.1; row caps + tiny in-memory cache + endpoint stats
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -833,7 +834,7 @@ class DatasetService:
 
 
 class DecisionsStore:
-    """Operational review state per run (separate from immutable bundles)."""
+    """Operational review state bound to the immutable model manifest."""
 
     def __init__(self):
         self._lock = Lock()
@@ -849,19 +850,57 @@ class DecisionsStore:
             raise ValueError("invalid decision path")
         return path
 
+    def _manifest(self, run_id: str) -> tuple[Path, dict[str, Any]]:
+        safe = safe_run_id(run_id)
+        candidates = [MODELS_DIR / "runs" / safe, MODELS_DIR / safe]
+        current = MODELS_DIR / "current"
+        if current.exists() and current.resolve().name == safe:
+            candidates.append(current.resolve())
+        for run_dir in candidates:
+            path = run_dir / "run_manifest.json"
+            if path.exists():
+                manifest = json.loads(path.read_text(encoding="utf-8"))
+                if not manifest.get("data_fingerprint"):
+                    break
+                return path, manifest
+        raise ValueError("run manifest with data fingerprint is required")
+
+    def _binding_path(self, path: Path) -> Path:
+        return path.with_suffix(".meta.json")
+
     def load(self, run_id: str) -> list[dict[str, Any]]:
         with self._lock:
             path = self._path(run_id)
             if not path.exists():
                 return []
+            manifest_path, manifest = self._manifest(run_id or path.stem)
+            binding_path = self._binding_path(path)
+            if not binding_path.exists():
+                raise ValueError("decision file is not bound to a model manifest")
+            binding = json.loads(binding_path.read_text(encoding="utf-8"))
+            manifest_sha256 = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+            if binding.get("data_fingerprint") != manifest.get("data_fingerprint"):
+                raise ValueError("decision data fingerprint does not match the model")
+            if binding.get("manifest_sha256") != manifest_sha256:
+                raise ValueError("decision model manifest has changed")
             return json.loads(path.read_text(encoding="utf-8"))
 
     def save(self, run_id: str, items: list[dict[str, Any]]) -> None:
         with self._lock:
             path = self._path(run_id)
+            manifest_path, manifest = self._manifest(run_id or path.stem)
+            binding = {
+                "run_id": path.stem,
+                "data_fingerprint": manifest["data_fingerprint"],
+                "manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+            }
             tmp = path.with_name(f".{path.name}.tmp.{os.getpid()}")
+            meta = self._binding_path(path)
+            meta_tmp = meta.with_name(f".{meta.name}.tmp.{os.getpid()}")
             tmp.write_text(json.dumps(items, ensure_ascii=False, indent=1), encoding="utf-8")
+            meta_tmp.write_text(json.dumps(binding, ensure_ascii=False, indent=1), encoding="utf-8")
             os.replace(tmp, path)
+            os.replace(meta_tmp, meta)
 
 
 RUNS = RunRepository(MODELS_DIR)

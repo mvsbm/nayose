@@ -495,6 +495,21 @@ def test_decisions_roundtrip(client):
     assert items[0]["reviewer"] == "web", "default reviewer identity stamped"
 
 
+def test_decisions_are_bound_to_the_model_manifest(client):
+    client.put(
+        "/api/decisions",
+        json={"run_id": "run_fake", "items": [{"left": "L", "right": "R"}]},
+    )
+    from api.main import MODELS_DIR
+
+    metadata = MODELS_DIR / "decisions" / "run_fake.meta.json"
+    assert metadata.exists()
+    manifest = MODELS_DIR / "runs" / "run_fake" / "run_manifest.json"
+    payload = manifest.read_text(encoding="utf-8").replace("abc123def4567890", "changed")
+    manifest.write_text(payload, encoding="utf-8")
+    assert client.get("/api/decisions?run_id=run_fake").status_code == 422
+
+
 def test_decisions_stamp_reviewer_header(client):
     client.put(
         "/api/decisions",

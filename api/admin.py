@@ -436,8 +436,9 @@ class AdminService:
             decisions_root = (self.models_dir / "decisions").resolve()
             if decisions_root not in path.parents:
                 raise HTTPException(400, "invalid run")
-            if path.exists():
-                path.unlink()
+            for decision_path in (path, path.with_suffix(".meta.json")):
+                if decision_path.exists():
+                    decision_path.unlink()
             self.audit.record(actor, "reset_decisions", {"run": run_id})
             return {"ok": True}
         raise HTTPException(400, f"unknown action {action!r}")
