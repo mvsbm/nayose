@@ -36,7 +36,7 @@ from fastapi import HTTPException
 from api.evidence import VISIBLE_FIELDS
 from api.progress import ProgressUpdate
 from api.progress import parse as parse_progress
-from api.release import atomic_directory_alias, validate_model_for_data
+from api.release import atomic_directory_alias, safe_run_id, validate_model_for_data
 from synthetic.config import DIFFICULTY as GENERATION_DIFFICULTIES
 from synthetic.config import PROFILES as GENERATION_PROFILES
 from synthetic.generation_preview import catalog as generation_catalog
@@ -64,11 +64,12 @@ def _now() -> str:
 class AuditLog:
     def __init__(self, path: Path):
         self.path = path
+        self._lock = Lock()
 
     def record(self, actor: str, action: str, detail: dict[str, Any]) -> dict[str, Any]:
         row = {"ts": _now(), "actor": actor, "action": action, **detail}
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("a", encoding="utf-8") as fh:
+        with self._lock, self.path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(row, ensure_ascii=False) + "\n")
         return row
 
@@ -109,6 +110,7 @@ class AdminService:
         self._jobs: dict[str, dict[str, Any]] = {}
         self._futures: dict[str, Future] = {}
         self._engine_reset: Callable[[], None] | None = None
+        self._manual_lock = Lock()
 
     # ── capability / state ────────────────────────────────────────────────────
     def capable(self) -> bool:
@@ -277,7 +279,6 @@ class AdminService:
             LOGGER.info("subprocess %s", text[:200])
 
         stream = proc.stdout
-        assert stream is not None
         thread = threading.Thread(target=pump, daemon=True)
         thread.start()
         thread.join()
@@ -394,13 +395,13 @@ class AdminService:
             return {"ok": True}
         if action == "promote":
             run_id = str(params.get("run_id", ""))
+            try:
+                run_id = safe_run_id(run_id)
+            except ValueError as exc:
+                raise HTTPException(400, "invalid run") from exc
             target = (self.models_dir / "runs" / run_id).resolve()
             base = self.models_dir.resolve()
-            if (
-                not run_id
-                or base not in target.parents
-                or not (target / "run_manifest.json").exists()
-            ):
+            if base not in target.parents or not (target / "run_manifest.json").exists():
                 raise HTTPException(400, "invalid run")
             try:
                 fingerprint = validate_model_for_data(target, self.data_root)
@@ -427,7 +428,14 @@ class AdminService:
                 if (self.models_dir / "current").exists()
                 else ""
             )
-            path = self.models_dir / "decisions" / f"{run_id}.json"
+            try:
+                run_id = safe_run_id(run_id)
+            except ValueError as exc:
+                raise HTTPException(400, "invalid run") from exc
+            path = (self.models_dir / "decisions" / f"{run_id}.json").resolve()
+            decisions_root = (self.models_dir / "decisions").resolve()
+            if decisions_root not in path.parents:
+                raise HTTPException(400, "invalid run")
             if path.exists():
                 path.unlink()
             self.audit.record(actor, "reset_decisions", {"run": run_id})
@@ -439,16 +447,14 @@ class AdminService:
         return self.manual_dir / "records.parquet"
 
     def _manual_count(self) -> int:
-        path = self._manual_path()
-        if not path.exists():
-            return 0
-        return int(pd.read_parquet(path).shape[0])
+        return len(self.manual_list())
 
     def manual_list(self) -> list[dict[str, Any]]:
-        path = self._manual_path()
-        if not path.exists():
-            return []
-        return pd.read_parquet(path).to_dict("records")
+        with self._manual_lock:
+            path = self._manual_path()
+            if not path.exists():
+                return []
+            return pd.read_parquet(path).to_dict("records")
 
     def _validate_manual(self, record: dict[str, Any]) -> dict[str, str]:
         cleaned = {k: str(v).strip() for k, v in record.items() if k in MANUAL_FIELDS}
@@ -463,26 +469,28 @@ class AdminService:
         cleaned.setdefault("name_romaji", "")
         return cleaned
 
-    def _append_manual(self, rows: list[dict[str, str]]) -> None:
-        self.manual_dir.mkdir(parents=True, exist_ok=True)
-        path = self._manual_path()
-        existing = (
-            pd.read_parquet(path)
-            if path.exists()
-            else pd.DataFrame(columns=["record_id", *MANUAL_FIELDS])
-        )
-        stamp = int(time.time() * 1000)
-        rows_with_id = [
-            {
-                **row,
-                "record_id": f"M{stamp + i:010d}",
-                "observed_at": _now()[:10],
-                "channel": "manual",
-            }
-            for i, row in enumerate(rows)
-        ]
-        frame = pd.concat([existing, pd.DataFrame(rows_with_id)], ignore_index=True)
-        self._write_atomic(frame)
+    def _append_manual(self, rows: list[dict[str, str]]) -> list[str]:
+        with self._manual_lock:
+            self.manual_dir.mkdir(parents=True, exist_ok=True)
+            path = self._manual_path()
+            existing = (
+                pd.read_parquet(path)
+                if path.exists()
+                else pd.DataFrame(columns=["record_id", *MANUAL_FIELDS])
+            )
+            stamp = int(time.time() * 1000)
+            rows_with_id = [
+                {
+                    **row,
+                    "record_id": f"M{stamp + i:010d}",
+                    "observed_at": _now()[:10],
+                    "channel": "manual",
+                }
+                for i, row in enumerate(rows)
+            ]
+            frame = pd.concat([existing, pd.DataFrame(rows_with_id)], ignore_index=True)
+            self._write_atomic(frame)
+            return [row["record_id"] for row in rows_with_id]
 
     def _write_atomic(self, frame: pd.DataFrame) -> None:
         """Transactional write: temp file + os.replace, so a concurrent reader
@@ -494,13 +502,9 @@ class AdminService:
 
     def manual_register(self, record: dict[str, Any], actor: str) -> dict[str, Any]:
         row = self._validate_manual(record)
-        self._append_manual([row])
-        self.audit.record(
-            actor,
-            "data_entry_register",
-            {"record_id": (self.manual_list() or [{}])[-1]["record_id"]},
-        )
-        return {"ok": True, "record_id": (self.manual_list() or [{}])[-1]["record_id"]}
+        record_id = self._append_manual([row])[0]
+        self.audit.record(actor, "data_entry_register", {"record_id": record_id})
+        return {"ok": True, "record_id": record_id}
 
     def manual_import(
         self, rows: list[dict[str, Any]], dry_run: bool, actor: str
@@ -554,14 +558,15 @@ class AdminService:
         return {"ok": True, "imported": len(cleaned), "duplicates": len(dup_rows)}
 
     def manual_undo(self, record_ids: list[str], actor: str) -> dict[str, Any]:
-        path = self._manual_path()
-        if not path.exists():
-            return {"ok": True, "removed": 0}
-        frame = pd.read_parquet(path)
-        keep = frame[~frame["record_id"].isin(record_ids)]
-        removed = int(frame.shape[0] - keep.shape[0])
-        if removed:
-            self._write_atomic(keep)
+        with self._manual_lock:
+            path = self._manual_path()
+            if not path.exists():
+                return {"ok": True, "removed": 0}
+            frame = pd.read_parquet(path)
+            keep = frame[~frame["record_id"].isin(record_ids)]
+            removed = int(frame.shape[0] - keep.shape[0])
+            if removed:
+                self._write_atomic(keep)
         self.audit.record(actor, "data_entry_undo", {"removed": removed})
         return {"ok": True, "removed": removed}
 

@@ -1261,7 +1261,11 @@ class DecisionsIn(BaseModel):
 
 @app.get("/api/decisions")
 def decisions_get(run_id: str = "") -> dict[str, Any]:
-    return {"items": op("decisions", lambda: DECISIONS.load(run_id))}
+    try:
+        items = op("decisions", lambda: DECISIONS.load(run_id))
+    except ValueError as exc:
+        raise HTTPException(422, "invalid run_id") from exc
+    return {"items": items}
 
 
 @app.put("/api/decisions")
@@ -1280,7 +1284,10 @@ def decisions_put(
         }
         for i in payload.items
     ]
-    op("decisions_save", lambda: DECISIONS.save(payload.run_id, items))
+    try:
+        op("decisions_save", lambda: DECISIONS.save(payload.run_id, items))
+    except ValueError as exc:
+        raise HTTPException(422, "invalid run_id") from exc
     return {"saved": len(items)}
 
 

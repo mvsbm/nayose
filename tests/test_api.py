@@ -602,6 +602,16 @@ def test_generation_config_and_preview_validate_every_control(client):
     )
 
 
+def test_admin_rejects_path_traversal_for_mutations(client):
+    res = client.post(
+        "/api/admin/actions",
+        json={"action": "reset_decisions", "params": {"run_id": "../../outside"}},
+    )
+    assert res.status_code == 400
+    res = client.get("/api/decisions", params={"run_id": "../../outside"})
+    assert res.status_code == 422
+
+
 def test_admin_settings_and_audit(client):
     h = {"X-Actor": "pytest"}
     res = client.post(
