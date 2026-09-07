@@ -419,16 +419,18 @@ class NayoseEngine:
         ]
         manifest_path = next((p for p in manifest_hits if p.exists()), None)
         if manifest_path is None:
-            print(
-                "WARN: no run/training manifest next to the model bundle; generation linkage not verified."
+            raise RuntimeError(
+                "Model bundle has no run/training manifest; refusing to load without "
+                "a data fingerprint."
             )
-            return
         import json as _json
 
         stored = _json.loads(manifest_path.read_text(encoding="utf-8")).get("data_fingerprint")
         if not stored:
-            print("WARN: manifest has no data_fingerprint; skipping generation linkage check.")
-            return
+            raise RuntimeError(
+                "Model manifest has no data_fingerprint; refusing to load without "
+                "generation linkage."
+            )
         actual = cls._data_fingerprint(reference)
         if stored != actual:
             raise RuntimeError(

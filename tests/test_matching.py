@@ -98,6 +98,20 @@ def test_scoring_failure_is_not_disguised_as_probability():
         ExplainedMatcher(fake_engine(broken=True)).recommend({"name_kanji": "佐藤"}, lambda _: None)
 
 
+def test_engine_refuses_bundles_without_fingerprint_guard(tmp_path):
+    from api.engine import NayoseEngine
+
+    reference = pd.DataFrame({"record_id": ["R1"]})
+    config = SimpleNamespace(model_dir=tmp_path)
+
+    with pytest.raises(RuntimeError, match="manifest"):
+        NayoseEngine._guard_generation_match(config, reference)
+
+    (tmp_path / "run_manifest.json").write_text("{}", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="data_fingerprint"):
+        NayoseEngine._guard_generation_match(config, reference)
+
+
 def test_svd_bundle_uses_saved_transform_not_neural_encoder(tmp_path, monkeypatch):
     import joblib
     from sklearn.decomposition import TruncatedSVD
