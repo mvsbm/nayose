@@ -11,9 +11,16 @@ import numpy as np
 import pandas as pd
 
 from .config import NoiseConfig, SyntheticConfig
-from .jp import ascii_romaji, ocr_mutate
 from .noise import QueryCorruptor, RecordCorruptor
+from .policy import HistoryState, Policy, pick_policy_event, snapshot_at
 from .providers import AddressSource, BuildingComposer, CompanySource, PersonaSource
+from .realism import (  # DIP: realistic contacts through one interface
+    channel_family,
+    channel_landline_share,
+    default_phone,
+    generate_email,
+    generate_phone,
+)
 
 
 def _eta_line(name: str, done: int, total: int, t0: float) -> str:
@@ -30,56 +37,9 @@ def _progress_interval(total: int) -> int:
     return max(1, total // 20)
 
 
-def generate_mobile(rng: np.random.Generator) -> str:
-    prefix = str(rng.choice(["090", "080", "070"]))
-    return f"{prefix}-{int(rng.integers(1000, 9999)):04d}-{int(rng.integers(1000, 9999)):04d}"
-
-
-def generate_email(kanji: str, romaji: str, rng: np.random.Generator) -> str:
-    romaji_parts = romaji.split()
-    if len(kanji.split()) == 2 and len(romaji_parts) == 2:
-        return f"{ascii_romaji(romaji_parts[0])}.{ascii_romaji(romaji_parts[1])}@example.com"
-    return f"user{int(rng.integers(100000, 999999))}@example.com"
-
-
 def _dob(person_age: int, rng: np.random.Generator, cfg: SyntheticConfig) -> str:
     year = cfg.snapshot_year - person_age
     return f"{year}-{int(rng.integers(1, 13)):02d}-{int(rng.integers(1, 29)):02d}"
-
-
-def _sample_old_fields(
-    party_values: dict,
-    rng: np.random.Generator,
-    address: AddressSource,
-    buildings: BuildingComposer,
-    is_person: bool,
-) -> dict[str, str]:
-    """Historical values (renames, relocations, contact changes) for stale
-    simulations, sampled with the config's stale probability."""
-    old = {
-        "old_name_kanji": "",
-        "old_name_kana": "",
-        "old_name_romaji": "",
-        "old_postal_code": "",
-        "old_address": "",
-        "old_phone": "",
-        "old_email": "",
-    }
-    if is_person and rng.random() < 0.30:
-        old["old_name_kanji"], _ = ocr_mutate(party_values["name_kanji"], 0.3, rng)
-        old["old_name_kana"], _ = ocr_mutate(party_values["name_kana"], 0.3, rng)
-        old["old_name_romaji"], _ = ocr_mutate(party_values["name_romaji"], 0.3, rng)
-    if rng.random() < 0.30:
-        postal, addr = address.format(
-            address.sample(rng, party_values.get("prefecture")), rng, buildings
-        )
-        old["old_postal_code"], old["old_address"] = postal, addr
-    if rng.random() < 0.15:
-        old["old_phone"] = generate_mobile(rng)
-        old["old_email"] = generate_email(
-            party_values["name_kanji"], party_values["name_romaji"], rng
-        )
-    return old
 
 
 def generate_parties(
@@ -103,18 +63,6 @@ def generate_parties(
             dob = _dob(p.age, rng, cfg)
             email = generate_email(kanji, romaji, rng)
             party_type = "person"
-            old = _sample_old_fields(
-                {
-                    "name_kanji": kanji,
-                    "name_kana": kana,
-                    "name_romaji": romaji,
-                    "prefecture": p.prefecture,
-                },
-                rng,
-                address,
-                buildings,
-                is_person=True,
-            )
             if rng.random() < cfg.twin_rate:
                 # Hard-case twin: two customers with the SAME name/kana/romaji but
                 # different identity fields (dob, address, contacts). Exact-name
@@ -131,15 +79,8 @@ def generate_parties(
                         "date_birth": t_dob,
                         "postal_code": t_postal,
                         "address": t_addr,
-                        "phone": generate_mobile(rng),
-                        "email": f"user{int(rng.integers(100000, 999999))}@example.com",
-                        "old_name_kanji": "",
-                        "old_name_kana": "",
-                        "old_name_romaji": "",
-                        "old_postal_code": "",
-                        "old_address": "",
-                        "old_phone": "",
-                        "old_email": "",
+                        "phone": default_phone(rng),
+                        "email": generate_email(kanji, romaji, rng),
                     }
                 )
         else:
@@ -149,13 +90,6 @@ def generate_parties(
             dob = ""
             email = generate_email(kanji, romaji, rng)
             party_type = "company"
-            old = _sample_old_fields(
-                {"name_kanji": kanji, "name_kana": kana, "name_romaji": romaji, "prefecture": None},
-                rng,
-                address,
-                buildings,
-                is_person=False,
-            )
         rows.append(
             {
                 "party_type": party_type,
@@ -165,9 +99,8 @@ def generate_parties(
                 "date_birth": dob,
                 "postal_code": postal,
                 "address": full_addr,
-                "phone": generate_mobile(rng),
+                "phone": default_phone(rng),
                 "email": email,
-                **old,
             }
         )
         if (i + 1) % step == 0:
@@ -184,21 +117,56 @@ def generate_parties(
 
 
 def generate_agencies(cfg: SyntheticConfig, rng: np.random.Generator) -> pd.DataFrame:
+    """Agent book-of-business context (G3). The per-office severity knobs are
+    CONSUMED by the corruptor (paper_ocr/legacy_format events), and each office
+    carries a small personal typo profile (their habitual char confusions) used
+    by the OCR family — agents degrade their own customers' data.
+
+    Office RNGs are derived from the global seed (stable across processes;
+    Python's hash() is randomized, so it is never used for seeds)."""
     channels = ["web", "agent_pc", "paper_ocr", "legacy_migration"]
+    confusion_pool = [
+        ("人", "入"),
+        ("大", "太"),
+        ("土", "士"),
+        ("未", "末"),
+        ("日", "目"),
+        ("田", "由"),
+        ("名", "各"),
+        ("島", "鳥"),
+        ("シ", "ツ"),
+        ("ソ", "ン"),
+    ]
     rows = []
     for i in range(cfg.n_agencies):
+        channel = str(rng.choice(channels))
+        office_rng = np.random.default_rng(cfg.seed + i * 7919)
+        profile = tuple(
+            confusion_pool[int(office_rng.integers(len(confusion_pool)))]
+            for _ in range(int(office_rng.integers(1, 3)))
+        )
         rows.append(
             {
                 "agency_id": f"A{i:03d}",
-                "channel": str(rng.choice(channels)),
-                "missing_factor": float(np.exp(rng.normal(0.0, 0.35))),
-                "ocr_factor": float(rng.uniform(0.15, 0.35)),
-                "format_factor": float(np.exp(rng.normal(0.10, 0.20))),
-                "shared_phone": generate_mobile(rng),
-                "shared_email": f"agency{i:03d}@agency.invalid",
+                "channel": channel,
+                "missing_factor": float(np.exp(office_rng.normal(0.0, 0.35))),
+                "ocr_factor": float(office_rng.uniform(0.15, 0.50)),
+                "format_factor": float(np.exp(office_rng.normal(0.0, 0.25))),
+                "typo_profile": profile,
+                # the office's shared contact lines carry the CHANNEL's era style
+                "shared_phone": generate_phone(
+                    office_rng, landline=office_rng.random() < channel_landline_share(channel)
+                ),
+                "shared_email": f"office{i:03d}@{generate_office_domain(channel, office_rng)}",
             }
         )
     return pd.DataFrame(rows)
+
+
+def generate_office_domain(channel: str, rng: np.random.Generator) -> str:
+    from .config import EMAIL_DOMAINS
+
+    return str(rng.choice(EMAIL_DOMAINS[channel_family(channel)]))
 
 
 def build_observations(
@@ -208,11 +176,23 @@ def build_observations(
     agencies: pd.DataFrame,
     rng: np.random.Generator,
     homophones: dict[str, tuple[str, ...]] | None = None,
+    policies: list[list[Policy]] | None = None,
+    history: dict[int, list[HistoryState]] | None = None,
 ) -> tuple[pd.DataFrame, pd.Series, dict[str, list[tuple[str, str]]]]:
     """Dirty multi-record observations per party (the reference universe).
 
+    Each record attaches to a (policy, policy-event) pair (G1): records from
+    the same policy share a policy_id across renewals, and observed_at is
+    anchored to the event's year. A per-record truth snapshot (G4) is injected
+    into the corruptor so stale events reflect the state true AT the record's
+    date — never a future truth.
+
     Returns (observations, party_of[record_id -> party idx], record lineage).
     """
+    if policies is None:
+        policies = [[] for _ in range(len(parties))]  # bare-mode: unique per record
+    if history is None:
+        history = {}
     corruptor = RecordCorruptor(cfg, noise_cfg, homophones)
     agency_rows = agencies.to_dict("records")
     rows, party_of, lineage_by_item = [], {}, {}
@@ -234,16 +214,26 @@ def build_observations(
             agency = agency_rows[int(rng.integers(len(agency_rows)))]
             channel = agency["channel"]
             low, high = noise_cfg.vintage[channel]
+            # G1: attach the record to a (policy, event) that fits the channel era
+            party_policies = policies[party_idx]
+            if party_policies:
+                policy, event = pick_policy_event(rng, party_policies, high)
+                policy_id = policy.policy_id
+                upper = max(low + 1, min(high, event.year) + 1)
+                obs_year = int(rng.integers(low, upper))
+            else:
+                policy_id = f"P{record_idx // 1:010d}"
+                obs_year = int(rng.integers(low, high + 1))
+            snapshot = snapshot_at(history.get(party_idx, []), obs_year)
             observed_at = (
-                f"{int(rng.integers(low, high + 1))}-"
-                f"{int(rng.integers(1, 13)):02d}-{int(rng.integers(1, 29)):02d}"
+                f"{obs_year}-{int(rng.integers(1, 13)):02d}-{int(rng.integers(1, 29)):02d}"
             )
-            result = corruptor.corrupt(party, agency, quality, rng)
+            result = corruptor.corrupt(party, agency, quality, rng, snapshot=snapshot)
             record_id = f"R{record_idx:010d}"
             rows.append(
                 {
                     "record_id": record_id,
-                    "policy_id": f"P{record_idx:010d}",
+                    "policy_id": policy_id,
                     "agency_id": agency["agency_id"],
                     "channel": channel,
                     "observed_at": observed_at,
@@ -304,7 +294,7 @@ def generate_queries(
                 "date_birth": _dob(p.age, rng, cfg),
                 "postal_code": postal,
                 "address": addr,
-                "phone": generate_mobile(rng),
+                "phone": default_phone(rng),
                 "email": generate_email(p.name_kanji, p.name_romaji, rng),
             }
             party_idx = int(rng.integers(n))  # anchor truth id (not in reference)

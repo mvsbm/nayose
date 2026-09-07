@@ -1,5 +1,9 @@
 """
-Nayose Inference Engine — Load trained model and run entity matching.
+Nayose Inference Engine — load trained artifacts and run entity matching.
+
+Hosted at api/engine.py (migrated from the repo-root legacy module). This is
+an engine FACADE: it owns trained-artifact loading, the corpus fingerprint
+guard, retrieval indexes and the LightGBM booster wrapper.
 
 Design:
 - Facade Pattern: Single entry point for complex subsystem
@@ -12,8 +16,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import re
-import unicodedata as ud
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -23,6 +25,32 @@ import numpy as np
 import pandas as pd
 from scipy.sparse import load_npz
 from sklearn.neighbors import NearestNeighbors
+
+# Shared primitives (single source of truth): normalization, pair features and
+# device policy live in api/* — the engine re-exports them so historical import
+# sites keep working without owning a second copy.
+from api.features import (  # noqa: F401
+    PAIR_FEATURE_COLS,
+    _fuzzy,
+    compute_pair_features,
+    logit_clip,
+)
+from api.normalize import (  # noqa: F401
+    DIGITS_RE,
+    LEGAL_FORMS,
+    OLD_KANJI,
+    PUNCT_RE,
+    _compact,
+    normalize_address,
+    normalize_dob,
+    normalize_email,
+    normalize_kana,
+    normalize_name,
+    normalize_phone,
+    normalize_postal,
+    normalize_record,
+)
+from api.retrieval import _resolve_device  # noqa: F401
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 
@@ -39,296 +67,6 @@ class InferenceConfig:
     pair_auto_threshold: float = 0.105
     entity_auto_threshold: float = 0.016
     entity_review_threshold: float = 0.016
-
-
-# ─── Normalization (SRP: one function per field) ──────────────────────────────
-
-PUNCT_RE = re.compile(r"[\s\u3000\-‐‑‒–—―ーｰ・･,，.．/／\\()（）\[\]【】]+")
-DIGITS_RE = re.compile(r"\D+")
-OLD_KANJI = str.maketrans(
-    {"髙": "高", "﨑": "崎", "邉": "辺", "邊": "辺", "濱": "浜", "澤": "沢", "齋": "斎", "國": "国"}
-)
-LEGAL_FORMS = ["株式会社", "有限会社", "合同会社", "（株）", "(株)", "㈱"]
-
-
-def _compact(s: str) -> str:
-    return PUNCT_RE.sub("", ud.normalize("NFKC", s)).lower()
-
-
-def normalize_name(raw: str) -> str:
-    v = _compact(raw).translate(OLD_KANJI)
-    for f in sorted(LEGAL_FORMS, key=len, reverse=True):
-        v = v.replace(_compact(f), "")
-    return v.strip()
-
-
-def normalize_kana(raw: str) -> str:
-    return _compact(raw)
-
-
-def normalize_phone(raw: str) -> str:
-    d = DIGITS_RE.sub("", ud.normalize("NFKC", raw))
-    return ("0" + d[2:]) if d.startswith("81") and len(d) > 10 else d
-
-
-def normalize_postal(raw: str) -> str:
-    return DIGITS_RE.sub("", ud.normalize("NFKC", raw)).zfill(7)[:7]
-
-
-def normalize_address(raw: str) -> str:
-    v = _compact(raw)
-    for old, new in {"丁目": "-", "番地": "-", "番": "-", "号": ""}.items():
-        v = v.replace(old, new)
-    return re.sub(r"-+", "-", v).strip("-")
-
-
-def normalize_email(raw: str) -> str:
-    return _compact(raw)
-
-
-def normalize_dob(raw: str) -> str:
-    d = DIGITS_RE.sub("", ud.normalize("NFKC", raw))
-    return f"{d[:4]}-{d[4:6]}-{d[6:]}" if len(d) == 8 else d
-
-
-def normalize_record(rec: dict[str, Any]) -> dict[str, str]:
-    """Normalize a raw record into all required views."""
-    name = str(rec.get("name_kanji", "")).strip()
-    kana = str(rec.get("name_kana", "")).strip()
-    n_name = normalize_name(name)
-    n_kana = normalize_kana(kana)
-    n_phone = normalize_phone(str(rec.get("phone", "")).strip())
-    n_postal = normalize_postal(str(rec.get("postal_code", "")).strip())
-    n_address = normalize_address(str(rec.get("address", "")).strip())
-    n_email = normalize_email(str(rec.get("email", "")).strip())
-    n_dob = normalize_dob(str(rec.get("date_birth", "")).strip())
-
-    return {
-        "party_type": _compact(str(rec.get("party_type", "person"))),
-        "n_name_loose": n_name,
-        "n_name_signature": n_name[:4] if len(n_name) >= 4 else n_name,
-        "n_kana": n_kana,
-        "n_romaji": _compact(str(rec.get("name_romaji", "")).strip()),
-        "n_dob": n_dob,
-        "n_postal": n_postal,
-        "n_address": n_address,
-        "n_phone": n_phone,
-        "n_phone_suffix8": n_phone[-8:] if len(n_phone) >= 8 else n_phone,
-        "n_email": n_email,
-        "n_email_local": n_email.split("@")[0] if "@" in n_email else n_email,
-        "n_email_domain": n_email.split("@")[1] if "@" in n_email else "",
-        "retrieval_text": " ".join(
-            filter(None, [n_name, n_kana, n_dob, n_postal, n_address, n_phone, n_email])
-        ),
-    }
-
-
-# ─── Pair Features (SRP: pure function) ──────────────────────────────────────
-
-from rapidfuzz.fuzz import ratio
-
-
-def _fuzzy(a: str, b: str) -> float:
-    return ratio(a, b) / 100.0 if a and b else 0.0
-
-
-PAIR_FEATURE_COLS = [
-    "type_exact",
-    "name_strict_exact",
-    "name_loose_exact",
-    "kana_exact",
-    "romaji_exact",
-    "dob_exact",
-    "postal_exact",
-    "address_exact",
-    "phone_exact",
-    "phone_suffix_exact",
-    "email_exact",
-    "name_similarity",
-    "kana_similarity",
-    "romaji_similarity",
-    "address_similarity",
-    "email_local_similarity",
-    "email_domain_exact",
-    "name_frequency_weight",
-    "kana_frequency_weight",
-    "phone_frequency_weight",
-    "email_frequency_weight",
-    "agreement_count",
-    "evidence_family_count",
-    "both_populated_count",
-    "missing_fraction",
-    "type_conflict",
-    "dob_conflict",
-    "postal_conflict",
-    "name_dob_evidence",
-    "name_address_evidence",
-    "sparse_score",
-    "dense_score",
-    "exact_count",
-    "channel_count",
-    "retrieval_score",
-    "reranker_score",
-]
-
-
-def compute_pair_features(
-    query: dict[str, str], candidates: pd.DataFrame, retrieval: pd.DataFrame
-) -> pd.DataFrame:
-    """Compute all36 pair features between query and each candidate."""
-    rows = []
-    for i, (_, cand) in enumerate(candidates.iterrows()):
-        q, c = query, cand
-
-        # Exact matches
-        type_exact = float(
-            bool(q["party_type"] and c["party_type"] and q["party_type"] == c["party_type"])
-        )
-        name_strict_exact = float(
-            bool(
-                q.get("n_name_strict", "")
-                and c.get("n_name_strict", "")
-                and q["n_name_strict"] == c["n_name_strict"]
-            )
-        )
-        name_loose_exact = float(
-            bool(q["n_name_loose"] and c["n_name_loose"] and q["n_name_loose"] == c["n_name_loose"])
-        )
-        kana_exact = float(bool(q["n_kana"] and c["n_kana"] and q["n_kana"] == c["n_kana"]))
-        romaji_exact = float(
-            bool(q["n_romaji"] and c["n_romaji"] and q["n_romaji"] == c["n_romaji"])
-        )
-        dob_exact = float(bool(q["n_dob"] and c["n_dob"] and q["n_dob"] == c["n_dob"]))
-        postal_exact = float(
-            bool(q["n_postal"] and c["n_postal"] and q["n_postal"] == c["n_postal"])
-        )
-        address_exact = float(
-            bool(q["n_address"] and c["n_address"] and q["n_address"] == c["n_address"])
-        )
-        phone_exact = float(bool(q["n_phone"] and c["n_phone"] and q["n_phone"] == c["n_phone"]))
-        phone_suffix_exact = float(
-            bool(
-                q["n_phone_suffix8"]
-                and c["n_phone_suffix8"]
-                and q["n_phone_suffix8"] == c["n_phone_suffix8"]
-            )
-        )
-        email_exact = float(bool(q["n_email"] and c["n_email"] and q["n_email"] == c["n_email"]))
-
-        # Fuzzy similarities
-        name_sim = max(
-            _fuzzy(q["n_name_loose"], c["n_name_loose"]),
-            _fuzzy(q["n_name_signature"], c["n_name_signature"]),
-        )
-        kana_sim = _fuzzy(q["n_kana"], c["n_kana"])
-        romaji_sim = _fuzzy(q["n_romaji"], c["n_romaji"])
-        addr_sim = _fuzzy(q["n_address"], c["n_address"])
-        email_local_sim = _fuzzy(q["n_email_local"], c["n_email_local"])
-        email_domain_exact = float(
-            bool(
-                q["n_email_domain"]
-                and c["n_email_domain"]
-                and q["n_email_domain"] == c["n_email_domain"]
-            )
-        )
-
-        # Evidence families
-        name_evidence = max(name_sim, kana_sim, romaji_sim) >= 0.82
-        dob_evidence = dob_exact >= 1
-        address_evidence = max(addr_sim, postal_exact) >= 0.82
-        phone_evidence = max(phone_exact, phone_suffix_exact) >= 1
-        email_evidence = max(email_exact, email_local_sim) >= 0.90
-        evidence_family_count = sum(
-            [name_evidence, dob_evidence, address_evidence, phone_evidence, email_evidence]
-        )
-
-        # Agreement and population counts
-        agreement_count = sum(
-            [
-                name_loose_exact,
-                kana_exact,
-                romaji_exact,
-                dob_exact,
-                postal_exact,
-                address_exact,
-                phone_exact,
-                email_exact,
-            ]
-        )
-        identity_fields = [
-            "n_name_loose",
-            "n_kana",
-            "n_romaji",
-            "n_dob",
-            "n_postal",
-            "n_address",
-            "n_phone",
-            "n_email",
-        ]
-        both_populated = sum(1 for f in identity_fields if q.get(f, "") and c.get(f, ""))
-        missing_fraction = 1.0 - both_populated / len(identity_fields)
-
-        # Conflicts
-        type_conflict = float(
-            bool(q["party_type"] and c["party_type"] and q["party_type"] != c["party_type"])
-        )
-        dob_conflict = float(bool(q["n_dob"] and c["n_dob"] and q["n_dob"] != c["n_dob"]))
-        postal_conflict = float(
-            bool(q["n_postal"] and c["n_postal"] and q["n_postal"] != c["n_postal"])
-        )
-
-        # Combined evidence
-        best_name = max(name_sim, kana_sim, romaji_sim)
-        name_dob_evidence = best_name * dob_exact
-        name_address_evidence = best_name * max(addr_sim, postal_exact)
-
-        # Retrieval scores
-        ret = retrieval.iloc[i] if i < len(retrieval) else {}
-        sparse = float(ret.get("sparse_score", 0))
-        dense = float(ret.get("dense_score", 0))
-        exact_n = int(ret.get("exact_count", 0))
-
-        rows.append(
-            {
-                "type_exact": type_exact,
-                "name_strict_exact": name_strict_exact,
-                "name_loose_exact": name_loose_exact,
-                "kana_exact": kana_exact,
-                "romaji_exact": romaji_exact,
-                "dob_exact": dob_exact,
-                "postal_exact": postal_exact,
-                "address_exact": address_exact,
-                "phone_exact": phone_exact,
-                "phone_suffix_exact": phone_suffix_exact,
-                "email_exact": email_exact,
-                "name_similarity": name_sim,
-                "kana_similarity": kana_sim,
-                "romaji_similarity": romaji_sim,
-                "address_similarity": addr_sim,
-                "email_local_similarity": email_local_sim,
-                "email_domain_exact": email_domain_exact,
-                "name_frequency_weight": 0.0,
-                "kana_frequency_weight": 0.0,
-                "phone_frequency_weight": 0.0,
-                "email_frequency_weight": 0.0,
-                "agreement_count": agreement_count,
-                "evidence_family_count": evidence_family_count,
-                "both_populated_count": both_populated,
-                "missing_fraction": missing_fraction,
-                "type_conflict": type_conflict,
-                "dob_conflict": dob_conflict,
-                "postal_conflict": postal_conflict,
-                "name_dob_evidence": name_dob_evidence,
-                "name_address_evidence": name_address_evidence,
-                "sparse_score": sparse,
-                "dense_score": dense,
-                "exact_count": exact_n,
-                "channel_count": int(exact_n > 0) + int(sparse > 0) + int(dense > 0),
-                "retrieval_score": max(sparse, dense) + 0.08 * min(exact_n, 3),
-                "reranker_score": 0.0,
-            }
-        )
-    return pd.DataFrame(rows)
 
 
 class LightGBMBoosterAdapter:
@@ -360,29 +98,8 @@ def load_pair_model(model_dir: Path) -> Any:
     return joblib.load(legacy)
 
 
-def logit_clip(probability: np.ndarray, precision: float = 1e-6) -> np.ndarray:
-    p = np.clip(np.asarray(probability, dtype=np.float64), precision, 1.0 - precision)
-    return np.log(p / (1.0 - p))
-
-
-# ─── Dense query encoder (SRP: F2LLM via sentence-transformers, lazy) ─────────
 _QUERY_ENCODER: Any = None
 _QUERY_MODEL_ID: str | None = None  # embedding model recorded in the bundle manifest
-
-
-def _resolve_device(requested: str) -> str:
-    if requested != "auto":
-        return requested
-    try:
-        import torch
-
-        if torch.backends.mps.is_available():
-            return "mps"
-        if torch.cuda.is_available():
-            return "cuda"
-    except Exception:
-        pass
-    return "cpu"
 
 
 def _load_query_encoder() -> Any:
@@ -809,7 +526,9 @@ class NayoseEngine:
             base = np.asarray(self._pair_model.predict_proba(features[PAIR_FEATURE_COLS])[:, 1])
             n_in = getattr(self._pair_calibrator, "n_features_in_", 1)
             if n_in == 3:  # current bundle contract (reranker disabled at serve time)
-                cal_x = np.column_stack([logit_clip(base), np.zeros(len(base)), np.zeros(len(base))])
+                cal_x = np.column_stack(
+                    [logit_clip(base), np.zeros(len(base)), np.zeros(len(base))]
+                )
             elif n_in == 1:  # legacy calibrator trained directly on base probability
                 cal_x = base.reshape(-1, 1)
             else:
@@ -912,13 +631,17 @@ def _apply_manifest_thresholds(config) -> None:
     if not manifest_path.exists():
         return
     thresholds = json.loads(manifest_path.read_text(encoding="utf-8")).get("thresholds", {})
-    for attr, key in (("entity_auto_threshold", "entity_auto"),
-                      ("entity_review_threshold", "entity_review")):
+    for attr, key in (
+        ("entity_auto_threshold", "entity_auto"),
+        ("entity_review_threshold", "entity_review"),
+    ):
         if key in thresholds and os.getenv("NAYOSE_ENTITY_OVERRIDE", "0") != "1":
             object.__setattr__(config, attr, float(thresholds[key]))
     if "entity_auto" in thresholds:
-        print(f"thresholds from manifest: entity_auto={thresholds['entity_auto']:.4f} "
-              f"entity_review={thresholds.get('entity_review', thresholds.get('entity_auto', 0.0)):.4f}")
+        print(
+            f"thresholds from manifest: entity_auto={thresholds['entity_auto']:.4f} "
+            f"entity_review={thresholds.get('entity_review', thresholds.get('entity_auto', 0.0)):.4f}"
+        )
 
 
 def load_engine(model_dir: str = "models", data_dir: str = "data") -> NayoseEngine:

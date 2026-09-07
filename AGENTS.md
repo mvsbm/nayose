@@ -10,13 +10,18 @@ ruff check .                          # lint (config in pyproject.toml)
 ruff format --check .                 # formatting
 mypy synthetic tests                  # type check (engine + tests only)
 python scripts/generate_data.py --profile smoke   # headless pipeline (CLI == notebook contract)
+python scripts/train.py --data-dir data/current --models-dir models --seed 42   # headless training: executes nayose.ipynb, verifies the promoted bundle
+python scripts/audit_decisions.py                # decision audit + promoted labels (label feedback loop)
+python -m api.main                              # serve the dashboard (NAYOSE_DASH_PORT, NAYOSE_API_TOKEN, NAYOSE_WARM_EMBED)
+curl http://127.0.0.1:8000/api/health            # readiness probe (auth-exempt)
 ```
 
 ## Layout
 
 | Path | Responsibility |
 |---|---|
-| `synthetic/` | Engine: `config.py` (presets/rates, data), `providers.py` (real data sources), `noise.py` (correlated dirty events + lineage), `truth.py` (six ground-truth tables), `engine.py` (orchestration), `pipeline.py` (generate + the single save contract) |
+| `synthetic/` | Engine: `config.py` (presets/rates/data incl. email domains, channel contact profiles, POLICY_PARAMS), `providers.py` (real data sources; persona Han-initial sanitizer), `realism.py` (phone styles + email domains, SRP), `policy.py` (policy aggregate roots + truth timeline / Memento states + temporal validation), `noise.py` (correlated dirty events + lineage; agent profiles consumed), `truth.py` (six ground-truth tables), `engine.py` (orchestration), `pipeline.py` (generate + single save contract) |
+| `api/` | Serving: `main.py` (typed FastAPI endpoints + token gate), `contracts.py` (response schemas incl. admin job stages), `evidence.py` (visible fields + field comparison), `normalize.py` + `features.py` (shared primitives), `retrieval.py` (bundle-aware query encoding), `search.py` (embedding entity search), `matching.py` (scored evidence + async jobs + session threshold overrides), `admin.py` (AdminService: generate/train jobs via subprocess, settings, audit log, manual corpus with atomic parquet writes), `engine.py` (trained-artifact facade + fingerprint guard). |
 | `tests/` | Unit tests only — must never require external data or downloads |
 | `scripts/generate_data.py` | Headless generation CLI; writes the exact same tables as the notebook |
 | `synthetic_data.ipynb` / `nayose.ipynb` | Thin drivers / reports (do **not** add logic here) |
@@ -41,6 +46,9 @@ python scripts/generate_data.py --profile smoke   # headless pipeline (CLI == no
 - Every record/query field must have a lineage row
   (`field_lineage`: item_id × field, canonical vs observed, owner, transformation).
 - Notebook cell 9 and `tests/` enforce this; run them before changing the schema.
+- `tests/test_arch_contract.py` enforces the architecture contract (DIP, ISP, CSS
+  class dictionary, no layout/stacking on bare element selectors, no sticky table
+  cells). It ships with the suite — drift fails `pytest`, never the browser.
 
 ## How to add a feature (repeatable path)
 
@@ -70,6 +78,44 @@ Definition of done (EVERY change):
 ## Do not
 
 - Do not add logic to notebooks (thin driver rule).
+- Testing pyramid: unit (pure) + jsdom view tests are the workhorse; Playwright
+  E2E (`frontend/test/e2e.test.mjs`, opt-in `NAYOSE_E2E=1`) is for stories that
+  cross the real server⇄browser⇄persistence seam. `e2e-util.mjs` copies the
+  trained bundle into a temp root (`NAYOSE_E2E_MODELS`/`NAYOSE_E2E_DATA`/`PORT`
+  override) so repo artifacts are never mutated; CI runs E2E on the smoke
+  bundle it just trains. A new user story needs a jsdom view test AND (when it
+  spans the server) an E2E journey. E2E selectors use ids and semantic
+  `data-*` hooks (e.g. `data-entity`), never `.class` chains.
+- Bilingual labels go through `frontend/ts/i18n.ts` with BOTH locales; every
+  matching/admin job `Stage` in `api/contracts.py` must have a label.
+  `tests/test_arch_contract.py` enforces dictionary completeness and stage
+  parity (drift fails the gate).
+- Admin workspace (`#/admin`) and data entry (`#/data-entry`) are always OPEN
+  as local-first surfaces; they have no separate admin credential. If the
+  deployment is exposed beyond the trust boundary, use the shared
+  `NAYOSE_API_TOKEN` bearer policy. Every admin operation is recorded in the append-only audit log
+  (`models/admin_audit.jsonl`) regardless of auth. Manual entries live
+  OUTSIDE the immutable generation (`data/manual`, atomic parquet writes) and
+  are labeled un-trained — they must never break the fingerprint contract.
+- `MemoProxy` caches reads; MUTATION-ADJACENT reads (manualList, adminState,
+  loadDecisions) are pass-through — never cache state that an action mutates.
+- E2E authoring (enforced by `tests/test_arch_contract.py`): journeys call only
+  harness primitives from `frontend/test/e2e-util.mjs` — never raw
+  `waitForFunction`/`reload`/context creation (Facade); every journey runs in
+  its own fresh context via `runJourney` (isolation); selectors use ids and
+  semantic `data-*` hooks, never structural paths under `#view` (DIP at the
+  DOM seam); assert domain semantics (e.g. an entity item exists), not
+  incidental artifact counts.
+- The repo-root engine (`nayose_inference.py`) and CLI (`nayose_cli.py`) are
+  RETIRED: the engine lives at `api/engine.py`, the CLI is deleted. `api/` must
+  never reference root-level legacy modules; shared normalization/features
+  live in `api/normalize.py`/`api/features.py` and the engine re-exports them.
+  `tests/test_arch_contract.py` enforces this boundary.
+- Evidence-first UI: match results must show actual scored records, per-field
+  comparisons, thresholds and the decision reason — never invented explanations
+  or hidden synthetic labels. UI labels go through `frontend/ts/i18n.ts` (ja/en
+  dictionary), never hardcoded Japanese strings; the language toggle must not
+  translate customer data.
 - Do not hardcode datasets/rates in engine code — extend `config.py`/providers.
 - Do not commit `data/`, `models/`, `*.executed.ipynb`, or environment files.
 - Do not install new deps into the shared `.venv` without adding them to
@@ -111,8 +157,11 @@ Definition of done (EVERY change):
   For pure-sklearn serving bundles use `NAYOSE_PAIR_MODEL=sklearn`.
 - Embeddings are cached per (data fingerprint, model id) inside the generation
   dir; do not recompute them for an unchanged generation.
-## Legacy (refactor targets, do not extend)
+## Retired (do not reintroduce)
 
-- `nayose_cli.py`, `nayose_inference.py` — the original app layer (paired CLI +
-  engine). Kept stable and excluded from lint/type gates (ruff/mypy per-file
-  ignores); new logic goes into `api/` + `frontend/` + `synthetic/` instead.
+- `nayose_cli.py` — obsolete CLI app layer, deleted. The engine moved from
+  `nayose_inference.py` to `api/engine.py` (facade: artifact loading + the
+  fingerprint guard). `api/engine.py` carries historical long lines/defensive
+  naming; it is excluded from mypy and gets `E501/E402/B905/B007` per-file
+  ruff ignores in pyproject.toml — new logic goes into `api/` + `frontend/` +
+  `synthetic/`, and the arch contract forbids root-level legacy references.

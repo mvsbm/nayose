@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from synthetic.config import NoiseConfig, SyntheticConfig
+from synthetic.config import EVENT_NAMES, NoiseConfig, SyntheticConfig, noise_for_config
 from synthetic.noise import CUSTOMER_FIELDS, QueryCorruptor, RecordCorruptor
 
 PARTY = pd.Series(
@@ -56,6 +56,30 @@ def test_missing_values_are_labeled(cfg):
                 assert labels.get(field) == "missing", (field, values[field], labels.get(field))
             else:
                 assert field not in labels or labels[field] != "missing"
+
+
+def test_stale_rate_and_event_overrides_are_consumed():
+    event_rates = {name: 0.0 for name in EVENT_NAMES}
+    event_rates["rename_stale"] = 1.0
+    cfg = SyntheticConfig(
+        profile="preflight",
+        noise_event_rates=event_rates,
+        noise_band_scale={"average": 3.0},
+        noise_stale_rate=0.0,
+    )
+    no_stale = RecordCorruptor(cfg, noise_for_config(cfg)).corrupt(
+        PARTY, AGENCY, "average", np.random.default_rng(0)
+    )
+    assert no_stale.values["name_kanji"] == PARTY["name_kanji"]
+    baseline_cfg = SyntheticConfig(
+        profile="preflight",
+        noise_event_rates=event_rates,
+        noise_band_scale={"average": 3.0},
+    )
+    stale = RecordCorruptor(baseline_cfg, noise_for_config(baseline_cfg)).corrupt(
+        PARTY, AGENCY, "average", np.random.default_rng(0)
+    )
+    assert stale.values["name_kanji"] == PARTY["old_name_kanji"]
 
 
 def test_stale_rename_is_coherent(cfg):

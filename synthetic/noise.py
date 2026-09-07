@@ -19,7 +19,7 @@ import jaconv
 import numpy as np
 import pandas as pd
 
-from .config import NoiseConfig, SyntheticConfig
+from .config import DEFAULT_STALE_RATE, STALE_EVENT_NAMES, NoiseConfig, SyntheticConfig
 from .jp import date_to_era, mixed_width, ocr_mutate
 
 CUSTOMER_FIELDS = (
@@ -70,8 +70,12 @@ class RecordCorruptor:
     in the real name corpus (同音異字), enabling kana-driven kanji divergence.
     """
 
-    def __init__(self, cfg: SyntheticConfig, noise: NoiseConfig,
-                 homophones: dict[str, tuple[str, ...]] | None = None):
+    def __init__(
+        self,
+        cfg: SyntheticConfig,
+        noise: NoiseConfig,
+        homophones: dict[str, tuple[str, ...]] | None = None,
+    ):
         self.cfg = cfg
         self.noise = noise
         self.homophones = homophones
@@ -251,7 +255,7 @@ class RecordCorruptor:
         if len(local) < 3:
             return
         target = int(rng.integers(len(local)))
-        local = local[:target] + "x" + local[target + 1:]
+        local = local[:target] + "x" + local[target + 1 :]
         values["email"] = f"{local}@{domain}"
         self.lineage.append(("email", "email_typo"))
         self.protected.add("email")
@@ -260,13 +264,38 @@ class RecordCorruptor:
         values["party_type"] = "company" if values["party_type"] == "person" else "person"
 
     def _e_alpha_in_kana(self, values, party, rng) -> None:
-        field = rng.choice(["name_kanji", "name_kana"])
-        if values[field]:
-            pos = int(rng.integers(len(values[field])))
-            values[field] = (
-                values[field][:pos] + chr(int(rng.integers(65, 91))) + values[field][pos:]
-            )
-            self.lineage.append((field, "alpha_in_kana"))
+        """Kana rendered partly in Latin letters (legacy-system look). The
+        intent is NAME_KANA only — never name_kanji (a Latin letter inside
+        kanji was a generator bug that leaked artifacts into observed names)."""
+        if not values["name_kana"]:
+            return
+        pos = int(rng.integers(len(values["name_kana"])))
+        values["name_kana"] = (
+            values["name_kana"][:pos] + chr(int(rng.integers(65, 91))) + values["name_kana"][pos:]
+        )
+        self.lineage.append(("name_kana", "alpha_in_kana"))
+        self.protected.add("name_kana")
+
+    def _e_shared_contact(self, values, party, rng) -> None:
+        """The channel office's shared contact line (realistic broker pattern):
+        a record typed from this form carries the office phone/email when the
+        customer's own details are absent. Canonical truth keeps the party
+        contact; the observed line is the office's (labeled shared_contact).
+        Uses self._agency (set by corrupt()) — the uniform event interface
+        passes (values, party, rng) only."""
+        agency = self._agency if self._agency is not None else {}
+        if rng.random() < 0.5 and "phone" not in self.protected:
+            shared = str(agency.get("shared_phone", ""))
+            if shared:
+                values["phone"] = shared
+                self.lineage.append(("phone", "shared_contact"))
+                self.protected.add("phone")
+        if rng.random() < 0.5 and "email" not in self.protected:
+            shared = str(agency.get("shared_email", ""))
+            if shared:
+                values["email"] = shared
+                self.lineage.append(("email", "shared_contact"))
+                self.protected.add("email")
 
     def _e_combined_kana(self, values, party, rng) -> None:
         if " " in values["name_kana"]:
@@ -294,14 +323,35 @@ class RecordCorruptor:
         "alpha_in_kana": _e_alpha_in_kana,
         "combined_kana": _e_combined_kana,
         "kana_in_romaji": _e_kana_in_romaji,
+        "shared_contact": _e_shared_contact,
     }
 
     def corrupt(
-        self, party: pd.Series, agency: dict, quality: str, rng: np.random.Generator
+        self,
+        party: pd.Series,
+        agency: dict,
+        quality: str,
+        rng: np.random.Generator,
+        snapshot: dict[str, str] | None = None,
     ) -> CorruptionResult:
+        """Apply events. ``snapshot`` (G4) injects the party's truth-state at the
+        record's observed_at into the old_* slots the stale events read — the
+        handlers keep their uniform (values, party, rng) interface."""
+        if snapshot:
+            mapped: dict[str, str] = {}
+            for part, old in NAME_OLD.items():
+                if old:
+                    mapped[old] = snapshot.get(part, "")
+            for part, old in MOVE_OLD.items():
+                mapped[old] = snapshot.get(part, "")
+            for part, old in CONTACT_OLD.items():
+                mapped[old] = snapshot.get(part, "")
+            if mapped:
+                party = pd.Series({**party.to_dict(), **mapped})
         values = self._baseline(party)
         self.lineage: list[tuple[str, str]] = []
         self.protected: set[str] = set()  # fields already carrying event values
+        self._agency = agency  # office context for the shared_contact event
         noise, scale = self.noise, self.noise.band_scale[quality]
         channel = agency.get("channel", "web")
 
@@ -328,9 +378,21 @@ class RecordCorruptor:
                     self.EVENT_HANDLERS[name](self, values, party, rng)
 
         # (D) GLOBAL events (stale/history events apply regardless of channel).
+        #     G3: per-agent severity knobs are CONSUMED here (they were dead
+        #     config): OCR-family events scale with agency.ocr_factor, and the
+        #     legacy_format event with agency.format_factor.
+        agency_factor = float(agency.get("ocr_factor", 0.25))
+        format_factor = float(agency.get("format_factor", 1.0))
         event_order = [k for k in noise.event_rates if k not in ("doc_damage", *bundle)]
+        stale_multiplier = noise.stale_rate / DEFAULT_STALE_RATE
         for name in event_order:
             p = noise.event_rates[name] * scale
+            if name in STALE_EVENT_NAMES:
+                p *= stale_multiplier
+            if name == "paper_ocr":
+                p *= 0.5 + agency_factor
+            elif name == "legacy_format":
+                p *= min(1.5, max(0.4, format_factor))
             if rng.random() < min(1.0, p):
                 self.EVENT_HANDLERS[name](self, values, party, rng)
 

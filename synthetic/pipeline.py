@@ -21,7 +21,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from .config import PROFILES, NoiseConfig, SyntheticConfig, default_data_dir
+from .config import PROFILES, SyntheticConfig, default_data_dir, noise_for_config
 from .engine import (
     build_observations,
     generate_agencies,
@@ -29,6 +29,7 @@ from .engine import (
     generate_queries,
 )
 from .noise import CUSTOMER_FIELDS
+from .policy import build_policies, history_by_party, validate_temporal
 from .providers import (
     AddressSource,
     BuildingComposer,
@@ -71,7 +72,7 @@ class PipelineResult:
 
 
 def data_fingerprint(reference: pd.DataFrame) -> str:
-    """Canonical fingerprint shared with nayose.ipynb / nayose_inference.py."""
+    """Canonical fingerprint shared with nayose.ipynb / api.engine.py."""
     return hashlib.sha256(
         pd.util.hash_pandas_object(reference[REFERENCE_COLS], index=False).values.tobytes()
     ).hexdigest()
@@ -80,7 +81,7 @@ def data_fingerprint(reference: pd.DataFrame) -> str:
 def generate(cfg: SyntheticConfig, rng: np.random.Generator | None = None) -> PipelineResult:
     """Run the full pipeline: parties -> observations -> queries -> six truth tables."""
     rng = rng or np.random.default_rng(cfg.seed)
-    noise = NoiseConfig()
+    noise = noise_for_config(cfg)
     raw_dir = cfg.raw_dir or default_data_dir() / "raw"
 
     persona = PersonaSource(raw_dir)
@@ -91,12 +92,33 @@ def generate(cfg: SyntheticConfig, rng: np.random.Generator | None = None) -> Pi
 
     parties = generate_parties(cfg, rng, persona, companies, address, buildings)
     agencies = generate_agencies(cfg, rng)
-    observations, party_of, record_lineage = build_observations(
-        cfg, noise, parties, agencies, rng, homophones=homophones
-    )
 
+    # domain context (household relations, policy aggregate roots, truth
+    # timeline) is built BEFORE observations so records attach to real policies
+    # and are date-anchored to their truth states.
     name_dups = parties.name_kanji.value_counts()
     relation_of = build_households(len(parties), rng)
+    relation_members: dict[int, list[int]] = {}
+    for party_idx, rel in relation_of.items():
+        relation_members.setdefault(rel, []).append(party_idx)
+    policies = build_policies(rng, parties, relation_of, relation_members)
+    history = history_by_party(rng, parties, homophones, address, buildings)
+    observations, party_of, record_lineage = build_observations(
+        cfg,
+        noise,
+        parties,
+        agencies,
+        rng,
+        homophones=homophones,
+        policies=policies,
+        history=history,
+    )
+
+    # G4 data contract: records must never carry a truth newer than their date
+    temporal_violations = validate_temporal(observations, party_of, history, record_lineage)
+    if temporal_violations:
+        raise RuntimeError("temporal drift violated: " + " | ".join(temporal_violations[:10]))
+
     party_truth = build_party_truth(parties, relation_of, name_dups)
     record_truth = build_record_truth(observations, party_of, party_truth)
     record_ids_by_truth = record_truth.groupby("truth_id").record_id.apply(list).to_dict()
@@ -149,6 +171,7 @@ def build_manifest(
         "created_at_utc": pd.Timestamp.utcnow().isoformat(),
         "config": cfg_json,
         "profile": PROFILES[cfg.profile],
+        "effective_noise": asdict(noise_for_config(cfg)),
         "counts": counts,
         "sources": sources
         or {

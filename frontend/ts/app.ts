@@ -1,10 +1,12 @@
 // Composition root (hexagonal): build port+store, mount shell, route.
 // No side effects at import time; tests call boot({ port, store }) with mocks.
-import { ApiAdapter } from "./infra.js";
+import { createPort } from "./infra.js";
 import { Store } from "./store.js";
+import type { Density, Theme } from "./store.js";
+import { applyAppearance } from "./appearance.js";
 import { QueryPort } from "./port.js";
 import { checkedKey, parseRoute } from "./core.js";
-import { listRuns, RunInfo } from "./shared.js";
+import { RunInfo } from "./shared.js";
 import {
   mountCompare,
   mountCompareRuns,
@@ -15,11 +17,14 @@ import {
   mountReview,
   mountSearch,
 } from "./features.js";
+import { mountAdmin } from "./admin-view.js";
+import { mountDataEntry } from "./data-entry-view.js";
 
 export interface BootOptions {
   port?: QueryPort;
   store?: Store;
   runs?: RunInfo[];
+  healthIntervalMs?: number; // status-strip poll cadence; 0 disables (tests)
 }
 
 const VIEWS: Record<string, (view: HTMLElement, port: QueryPort, store: Store, args: string[]) => Promise<void>> = {
@@ -31,37 +36,100 @@ const VIEWS: Record<string, (view: HTMLElement, port: QueryPort, store: Store, a
   entity: (v, p, s, a) => mountEntity(v, p, s, a[0] ?? ""),
   compare: (v, p, s, a) => mountCompare(v, p, s, a[0] ?? "", a[1] ?? ""),
   "compare-runs": (v, p, s) => mountCompareRuns(v, p, s),
+  admin: (v, p, s) => mountAdmin(v, p, s),
+  "data-entry": (v, p, s) => mountDataEntry(v, p, s),
 };
 
 export async function boot(opts: BootOptions = {}): Promise<{ destroy: () => void }> {
   const store = opts.store ?? new Store();
-  const port = opts.port ?? new ApiAdapter();
+  const port = opts.port ?? createPort();
   const view = document.querySelector<HTMLElement>("main#view")!;
-  document.documentElement.dataset.theme = store.theme;
+  let activeView: HTMLElement | undefined;
+  let navigation = 0;
+  const themeKey = (theme: Theme): string => theme === "auto" ? "themeAuto" : theme === "dark" ? "themeDark" : "themeLight";
+  const densityKey = (density: Density): string => density === "compact" ? "densityCompact" : "densityComfortable";
+  const localizeShell = (): void => {
+    document.documentElement.lang = store.locale;
+    document.title = `Nayose — ${store.t("title")}`;
+    document.querySelectorAll<HTMLElement>("[data-i18n]").forEach(el => { el.textContent = store.t(el.dataset.i18n!); });
+    document.querySelectorAll<HTMLElement>("[data-i18n-aria]").forEach(el => el.setAttribute("aria-label", store.t(el.dataset.i18nAria!)));
+    document.querySelectorAll<HTMLElement>("[data-i18n-placeholder]").forEach(el => el.setAttribute("placeholder", store.t(el.dataset.i18nPlaceholder!)));
+    const theme = document.querySelector<HTMLButtonElement>("#theme");
+    if (theme) {
+      theme.textContent = `${store.t("theme")} · ${store.t(themeKey(store.theme))}`;
+      theme.setAttribute("aria-label", `${store.t("theme")} · ${store.t(themeKey(store.theme))}`);
+    }
+    const density = document.querySelector<HTMLButtonElement>("#density");
+    if (density) {
+      density.textContent = `${store.t("density")} · ${store.t(densityKey(store.density))}`;
+      density.setAttribute("aria-label", `${store.t("density")} · ${store.t(densityKey(store.density))}`);
+    }
+    const language = document.querySelector<HTMLButtonElement>("#language")!;
+    language.textContent = store.locale === "ja" ? "English" : "日本語";
+    language.lang = store.locale === "ja" ? "en" : "ja";
+    language.setAttribute("aria-label", store.locale === "ja" ? "Switch to English" : "日本語に切り替え");
+  };
+  const applyChromeAppearance = (): void => {
+    applyAppearance(store.theme, store.density);
+    localizeShell();
+  };
+  applyChromeAppearance();
+  const unTheme = store.on("theme", applyChromeAppearance);
+  const unDensity = store.on("density", applyChromeAppearance);
+  const systemTheme = typeof window.matchMedia === "function" ? window.matchMedia("(prefers-color-scheme: dark)") : null;
+  const onSystemTheme = (): void => { if (store.theme === "auto") applyChromeAppearance(); };
+  systemTheme?.addEventListener("change", onSystemTheme);
 
   const paint = async (html: string): Promise<void> => {
     view.innerHTML = `<div class="panel">${html}</div>`;
     view.focus({ preventScroll: true });
   };
-  const runView = async (fn: () => Promise<void>): Promise<void> => {
-    try {
-      await fn();
-    } catch (err) {
-      paint(`<div class="empty bad"><p>エラー: ${String((err as Error)?.message ?? err)}</p>
-        <button type="button" class="more" id="retry">再試行</button></div>`);
-      document.querySelector("#retry")?.addEventListener("click", () => void navigate());
-    }
-  };
   const navigate = async (): Promise<void> => {
+    const ticket = ++navigation;
+    activeView?.dispatchEvent(new window.Event("unmount"));
+    const target = document.createElement("div");
+    activeView = target;
+    view.replaceChildren(target);
+    if (!store.runs.length) {
+      await paint(`<div class="empty"><h2>${esc(store.t("noRun"))}</h2><p>${esc(store.t("noRunHelp"))}</p></div>`);
+      return;
+    }
     const route = parseRoute(location.hash);
-    document.querySelectorAll(".side a").forEach((a) =>
-      a.setAttribute("aria-current", a.getAttribute("data-nav") === route.name ? "page" : ""),
+    const navRoute = route.name === "entity" ? "entities" : route.name === "compare" ? "review" : route.name;
+    document.querySelectorAll<HTMLElement>(".side a").forEach((a) =>
+      a.setAttribute("aria-current", a.getAttribute("data-nav") === navRoute ? "page" : ""),
     );
+    document.querySelectorAll<HTMLDetailsElement>(".side details[data-nav-group]").forEach((group) => {
+      if (group.querySelector(`[data-nav="${navRoute}"]`)) group.open = true;
+    });
     window.scrollTo(0, 0);
     const render = VIEWS[route.name];
-    await runView(() => (render ? render(view, port, store, route.args) : mountSearch(view, port, store)));
+    try {
+      await (render ? render(target, port, store, route.args) : mountSearch(target, port, store));
+    } catch (err) {
+      if (ticket !== navigation) return;
+      target.innerHTML = `<div class="empty"><p>${esc(store.t("error"))}: ${esc(store.t(String((err as Error).message ?? err)))}</p><button class="more" id="retry">${esc(store.t("retry"))}</button></div>`;
+      target.querySelector("#retry")?.addEventListener("click", () => void navigate());
+    }
   };
-  window.addEventListener("hashchange", () => void navigate());
+  const onHashChange = (): void => { void navigate(); };
+  window.addEventListener("hashchange", onHashChange);
+  const switchLanguage = (): void => store.setLocale(store.locale === "ja" ? "en" : "ja");
+  document.querySelector("#language")!.addEventListener("click", switchLanguage);
+  const unLocale = store.on("locale", () => { localizeShell(); void navigate(); });
+  let unCheckedStatus: () => void = () => {};
+  const cleanup = (): void => {
+    activeView?.dispatchEvent(new window.Event("unmount"));
+    window.removeEventListener("hashchange", onHashChange);
+    document.querySelector("#language")?.removeEventListener("click", switchLanguage);
+    unLocale();
+    unTheme();
+    unDensity();
+    systemTheme?.removeEventListener("change", onSystemTheme);
+    if (healthTimer) window.clearInterval(healthTimer);
+    unCheckedStatus();
+    strip.hidden = true;
+  };
 
   // run selector + first-run guidance
   const sel = document.querySelector<HTMLSelectElement>("#run")!;
@@ -70,16 +138,15 @@ export async function boot(opts: BootOptions = {}): Promise<{ destroy: () => voi
     store.runs = opts.runs;
   } else {
     try {
-      store.runs = await listRuns();
+      store.runs = await port.runs();
     } catch {
       store.runs = [];
     }
   }
   if (store.runs.length === 0) {
-    sel.innerHTML = '<option value="">（なし）</option>';
-    await paint(`<div class="empty"><h2>run バンドルが見つかりません</h2>
-      <p class="members">生成・学習後に <code>NAYOSE_MODELS_DIR=…</code> を指定して <code>python -m api.main</code> を起動してください。</p></div>`);
-    return { destroy: () => window.removeEventListener("hashchange", navigate) };
+    sel.innerHTML = `<option value="">${esc(store.t("none"))}</option>`;
+    await navigate();
+    return { destroy: cleanup };
   }
   const current = store.runs.find((r) => r.current) ?? store.runs[0];
   const saved = store.read("nayose.run");
@@ -100,8 +167,18 @@ export async function boot(opts: BootOptions = {}): Promise<{ destroy: () => voi
     void navigate();
   });
 
+  // Admin and data entry are local-first surfaces with no separate credential.
+  try {
+    const cap = await port.adminCapability().catch(() => ({ capable: false }));
+    if (cap.capable) {
+      document.querySelectorAll("#nav-admin-group, #nav-data-entry").forEach(n => n.removeAttribute("hidden"));
+    }
+    try { localStorage.removeItem("nayose.adminToken"); } catch { /* storage unavailable */ }
+  } catch { /* server unavailable: keep the nav hidden */ }
+
   // decision persistence: localStorage (offline) + server-side (survives machines)
   store.checked = new Set<string>(JSON.parse(store.read("nayose.checked") ?? "[]"));
+  store.reviewer = store.read("nayose.reviewer") ?? "";
   store.on("checked", () => store.write("nayose.checked", JSON.stringify([...store.checked])));
   try {
     const remote = await port.loadDecisions();
@@ -119,41 +196,105 @@ export async function boot(opts: BootOptions = {}): Promise<{ destroy: () => voi
       const now = new Date().toISOString();
       const items = [...store.checked].map((key) => {
         const parts = key.split("|");
-        return { left: parts[1] ?? "", right: parts[2] ?? "", ts: now };
+        return { left: parts[1] ?? "", right: parts[2] ?? "", ts: now, reviewer: store.reviewer };
       });
       void port.saveDecisions(items).catch(() => {});
     }, 500);
   });
 
-  // theme
-  document.querySelector("#theme")?.addEventListener("click", () => {
-    store.toggleTheme();
-    store.write("nayose.theme", store.theme);
-  });
+  // appearance preferences are state transitions projected by applyChromeAppearance
+  document.querySelector("#theme")?.addEventListener("click", () => store.toggleTheme());
+  document.querySelector("#density")?.addEventListener("click", () => store.toggleDensity());
+
+  // E — system status strip (visibility of system status): health poll drives it
+  const strip = document.querySelector<HTMLElement>("#status-strip")!;
+  const renderHealth = async (): Promise<void> => {
+    try {
+      const h = await port.health();
+      if (!strip.isConnected) return;
+      const fpBadge = store.run && h.run && store.run !== h.run
+        ? `<span class="bad">${esc(store.t("fpMismatch"))}</span>`
+        : `<span class="ok">${esc(store.t("fpMatch"))}</span>`;
+      const engine = h.engine_warm
+        ? `<span class="ok">${esc(store.t("engineWarm"))}</span>`
+        : `<span class="warn">${esc(store.t("engineCold"))}</span>`;
+      const stats = (h.stats ?? []).slice(0, 8)
+        .map(s => `<tr><td>${esc(s.endpoint)}</td><td>${s.hits}</td><td>${Math.round(s.total_ms)}ms</td></tr>`)
+        .join("");
+      strip.hidden = false;
+      const sessionRecords = store.checked.size
+        ? ` · ${esc(store.t("sessionRecords", { n: store.checked.size }))}`
+        : "";
+      strip.innerHTML = `<b>${esc(store.t("runningRun"))}:</b> ${esc(h.run ?? "—")} · ${fpBadge} · ${engine}${sessionRecords}
+        <details><summary>${esc(store.t("apiStats"))}</summary><table><thead><tr><th>endpoint</th><th>hits</th><th>total</th></tr></thead><tbody>${stats || `<tr><td colspan="3">—</td></tr>`}</tbody></table>
+        <p class="members">${esc(store.t("healthNow", { t: (h.now_utc ?? "").slice(0, 19).replace("T", " ") }))}</p></details>`;
+    } catch { /* server unreachable: keep the strip silent */ }
+  };
+  unCheckedStatus = store.on("checked", () => void renderHealth());
+  void renderHealth();
+  const healthIntervalMs = opts.healthIntervalMs ?? 30000;
+  const healthTimer = healthIntervalMs > 0 ? window.setInterval(() => void renderHealth(), healthIntervalMs) : 0;
 
   // ⌘K palette (keyboard-first) — powered by the same QueryPort
   const palette = document.querySelector<HTMLElement>("#palette")!;
   const pInput = document.querySelector<HTMLInputElement>("#palette-input")!;
   const pList = document.querySelector<HTMLUListElement>("#palette-results")!;
   const pStat = document.querySelector("#palette-stat")!;
-  let pItems: Array<{ label: string; meta: string; go: () => void }> = [];
+  type PaletteItem = { label: string; meta: string; go: () => void };
+  let pItems: PaletteItem[] = [];
   let pActive = -1;
-  const openPalette = (): void => { palette.classList.add("open"); palette.hidden = false; pInput.value = ""; pStat.textContent = ""; void paletteSearch(""); pInput.focus(); };
-  const closePalette = (): void => { palette.classList.remove("open"); palette.hidden = true; pActive = -1; };
+  let paletteRequest = 0;
+  let focusBeforePalette: HTMLElement | null = null;
+  const openPalette = (): void => {
+    const active = document.activeElement as HTMLElement | null;
+    const opener = document.querySelector<HTMLElement>("#cmd");
+    focusBeforePalette = active && active !== document.body && active !== document.documentElement && typeof active.focus === "function" ? active : opener;
+    palette.classList.add("open");
+    palette.hidden = false;
+    pInput.value = "";
+    pStat.textContent = "";
+    void paletteSearch("");
+    pInput.focus();
+  };
+  const closePalette = (): void => {
+    paletteRequest += 1;
+    palette.classList.remove("open");
+    palette.hidden = true;
+    pActive = -1;
+    const restore = focusBeforePalette;
+    focusBeforePalette = null;
+    const target = restore?.isConnected ? restore : document.querySelector<HTMLElement>("#cmd");
+    target?.focus();
+  };
+  const paletteActions = (): PaletteItem[] => [
+    { label: store.t("actionThemeLight"), meta: "action:theme-light", go: () => { store.setTheme("light"); closePalette(); } },
+    { label: store.t("actionThemeDark"), meta: "action:theme-dark", go: () => { store.setTheme("dark"); closePalette(); } },
+    { label: store.t("actionThemeAuto"), meta: "action:theme-auto", go: () => { store.setTheme("auto"); closePalette(); } },
+    { label: store.t("actionDensityComfortable"), meta: "action:density-comfortable", go: () => { store.setDensity("comfortable"); closePalette(); } },
+    { label: store.t("actionDensityCompact"), meta: "action:density-compact", go: () => { store.setDensity("compact"); closePalette(); } },
+    { label: store.t("actionHelp"), meta: "action:help", go: () => { pStat.textContent = store.t("commandHelp"); } },
+  ];
   async function paletteSearch(q: string): Promise<void> {
-    const nav: Array<[string, string]> = [["search", "検索"], ["review", "レビュー待機"], ["entities", "エンティティ"], ["confusion", "混同行列"], ["metrics", "指標"], ["compare-runs", "比較"]];
-    type Item = { label: string; meta: string; go: () => void };
-    const items: Item[] = nav.map(([id, label]) => ({ label, meta: `#/${id}`, go: () => { closePalette(); location.hash = `#/${id}`; } }));
+    const request = ++paletteRequest;
+    const query = q.trim().toLocaleLowerCase();
+    const nav: Array<[string, string]> = [["search", store.t("search")], ["review", store.t("review")], ["entities", store.t("entityExplorer")], ["confusion", store.t("confusion")], ["metrics", store.t("metrics")], ["compare-runs", store.t("compareRuns")]];
+    if (!document.querySelector("#nav-data-entry[hidden]")) nav.push(["data-entry", store.t("dataEntry")]);
+    if (!document.querySelector("#nav-admin[hidden]")) nav.push(["admin", store.t("dataTrain")]);
+    const items: PaletteItem[] = nav.map(([id, label]) => ({ label, meta: `#/${id}`, go: () => { closePalette(); location.hash = `#/${id}`; } }));
+    items.push(...paletteActions().filter(item => !query || `${item.label} ${item.meta}`.toLocaleLowerCase().includes(query)));
     if (q.length >= 2) {
-      pStat.textContent = "検索中…";
+      pStat.textContent = store.t("searching");
       try {
-        const hits = await port.entities(q);
-        hits.forEach((h) => items.push({ label: `${h.name_kanji} ${h.name_kana ?? ""}`, meta: h.nayose_id, go: () => { closePalette(); location.hash = `#/entity/${h.nayose_id}`; } }));
-        pStat.textContent = `${hits.length} 件`;
+        const res = await port.entities(q);
+        if (request !== paletteRequest) return;
+        res.rows.forEach((h) => items.push({ label: `${h.name_kanji} ${h.name_kana ?? ""}`, meta: h.nayose_id, go: () => { closePalette(); location.hash = `#/entity/${h.nayose_id}`; } }));
+        pStat.textContent = store.t("count", { n: res.rows.length });
       } catch (err) {
-        pStat.textContent = "エラー: " + String((err as Error)?.message ?? err);
+        if (request !== paletteRequest) return;
+        pStat.textContent = store.t("error") + ": " + String((err as Error)?.message ?? err);
       }
     }
+    if (request !== paletteRequest) return;
     pItems = items.slice(0, 14);
     pActive = pItems.length ? 0 : -1;
     renderPaletteList();
@@ -180,14 +321,23 @@ export async function boot(opts: BootOptions = {}): Promise<{ destroy: () => voi
     const i = Number(li?.dataset.i);
     if (pItems[i]) pItems[i]!.go();
   });
-  document.addEventListener("keydown", (e) => {
-    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); openPalette(); }
-    else if (e.key === "Escape") closePalette();
-  });
+  const paletteKey = (e: KeyboardEvent): void => {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+      e.preventDefault();
+      openPalette();
+    } else if (!palette.hidden && e.key === "Tab") {
+      e.preventDefault();
+      pInput.focus();
+    } else if (!palette.hidden && e.key === "Escape") {
+      closePalette();
+    }
+  };
+  document.addEventListener("keydown", paletteKey);
+  document.querySelector("#cmd")?.addEventListener("click", openPalette);
   palette.addEventListener("click", (e) => { if (e.target === palette) closePalette(); });
 
   await navigate();
-  return { destroy: () => { window.removeEventListener("hashchange", navigate); document.removeEventListener("keydown", () => {}); } };
+  return { destroy: () => { cleanup(); document.removeEventListener("keydown", paletteKey); document.querySelector("#cmd")?.removeEventListener("click", openPalette); } };
 }
 
 const esc = (s: unknown): string =>

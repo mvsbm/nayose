@@ -7,9 +7,6 @@ import {
   diffFields,
   clamp01,
   asNumber,
-  likeEscaped,
-  satisfiesMinScore,
-  pick,
 } from "../js/core.js";
 
 test("parseRoute: default is search, strips leading hash", () => {
@@ -39,20 +36,7 @@ test("clamp01 / asNumber bounds and NaN safety", () => {
   assert.equal(asNumber("0.5"), 0.5);
 });
 
-test("likeEscaped escapes SQL wildcards for LIKE", () => {
-  assert.equal(likeEscaped("100%"), "100\\%");
-  assert.equal(likeEscaped("a_b"), "a\\_b");
-  assert.equal(likeEscaped("x\\y"), "x\\\\y");
-});
-
-test("satisfiesMinScore applies the clamp to the threshold", () => {
-  assert.ok(satisfiesMinScore(0.6, 0.5));
-  assert.ok(!satisfiesMinScore(0.4, 0.5));
-  assert.ok(!satisfiesMinScore(0.6, 2)); // threshold clamps to 1
-});
-
-test("pick returns only the requested keys that exist", () => {
-  const row = { a: 1, b: 2, c: 3 };
-  assert.deepEqual(pick(row, ["a", "c"]), { a: 1, c: 3 });
-  assert.deepEqual(pick(row, ["a", "z"]), { a: 1 });
+test("diffFields excludes identity/metadata noise from the comparison", () => {
+  const row = { record_id: "R1", policy_id: "P1", observed_at: "2020-01-01", name_kanji: "佐藤" };
+  assert.deepEqual(diffFields(row), ["name_kanji"]);
 });

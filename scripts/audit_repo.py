@@ -7,6 +7,7 @@ failure. Fastest checks first (lint -> types -> JS -> pytest -> optional E2E).
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -33,12 +34,17 @@ def main() -> int:
     print("Auditing repository (fastest first)...")
     results: dict[str, bool] = {}
 
-    # 1-2: python lint/types
+    # 1-3: Python lint, formatting, and types
     results["ruff"] = run("ruff (lint)", [*PY, "ruff", "check", "."], REPO)
-    results["mypy"] = run("mypy (types)", [*PY, "mypy", "synthetic", "tests"], REPO)
+    results["ruff format"] = run(
+        "ruff (format)", [*PY, "ruff", "format", "--check", "."], REPO
+    )
+    results["mypy"] = run(
+        "mypy (types)", [*PY, "mypy", "api", "synthetic", "scripts", "tests"], REPO
+    )
 
-    # 3: frontend types (tsc) + compile
-    if NPM:
+    # 4: frontend types (tsc) + compile
+    if NPM and NODE:
         results["tsc"] = run(
             "tsc (frontend)", [NPM, "--prefix", "frontend", "run", "typecheck"], REPO, 300
         )
@@ -49,11 +55,22 @@ def main() -> int:
             300,
         )
     else:
-        results["tsc"] = results["npm test"] = True
-        print("  npm/node not found - frontend gates skipped")
+        results["tsc"] = results["npm test"] = False
+        print("  npm/node not found - frontend gates cannot be verified")
 
-    # 4: python tests (includes frontend-gate, schema-contract, API functional)
+    # 5: Python tests (includes frontend-gate, schema-contract, API functional)
     results["pytest"] = run("pytest (python + gates)", [*PY, "pytest", "tests/", "-q"], REPO)
+
+    if os.getenv("NAYOSE_E2E") == "1":
+        if not (NPM and NODE):
+            results["e2e"] = False
+        else:
+            results["e2e"] = run(
+                "playwright e2e",
+                [NPM, "--prefix", "frontend", "run", "test:e2e"],
+                REPO,
+                timeout=1800,
+            )
 
     print("\nSummary:")
     for name, ok in results.items():

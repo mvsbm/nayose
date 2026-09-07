@@ -7,7 +7,7 @@
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "test": "tsc && node --test test/core.test.mjs test/view.test.mjs",
-    "test:e2e": "node --test test/e2e.test.mjs"
+    "test:e2e": "node --test --test-concurrency=1 test/e2e.test.mjs test/ui-sweep.test.mjs"
   },
   "keywords": [],
   "author": "",
@@ -18,6 +18,7 @@
   },
   "private": true,
   "devDependencies": {
+    "@axe-core/playwright": "^4.13.0",
     "jsdom": "^30.0.1",
     "playwright": "^1.62.1"
   }

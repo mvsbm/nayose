@@ -7,33 +7,48 @@
   <meta name="theme-color" content="#f6f7fb">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%234f46e5'/%3E%3Ccircle cx='16' cy='16' r='6' fill='none' stroke='white' stroke-width='3'/%3E%3C/svg%3E">
   <title>Nayose 照合監査</title>
+  <link rel="preload" href="/static/fonts/noto/noto-sans-jp-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="/static/fonts/noto-sans-jp.css">
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
-  <a class="skip" href="#view">本文へスキップ</a>
-  <header class="glass">
-    <h1>Nayose <span class="muted">照合監査</span></h1>
+  <a class="skip" href="#view" data-i18n="skip">本文へスキップ</a>
+  <header class="glass app-bar">
+    <h1>Nayose <span class="muted" data-i18n="title">照合監査</span></h1>
     <label class="run"><span class="muted">run</span>
-      <select id="run" aria-label="実行バンドル選択"></select>
+      <select id="run" data-i18n-aria="run" aria-label="実行バンドル選択"></select>
     </label>
     <span id="run-fp" class="members" aria-live="polite"></span>
-    <button id="cmd" type="button" class="chip" aria-label="コマンドパレット">⌘K 検索</button>
-    <button id="theme" type="button" class="chip" aria-label="テーマ切替">テーマ</button>
+    <button id="cmd" type="button" class="chip" data-i18n-aria="palette" aria-label="コマンドパレット">⌘K <span data-i18n="search">検索</span></button>
+    <button id="theme" type="button" class="chip" data-i18n="theme" data-i18n-aria="theme" aria-label="テーマ切替">テーマ</button>
+    <button id="density" type="button" class="chip" data-i18n="density" data-i18n-aria="density" aria-label="表示密度">表示密度</button>
+    <button id="language" type="button" class="chip" lang="en" aria-label="Switch to English">English</button>
   </header>
+  <div id="status-strip" class="status-strip" hidden aria-live="polite"></div>
   <div class="shell">
-    <nav class="glass side" aria-label="セクション">
-      <a href="#/search" data-nav="search">検索</a>
-      <a href="#/review" data-nav="review">レビュー待機</a>
-      <a href="#/entities" data-nav="entities">エンティティ</a>
-      <a href="#/confusion" data-nav="confusion">混同行列</a>
-      <a href="#/metrics" data-nav="metrics">指標</a>
-      <a href="#/compare-runs" data-nav="compare-runs">比較</a>
+    <nav class="glass side" data-i18n-aria="sections" aria-label="セクション">
+      <details open data-nav-group="match"><summary data-i18n="navMatch">照合</summary>
+        <a href="#/search" data-nav="search" data-i18n="search">検索・照合</a>
+        <a href="#/entities" data-nav="entities" data-i18n="entityExplorer">エンティティ探索</a>
+      </details>
+      <details open data-nav-group="review"><summary data-i18n="navReview">確認と登録</summary>
+        <a href="#/review" data-nav="review" data-i18n="review">レビュー待機</a>
+        <a href="#/data-entry" data-nav="data-entry" id="nav-data-entry" data-i18n="dataEntry" hidden>データ登録</a>
+      </details>
+      <details open data-nav-group="evaluate"><summary data-i18n="navEvaluate">評価</summary>
+        <a href="#/metrics" data-nav="metrics" data-i18n="metrics">指標</a>
+        <a href="#/confusion" data-nav="confusion" data-i18n="confusion">混同行列</a>
+        <a href="#/compare-runs" data-nav="compare-runs" data-i18n="compareRuns">run 比較</a>
+      </details>
+      <details id="nav-admin-group" data-nav-group="admin" hidden><summary data-i18n="navAdmin">管理</summary>
+        <a href="#/admin" data-nav="admin" data-i18n="dataTrain">データと学習</a>
+      </details>
     </nav>
     <main id="view" tabindex="-1"></main>
   </div>
-  <div id="palette" hidden aria-label="コマンドパレット">
+  <div id="palette" role="dialog" aria-modal="true" hidden data-i18n-aria="palette" aria-label="コマンドパレット">
     <div class="glass box">
-      <input id="palette-input" type="search" placeholder="検索・移動…（例：N0000123）" autocomplete="off" aria-controls="palette-results" aria-activedescendant="">
+      <input id="palette-input" data-i18n-placeholder="paletteHint" data-i18n-aria="palette" type="search" placeholder="検索・移動…（例：N0000123）" autocomplete="off" aria-controls="palette-results" aria-activedescendant="">
       <ul id="palette-results" role="listbox" tabindex="-1"></ul>
       <p id="palette-stat" role="status" aria-live="polite" class="members"></p>
     </div>

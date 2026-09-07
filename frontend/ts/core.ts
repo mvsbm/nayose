@@ -1,5 +1,6 @@
 // Pure core: no DOM, no fetch — unit-testable with node:test.
 // Kept side-effect free so "unit" tests are real units (hermetic, deterministic).
+import type { MatchJob } from "./port.js";
 
 export interface Route {
   name: string;
@@ -30,21 +31,21 @@ export function asNumber(v: unknown, fallback = 0): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
-export function likeEscaped(q: string): string {
-  return q.replace(/[%_\\]/g, (c) => "\\" + c);
-}
-
-export function satisfiesMinScore(score: unknown, minP: number): boolean {
-  return asNumber(score) >= clamp01(minP);
-}
-
-export function pick<T extends Record<string, unknown>, K extends keyof T>(
-  row: T,
-  keys: readonly K[],
-): Pick<T, K> {
-  const out = {} as Pick<T, K>;
-  for (const k of keys) {
-    if (k in row) out[k] = row[k];
+export async function pollJob(
+  getStatus: () => Promise<MatchJob>,
+  initial: MatchJob,
+  timeoutSec = 300,
+  onUpdate?: (job: MatchJob) => void,
+): Promise<MatchJob> {
+  let job = initial;
+  const deadline = Date.now() + timeoutSec * 1000;
+  onUpdate?.(job);
+  while (Date.now() < deadline) {
+    if (job.stage === "complete" || job.stage === "failed") return job;
+    job = await getStatus();
+    onUpdate?.(job);
+    if (job.stage === "complete" || job.stage === "failed") return job;
+    await new Promise(resolve => setTimeout(resolve, 1000));
   }
-  return out;
+  return job;
 }

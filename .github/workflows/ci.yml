@@ -3,49 +3,101 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+env:
+  UV_SYNC_EXTRA: matcher,dev
 
 jobs:
-  quality:
-    name: Lint, type-check, test
+  ## The one authoritative quality gate: scripts/audit_repo.py
+  ## (ruff, mypy, tsc, npm test, pytest incl. schema + arch contracts + frontend gate).
+  gate:
+    name: Audit gate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v4
       - name: Install
-        run: uv sync --extra matcher --extra dev
-      - name: Lint
-        run: uv run ruff check .
-      - name: Format
+        run: uv sync --extra matcher --extra train --extra serve --extra dev
+      - name: Format check
         run: uv run ruff format --check .
-      - name: Types
-        run: uv run mypy synthetic tests
-      - name: Tests
-        run: uv run pytest tests/ -q
+      - name: Frontend deps
+        run: npm --prefix frontend ci
+      - name: Audit (authoritative)
+        run: uv run python scripts/audit_repo.py
 
-  # Optional: heavy end-to-end gate, run on schedule/on-demand (downloads real data).
-  e2e:
-    name: Data-generation smoke (E2E)
+  ## Daily on-demand / PR end-to-end smoke: generate → headless train → verify
+  ## bundle → Playwright E2E against the freshly trained smoke bundle.
+  data-smoke:
+    name: Data + train smoke (E2E)
     runs-on: ubuntu-latest
-    needs: quality
-    if: github.event_name == 'schedule'
+    needs: gate
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v4
       - name: Install
-        run: uv sync --extra matcher
-      - name: Generate smoke dataset
-        run: uv run python scripts/generate_data.py --profile smoke --data-dir /tmp/smoke
-      - name: Verify contract
+        run: uv sync --extra matcher --extra train --extra serve
+      - name: Generate smoke data
+        run: uv run python scripts/generate_data.py --profile smoke --seed 7 --data-dir /tmp/smoke
+      - name: Train headless + verify bundle
         run: |
-          uv run python - <<'PY'
-          import json, pandas as pd
-          for t in ("record_truth", "evaluation_truth", "query_truth", "field_lineage"):
-              df = pd.read_parquet(f"/tmp/smoke/current/ground_truth/{t}.parquet")
-              assert len(df) > 0, t
-          ref = pd.read_parquet("/tmp/smoke/current/reference_records.parquet")
-          manifest = json.load(open("/tmp/smoke/current/generation_manifest.json"))
-          assert ref.record_id.is_unique and "truth_id" not in ref.columns
-          assert manifest.get("data_fingerprint"), "fingerprint missing"
-          print("contract OK")
-          PY
+          uv run python scripts/train.py --data-dir /tmp/smoke --models-dir /tmp/models \
+            --seed 7 --device cpu --model-family off --prune-aborted
+          uv run python scripts/audit_decisions.py --models-dir /tmp/models --data-dir /tmp/smoke
+      - name: E2E (Playwright) against the trained smoke bundle
+        run: |
+          npm --prefix frontend ci
+          npx --prefix frontend playwright install chromium
+          NAYOSE_E2E=1 NAYOSE_E2E_MODELS=/tmp/models NAYOSE_E2E_DATA="$(realpath /tmp/smoke/current)" \
+            npm --prefix frontend run test:e2e
+      - name: Upload E2E failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-artifacts
+          path: /tmp/nayose-e2e-artifacts-*/*
+          if-no-files-found: ignore
+      - name: Upload bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-bundle
+          path: /tmp/models/runs/*/run_manifest.json
+
+  ## Container image → GHCR, built on version tags (vX.Y.Z).
+  image:
+    name: Build + push image
+    runs-on: ubuntu-latest
+    needs: gate
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

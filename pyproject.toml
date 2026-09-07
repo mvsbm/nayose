@@ -25,6 +25,7 @@ matcher = [
     "rapidfuzz>=3.6",
     "lightgbm>=4.3",
     "joblib>=1.3",
+    "matplotlib>=3.8",
     "gradio>=4",
 ]
 neural = [
@@ -33,6 +34,15 @@ neural = [
     "sentence-transformers>=2.7",
     "usearch>=2.1",
 ]
+train = [
+    "nbconvert>=7.16",
+    "ipykernel>=6.29",
+]
+serve = [
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "duckdb>=1.0",
+]
 dev = [
     "pytest>=8",
     "ruff>=0.6",
@@ -40,7 +50,7 @@ dev = [
 ]
 
 [tool.setuptools]
-packages = ["synthetic"]
+packages = ["api", "scripts", "synthetic"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -55,11 +65,10 @@ exclude = [".venv", "data", "models", "*.ipynb"]
 select = ["E", "F", "I", "B", "UP", "SIM"]
 ignore = ["B008"]  # function calls in argument defaults (standard for dataclass factories)
 
-# Legacy app modules: stable public surface (nayose_cli/nayose_inference). They run
-# clean today; bring them under full lint/format discipline in the follow-up refactor.
+# The engine facade (api/engine.py) runs clean but carries historical long lines
+# and defensive naming; it is kept under the same relaxed discipline.
 [tool.ruff.lint.per-file-ignores]
-"nayose_cli.py" = ["E501", "E402", "B905", "B007"]
-"nayose_inference.py" = ["E501", "E402", "B905", "B007"]
+"api/engine.py" = ["E501", "E402", "B905", "B007"]
 "synthetic/report.py" = ["E501"]  # template literals (CSS/JS/HTML strings)
 "api/main.py" = ["E501"]  # SQL template literals
 
@@ -69,7 +78,7 @@ check_untyped_defs = true
 no_implicit_optional = true
 warn_redundant_casts = true
 warn_unused_ignores = true
-exclude = ["build/", ".venv/", "nayose_inference.py", "nayose_cli.py"]
+exclude = ["build/", ".venv/", "api/engine.py"]
 
 # pandas ships no stubs in this env; numpy 2.x stubs require py3.12 syntax.
 # Both are treated as Any (their behavior is covered by runtime tests).
@@ -87,6 +96,6 @@ module = ["joblib", "scipy.*", "sklearn.*", "duckdb", "fastapi", "starlette.*", 
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-module = ["nayose_inference", "nayose_cli"]
+module = ["api.engine"]
 follow_imports = "skip"
 ignore_missing_imports = true

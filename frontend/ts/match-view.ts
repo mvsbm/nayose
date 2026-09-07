@@ -1,0 +1,159 @@
+import type { EntityHit, QueryPort, SearchFilters, SearchResult } from "./port.js";
+import type { Store } from "./store.js";
+import { esc } from "./schema.js";
+import { bindSearchDetail, clearSearchDetail, createSearchDetailState, loadSearchDetail, renderSearchDetail } from "./search-workspace.js";
+
+export async function mountMatchingSearch(el: HTMLElement, port: QueryPort, store: Store): Promise<void> {
+  const t = (key: string) => esc(store.t(key));
+  el.innerHTML = `<div class="panel"><section class="card search-workspace-bar"><div class="search-workspace-bar-input"><span class="search-workspace-icon" aria-hidden="true">⌕</span><label class="search-workspace-visually-hidden" for="q">${t("searchTitle")}</label><input id="q" type="search" autocomplete="off" aria-controls="results" placeholder="${t("searchPlaceholder")}"><span class="search-workspace-shortcut" aria-hidden="true">⌘K</span></div><div class="search-workspace-meta is-empty"><p id="search-correction" class="search-workspace-correction" aria-live="polite"></p><div id="search-filters" class="search-workspace-filters" role="group" aria-label="${t("searchFilters")}"></div><div class="search-workspace-status"><p id="norm-line" class="members" aria-live="polite"></p><p id="stat" role="status" aria-live="polite"></p></div></div></section><div class="search-workspace"><section class="card search-workspace-results"><div id="results"></div></section><aside id="search-detail" class="card search-workspace-detail" aria-live="polite"></aside></div></div>`;
+  const query = el.querySelector<HTMLInputElement>("#q")!;
+  query.value = store.searchQuery;
+  const searchBar = el.querySelector<HTMLElement>(".search-workspace-bar")!;
+  let lastScrollY = Math.max(0, window.scrollY);
+  const syncSearchBar = (): void => {
+    const scrollY = Math.max(0, window.scrollY);
+    if (scrollY <= 24) searchBar.classList.remove("is-compact");
+    else if (scrollY >= lastScrollY) searchBar.classList.add("is-compact");
+    lastScrollY = scrollY;
+  };
+  window.addEventListener("scroll", syncSearchBar, { passive: true });
+  el.addEventListener("unmount", () => window.removeEventListener("scroll", syncSearchBar), { once: true });
+  syncSearchBar();
+  const detailHost = el.querySelector<HTMLElement>("#search-detail")!;
+  const detailState = createSearchDetailState();
+  const setSelectedUrl = (id: string): void => {
+    const url = new URL(location.href);
+    url.hash = id ? `#/search?entity=${encodeURIComponent(id)}` : "#/search";
+    window.history.replaceState(null, "", url);
+  };
+  const closeDetail = (): void => { setSelectedUrl(""); clearSearchDetail(detailState, paintDetail); };
+  const clearDetailForNewQuery = (): void => {
+    if (!detailState.selectedId && !detailState.pending && !detailState.error) return;
+    setSelectedUrl("");
+    clearSearchDetail(detailState, paintDetail);
+  };
+  const paintDetail = (): void => {
+    detailHost.hidden = !detailState.selectedId && !detailState.pending && !detailState.error;
+    detailHost.innerHTML = renderSearchDetail(detailState, store);
+    bindSearchDetail(detailHost, closeDetail);
+  };
+  paintDetail();
+
+  let timer: ReturnType<typeof setTimeout>;
+  let normTimer: ReturnType<typeof setTimeout>;
+  let sequence = 0;
+  const facetType: string[] = [];
+  let facetMulti = false;
+  let lastRes: SearchResult = { rows: [], semantic: false, suggestion: null };
+  const activeFilters = (): SearchFilters => ({
+    party_type: facetType.length === 1 && (facetType[0] === "person" || facetType[0] === "company") ? facetType[0] : undefined,
+    min_record_count: facetMulti ? 2 : undefined,
+  });
+  const searchNow = (value: string, request: number, delay: number): void => {
+    clearTimeout(timer);
+    timer = setTimeout(async () => {
+      const stat = el.querySelector("#stat")!;
+      stat.textContent = store.t("searching");
+      try {
+        const res = await port.entities(value, 50, activeFilters());
+        if (request !== sequence || !el.isConnected || !el.contains(query)) return;
+        lastRes = res;
+        renderResults();
+      } catch (err) {
+        if (request === sequence) stat.textContent = `${store.t("error")}: ${store.t(String((err as Error).message ?? err))}`;
+      }
+    }, delay);
+  };
+  const renderResults = (): void => {
+    const results = el.querySelector("#results")!;
+    const hasKinds = lastRes.rows.some(hit => hit.kind);
+    const exact = lastRes.exact ?? (hasKinds ? lastRes.rows.filter(hit => hit.kind === "exact") : lastRes.semantic ? [] : lastRes.rows);
+    const semantic = lastRes.semantic_results ?? (hasKinds ? lastRes.rows.filter(hit => hit.kind === "semantic") : lastRes.semantic ? lastRes.rows : []);
+    const seen = new Set([...exact, ...semantic].map(hit => hit.nayose_id));
+    const nearest = (lastRes.nearest ?? []).filter(hit => !seen.has(hit.nayose_id));
+    const all = [...exact, ...semantic, ...nearest];
+    const stat = el.querySelector("#stat")!;
+    stat.textContent = store.t("count", { n: all.length });
+    const mode = lastRes.mode === "hybrid" ? "searchModeHybrid" : lastRes.mode === "exact_plus_fuzzy" ? "searchModeFuzzy" : "engineExactOnly";
+    const backend = lastRes.embedding_backend ? ` · ${store.t(lastRes.embedding_backend)}` : "";
+    const card = (hit: EntityHit, kind: "exact" | "semantic" | "nearest"): string => {
+      const matchedValues = (hit.signals ?? []).map(signal => {
+        const raw = (hit as unknown as Record<string, unknown>)[signal];
+        return raw && !["name_kanji", "name_kana", "name_romaji", "phone", "postal_code"].includes(signal)
+          ? `<span class="search-workspace-hit-match">${esc(store.t(signal))}: ${esc(String(raw))}</span>`
+          : "";
+      }).join("");
+      return `<a class="card hit" href="#/search?entity=${encodeURIComponent(hit.nayose_id)}" data-entity-select="${esc(hit.nayose_id)}"><div class="search-workspace-hit-heading"><h3>${esc(hit.name_kanji)} <span class="muted">${esc(hit.name_kana ?? "")}</span></h3><span class="search-workspace-hit-chevron" aria-hidden="true">›</span></div><p class="members">${esc(hit.name_romaji ?? "")}</p><p class="search-workspace-hit-meta">${esc(hit.phone ?? "")} · ${esc(hit.postal_code ?? "")} · ${hit.record_count ?? 0}${hit.prefecture ? ` · ${esc(hit.prefecture)}` : ""}</p>${matchedValues ? `<div class="search-workspace-hit-matches">${matchedValues}</div>` : ""}<div class="search-workspace-hit-signals"><span class="chip-state ${kind === "exact" ? "ok" : kind === "nearest" ? "warn" : "ok"}">${esc(store.t(kind === "exact" ? "exactSignal" : kind === "nearest" ? "nearestSignal" : "semanticSignal"))}${hit.score != null ? ` ${(hit.score * 100).toFixed(0)}%` : ""}</span>${(hit.signals ?? []).map(signal => `<span class="chip-state">${esc(store.t(signal))} ${esc(store.t(kind === "exact" ? "exactChip" : "signalChip"))}</span>`).join("")}${(hit.twin_count ?? 0) > 0 ? `<span class="chip-state warn">${esc(store.t("twinBadge", { n: hit.twin_count ?? 0 }))}</span>` : ""}</div></a>`;
+    };
+    const group = (title: string, hits: EntityHit[], kind: "exact" | "semantic" | "nearest"): string => {
+      return hits.length ? `<section class="search-suggestions-group"><div class="search-suggestions-heading"><h3>${esc(title)}</h3><span class="members">${hits.length}</span></div>${hits.map(hit => card(hit, kind)).join("")}</section>` : "";
+    };
+    const correction = el.querySelector("#search-correction");
+    if (correction) correction.innerHTML = lastRes.suggestion ? `<strong>${esc(store.t("suggestLine"))}</strong> <a href="#/search" data-suggest="${esc(lastRes.suggestion.term)}">${esc(lastRes.suggestion.term)}</a> <span class="members">· ${(lastRes.suggestion.score * 100).toFixed(0)}%</span>` : "";
+    const filter = (id: string, label: string, active: boolean): string => `<button type="button" class="search-workspace-filter" data-filter="${id}" aria-pressed="${active}">${esc(label)}</button>`;
+    const filterHost = el.querySelector("#search-filters")!;
+    el.querySelector(".search-workspace-meta")!.classList.remove("is-empty");
+    filterHost.innerHTML = `<span class="search-workspace-filter-label">${t("searchFilters")}</span>${filter("person", store.t("facetPerson"), facetType.includes("person"))}${filter("company", store.t("facetCompany"), facetType.includes("company"))}${filter("multi", store.t("facetMulti"), facetMulti)}<span id="search-mode" class="members">${esc(store.t(mode))}${esc(backend)}</span>`;
+    results.innerHTML = `<section class="search-suggestions" aria-live="polite">${group(store.t("exactMatches"), exact, "exact")}${group(store.t("semanticMatches"), semantic, "semantic")}${group(store.t("nearestMatches"), nearest, "nearest")}${!all.length ? `<p class="members">${esc(store.t("noSearchResults"))}</p>` : ""}</section>`;
+    filterHost.querySelectorAll<HTMLButtonElement>("[data-filter]").forEach(button => button.addEventListener("click", () => {
+      const id = button.dataset.filter ?? "";
+      if (id === "multi") facetMulti = !facetMulti;
+      else if (facetType.includes(id)) facetType.splice(facetType.indexOf(id), 1);
+      else facetType.push(id);
+      renderResults();
+      if (query.value.trim().length >= 2) {
+        clearDetailForNewQuery();
+        sequence += 1;
+        searchNow(query.value.trim(), sequence, 0);
+      }
+    }));
+  };
+
+  el.querySelector("#results")!.addEventListener("click", event => {
+    const target = (event.target as HTMLElement).closest<HTMLAnchorElement>("[data-entity-select]");
+    if (!target) return;
+    event.preventDefault();
+    const id = target.dataset.entitySelect ?? "";
+    setSelectedUrl(id);
+    void loadSearchDetail(detailHost, detailState, id, port, store, paintDetail);
+  });
+  query.addEventListener("input", () => {
+    store.searchQuery = query.value;
+    clearTimeout(timer);
+    clearTimeout(normTimer);
+    const request = ++sequence;
+    const value = query.value;
+    clearDetailForNewQuery();
+    el.querySelector(".search-workspace-meta")!.classList.add("is-empty");
+    el.querySelector("#search-correction")!.innerHTML = "";
+    if (value.trim().length < 2) {
+      el.querySelector("#stat")!.textContent = "";
+      el.querySelector("#results")!.innerHTML = `<div class="search-workspace-empty"><p>${t("searchPrompt")}</p></div>`;
+      el.querySelector("#norm-line")!.textContent = "";
+      el.querySelector("#search-correction")!.innerHTML = "";
+      el.querySelector("#search-filters")!.innerHTML = "";
+      lastRes = { rows: [], semantic: false, suggestion: null };
+      return;
+    }
+    normTimer = setTimeout(async () => {
+      try {
+        const norm = await port.normalizePreview(value.trim());
+        if (request !== sequence || !el.isConnected) return;
+        const tokens = Object.entries(norm).filter(([k, v]) => v && v !== value.trim() && ["name_kanji", "name_kana", "phone", "postal_code"].includes(k));
+        const line = el.querySelector("#norm-line");
+        if (line) line.textContent = tokens.length ? `${store.t("normHint")}: ${tokens.map(([k, v]) => `${store.t(k)}→${v}`).join(" · ")}` : "";
+      } catch { /* preview optional */ }
+    }, 250);
+    searchNow(value.trim(), request, 150);
+  });
+  el.addEventListener("click", (event) => {
+    const link = (event.target as HTMLElement).closest<HTMLAnchorElement>("[data-suggest]");
+    if (!link) return;
+    event.preventDefault();
+    query.value = link.dataset.suggest ?? "";
+    store.searchQuery = query.value;
+    query.dispatchEvent(new window.Event("input"));
+    query.focus();
+  });
+  if (query.value) query.dispatchEvent(new window.Event("input"));
+}

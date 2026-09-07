@@ -1,0 +1,18 @@
+version: "3.9"
+services:
+  nayose:
+    build: .
+    ports:
+      - "8899:8000"
+    environment:
+      NAYOSE_DATA_DIR: /app/data/current
+      NAYOSE_MODELS_DIR: /app/models
+      NAYOSE_DASH_PORT: "8000"
+      # Protects /api/* when set (recommended on a shared host):
+      # NAYOSE_API_TOKEN: change-me
+      # Preloads the recommend engine so the first request is not a cold start:
+      # NAYOSE_WARM_EMBED: "1"
+    volumes:
+      - ./data:/app/data            # generations + current (immutable)
+      - ./models:/app/models        # runs + current + decisions
+    restart: unless-stopped

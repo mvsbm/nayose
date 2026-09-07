@@ -1,0 +1,21 @@
+# Build context excludes everything regenerable or machine-specific.
+.git
+.venv
+**/__pycache__
+**/.pytest_cache
+**/.ruff_cache
+**/.mypy_cache
+data
+models
+frontend/node_modules
+tests
+docs
+nayose.ipynb
+*.executed.ipynb
+*.log
+.env
+nohup.out
+.dockerignore
+Dockerfile
+docker-compose.yml
+.devcontainer

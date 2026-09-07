@@ -1,0 +1,28 @@
+{
+  "name": "nayose",
+  "build": {
+    "dockerfile": "../Dockerfile",
+    "args": { "EXTRAS": "matcher,neural,train,serve" }
+  },
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": { "version": "20" }
+  },
+  "postCreateCommand": "python -m pip install -U pip && pip install -e '.[matcher,neural,train,serve,dev]' && npm --prefix frontend install",
+  "remoteUser": "root",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "charliermarsh.ruff",
+        "dbaeumer.vscode-eslint",
+        "esbenp.prettier-vscode"
+      ],
+      "settings": {
+        "python.defaultInterpreterPath": "/usr/local/bin/python",
+        "python.testing.pytestEnabled": true,
+        "python.testing.pytestArgs": ["tests"]
+      }
+    }
+  }
+}

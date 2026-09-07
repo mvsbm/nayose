@@ -1,0 +1,38 @@
+"""Streamed progress parsing (SRP): generator stdout ETA lines -> structured
+updates. Pure and deterministic (unit-testable); NEVER fabricates values —
+a line we cannot parse yields None and the UI falls back to an indeterminate
+state. The engine's own ETA printer is the ONLY source (no invented %).
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+
+# matches engine._eta_line:  [parties] 1,234/150,000 (1%) eta 12:34  (or H:MM:SS)
+_ETA_RE = re.compile(
+    r"\[\s*(\w+)\s*\]\s*([\d,]+)/([\d,]+)\s*\((\d+)%\)\s*eta\s+(?:(\d+):)?(\d+):(\d+)"
+)
+
+
+@dataclass(frozen=True, slots=True)
+class ProgressUpdate:
+    phase: str
+    done: int
+    total: int
+    pct: float
+    eta_seconds: int
+
+
+def parse(line: str) -> ProgressUpdate | None:
+    match = _ETA_RE.search(line)
+    if match is None:
+        return None
+    phase, done, total, pct, hours, minutes, seconds = match.groups()
+    return ProgressUpdate(
+        phase=phase,
+        done=int(done.replace(",", "")),
+        total=int(total.replace(",", "")),
+        pct=min(100.0, max(0.0, float(pct))),
+        eta_seconds=int(hours or 0) * 3600 + int(minutes) * 60 + int(seconds),
+    )

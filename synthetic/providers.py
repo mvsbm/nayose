@@ -59,8 +59,15 @@ class PersonaSource:
         if not cache_path.exists():
             self._build_cache(cache_path, sources)
         frame = pd.read_parquet(cache_path)
+        # Defense-in-depth (the alpha_in_kana bug once leaked Latin into kanji):
+        # identity names must start with a Han character — anything else is an
+        # extraction artifact, never a customer identity. (Python re, not the
+        # pyarrow regex engine: \u escapes are invalid there.)
+        han_start = re.compile(r"^[\u4e00-\u9fff々〆〇]")
         self.persons: tuple[Person, ...] = tuple(
-            Person(*row) for row in frame.itertuples(index=False, name=None)
+            Person(*row)
+            for row in frame.itertuples(index=False, name=None)
+            if han_start.match(str(row[0]))
         )
         self.prefectures: tuple[str, ...] = tuple(np.unique(frame["prefecture"].to_numpy()))
         print(
@@ -83,6 +90,8 @@ class PersonaSource:
             kanji = match.group(1)
             if len(kanji.replace(" ", "")) > 8:
                 continue
+            if not re.match(r"^[\u4e00-\u9fff々〆〇]", kanji):
+                continue  # identity names start with a Han character, never Latin
             rows.append(
                 (
                     kanji,
@@ -168,9 +177,9 @@ class CompanySource:
             print("EDINET unavailable - using small fallback list")
             names = list(fallback)
         self.companies: tuple[Company, ...] = tuple(
-            Company(n, to_romaji(n).upper(), to_romaji(n).title()) for n in names
+            Company(n, to_katakana(n), to_romaji(n).title()) for n in names
         )
-        print(f"Company source: {len(self.companies):,} real EDINET names")
+        print(f"Company source: {len(self.companies):,} real EDINET names (kana=katakana)")
 
     @staticmethod
     def _load(sources: DataSources) -> list[str]:

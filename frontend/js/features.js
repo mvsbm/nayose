@@ -1,249 +1,291 @@
+import { mountMatchingSearch } from "./match-view.js";
+import { mountEntityDetail } from "./entity-view.js";
 import { asNumber, checkedKey, clamp01, diffFields } from "./core.js";
 import { esc, str } from "./schema.js";
+import { createFlipAnimator } from "./shared.js";
 const SKELETON = (k = 3) => `<div class="skel">${Array.from({ length: k }, () => '<div class="card" style="height:3.2rem"></div>').join("")}</div>`;
-const crumb = (...links) => `<nav class="crumbs" aria-label="パンくず">${links.map((l, i) => (i % 2 ? `<a href="${esc(links[i - 1])}">${esc(l)}</a>` : l)).join(" / ")}</nav>`;
-const chip = (label, kind = "") => `<span class="chip-state ${kind}">${esc(label)}</span>`;
-const bar = (v) => `<span class="bar"><i style="width:${clamp01(v) * 100}%"></i></span>`;
+const crumb = (store, ...links) => `<nav class="crumbs" aria-label="${esc(store.t("crumbs"))}">${links.map((l, i) => (i % 2 ? `<a href="${esc(links[i - 1])}">${esc(l)}</a>` : l)).join(" / ")}</nav>`;
+const bar = (v) => `<span class="meter"><i style="width:${clamp01(v) * 100}%"></i></span>`;
+async function mountView(el, spec) {
+    if (spec.skeleton)
+        el.innerHTML = spec.skeleton;
+    const data = await spec.load();
+    el.innerHTML = spec.render(data);
+    spec.bind?.(el, data);
+}
 export async function mountSearch(el, port, store) {
-    el.innerHTML = `<div class="panel">${crumb("#/search", "検索")}
-    <div class="card"><h3><label for="q">氏名・カナ・電話・郵便番号で検索</label></h3>
-      <input type="search" id="q" placeholder="例：佐藤 太郎" autocomplete="off">
-      <p id="stat" role="status" aria-live="polite" class="members"></p>
-      <div id="results"></div></div>
-    <div class="card"><h3>照合テスト（ライブ /recommend）</h3><div class="toolbar">
-      <label>氏名漢字<input id="rt-name" class="bar" type="text"></label>
-      <label>カナ<input id="rt-kana" class="bar" type="text"></label>
-      <label>電話<input id="rt-phone" class="bar" type="text"></label>
-      <button id="rt-go" type="button" class="more">照合</button></div>
-      <p id="rt-out" role="status" aria-live="polite" class="members"></p></div></div>`;
-    const input = el.querySelector("#q");
-    const stat = el.querySelector("#stat");
-    const results = el.querySelector("#results");
-    let timer;
-    let active = -1;
-    const run = async () => {
-        const q = input.value.trim();
-        if (q.length < 2) {
-            stat.textContent = "";
-            results.innerHTML = "";
-            return;
-        }
-        stat.textContent = "検索中…";
-        try {
-            const hits = await port.entities(q);
-            stat.textContent = `${hits.length} 件`;
-            results.innerHTML = hits
-                .map((r, i) => `<a class="card hit" href="#/entity/${esc(r.nayose_id)}" data-i="${i}" aria-selected="false">
-          <h3>${esc(r.name_kanji)} <span class="muted">${esc(r.name_kana || "")}</span></h3>
-          <div class="members">${asNumber(r.record_count)} 件 · ${esc(r.phone || "")} · ${esc(r.postal_code || "")}</div></a>`)
-                .join("");
-            active = -1;
-        }
-        catch (e) {
-            stat.textContent = "エラー: " + String(e?.message ?? e);
-        }
-    };
-    input.addEventListener("input", () => { window.clearTimeout(timer); timer = window.setTimeout(() => void run(), 150); });
-    input.addEventListener("keydown", (e) => {
-        const els = [...results.querySelectorAll(".hit")];
-        if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-            e.preventDefault();
-            active = (active + (e.key === "ArrowDown" ? 1 : els.length - 1)) % Math.max(els.length, 1);
-            els.forEach((x, i) => x.setAttribute("aria-selected", String(i === active)));
-            if (els[active])
-                els[active].focus();
-        }
-        else if (e.key === "Enter" && els[active]) {
-            e.preventDefault();
-            location.hash = els[active].getAttribute("href");
-        }
-    });
-    const rtGo = el.querySelector("#rt-go");
-    const rtOut = el.querySelector("#rt-out");
-    rtGo.addEventListener("click", async () => {
-        rtGo.disabled = true;
-        rtOut.textContent = "照合中…";
-        try {
-            const d = await port.recommend({
-                name_kanji: el.querySelector("#rt-name").value,
-                name_kana: el.querySelector("#rt-kana").value,
-                phone: el.querySelector("#rt-phone").value,
-            });
-            const kind = d.action === "AUTO_LINK" ? "ok" : d.action === "REVIEW" ? "warn" : d.action === "NO_MATCH" ? "bad" : "";
-            rtOut.innerHTML = `${chip(d.action, kind)} 確率 ${(d.top_probability * 100).toFixed(1)}% · ${esc(d.top_nayose_id ?? "—")} · 候補 ${d.candidates.length} 件`;
-        }
-        catch (err) {
-            rtOut.textContent = "エラー: " + String(err?.message ?? err);
-        }
-        finally {
-            rtGo.disabled = false;
-        }
-    });
+    await mountMatchingSearch(el, port, store);
 }
 export async function mountReview(el, port, store) {
-    el.innerHTML = `<div class="panel">${SKELETON()}</div>`;
     let offset = 0;
     let minP = 0;
+    let pageSize = 200;
+    let filterEntity = new URLSearchParams(location.hash.split("?")[1] ?? "").get("nayose") ?? "";
     const key = (l, r) => checkedKey(store.run, l, r);
-    const load = async () => {
-        const page = await port.review(minP, offset, 200);
-        el.innerHTML = `<div class="panel">${crumb("#/review", "レビュー待機")}
+    const hiddenBelow = (page) => store.t("hiddenBelow", { n: Math.max(0, page.total - page.rows.length + offset), m: page.total });
+    const histogramHtml = (page) => {
+        const bucket = (b) => `data-lo="${b[0]}" title="${(b[0] * 100).toFixed(0)}%–${((b[0] + 0.05) * 100).toFixed(0)}%: ${b[1]}"`;
+        const max = Math.max(1, ...page.histogram.map(([, c]) => c));
+        const bars = page.histogram
+            .map((b) => `<div class="hist-bar" style="height:${Math.max(2, Math.round((b[1] / max) * 100))}%" ${bucket(b)}></div>`)
+            .join("");
+        const mark = (p, cls, title) => `<div class="hist-mark ${cls}" style="left:${(p * 1000) / 10}%" title="${esc(title)}"></div>`;
+        const pairMark = page.pair_auto_threshold
+            ? mark(page.pair_auto_threshold, "", store.t("pairAutoMark", { p: (page.pair_auto_threshold * 100).toFixed(1) + "%" }))
+            : "";
+        return `<div class="card"><h3>${esc(store.t("scoreBands"))}</h3>
+      <div class="hist" aria-hidden="true">${bars}
+        ${mark(minP, "", "minP")}${pairMark}</div>
+      <p class="members">${hiddenBelow(page)}</p></div>`;
+    };
+    const refresh = (initial) => mountView(el, {
+        skeleton: initial ? SKELETON() : undefined,
+        load: () => port.review(minP, offset, pageSize, filterEntity),
+        render: (page) => `<div class="panel">${crumb(store, "#/review", store.t("review"))}
       <div class="card"><div class="toolbar">
-        <h3 style="margin:0">レビュー待機エッジ</h3>
-        <label class="members">最低確率<input type="number" id="minp" step="0.1" min="0" max="1" value="0"></label>
-        <span class="members" id="count" role="status" aria-live="polite">${page.total.toLocaleString()} 件 · 既読 ${store.checked.size}</span>
-        <button type="button" class="more" id="undo">取り消し</button>
-        <button type="button" class="more" id="more">次の 200 件</button></div>
-      <table><thead><tr><th>左レコード</th><th>右レコード</th><th>確率</th><th>exact</th><th></th></tr></thead>
+        <h3 style="margin:0">${esc(store.t("reviewTitle"))}</h3>
+        <label class="members">${esc(store.t("scoreFilter"))}
+          <input type="range" id="minp" min="0" max="100" step="1" value="${Math.round(minP * 100)}" aria-valuetext="${Math.round(minP * 100)}%"></label>
+        <output class="members" for="minp" id="minp-val">${Math.round(minP * 100)}%</output>
+        <label class="members">${esc(store.t("pageSize"))}<select id="page-size" aria-label="page size">
+          ${[25, 50, 100, 200, 500].map(n => `<option ${n === pageSize ? "selected" : ""}>${n}</option>`).join("")}
+        </select></label>
+        <span class="members" id="count" role="status" aria-live="polite">${esc(store.t("reviewCount", { n: page.total, read: store.checked.size }))}</span>
+        ${filterEntity ? `<button type="button" class="chip-state warn" id="filter-clear" title="${esc(filterEntity)}">${esc(store.t("filterByEntity", { id: filterEntity }))} ✕</button>` : ""}
+        <label class="members">${esc(store.t("reviewer"))}<input id="reviewer" class="bar" type="text" size="10" value="${esc(store.reviewer)}"></label>
+        <button type="button" class="more" id="undo">${esc(store.t("undo"))}</button>
+        <button type="button" class="more" id="more">${esc(store.t("next200"))}</button></div>
+      <p class="members" id="review-record-help">${esc(store.t("reviewRecordHelp"))}</p>
+      <p>${esc(store.t("reviewHelp"))}</p>
+      ${histogramHtml(page)}
+      <table><caption class="members">${esc(store.t("reviewHelp"))}</caption><thead><tr><th>${esc(store.t("recorded"))}</th><th>${esc(store.t("leftRecord"))}</th><th>${esc(store.t("rightRecord"))}</th><th>${esc(store.t("score"))}</th><th>exact</th></tr></thead>
       <tbody>${page.rows.map((r) => {
             const done = store.checked.has(key(r.left_record_id, r.right_record_id));
             return `<tr class="${done ? "checked" : ""}" data-l="${esc(r.left_record_id)}" data-r="${esc(r.right_record_id)}">
+          <td><button type="button" class="check ${done ? "on" : ""}" aria-pressed="${done}" aria-label="${esc(store.t(done ? "recorded" : "reviewed"))}: ${esc(r.left_record_id)} / ${esc(r.right_record_id)}">${esc(store.t(done ? "recorded" : "reviewed"))}</button></td>
           <td><a href="#/compare/${esc(r.left_record_id)}/${esc(r.right_record_id)}">${esc(r.left_record_id)}</a></td>
           <td><a href="#/compare/${esc(r.left_record_id)}/${esc(r.right_record_id)}">${esc(r.right_record_id)}</a></td>
-          <td>${(asNumber(r.pair_probability) * 100).toFixed(1)}%</td><td>${asNumber(r.exact_count)}</td>
-          <td><button type="button" class="check ${done ? "on" : ""}" aria-pressed="${done}">既読</button></td></tr>`;
-        }).join("") || '<tr><td colspan="5" class="members">該当なし</td></tr>'}</tbody></table></div></div>`;
-        el.querySelector("tbody").addEventListener("click", (e) => {
-            const btn = e.target.closest("button.check");
-            const tr = e.target.closest("tr");
-            if (!btn || !tr)
-                return;
-            store.toggleCheckedKey(key(tr.dataset.l ?? "", tr.dataset.r ?? ""));
-            tr.classList.toggle("checked", store.checked.has(key(tr.dataset.l ?? "", tr.dataset.r ?? "")));
-            btn.classList.toggle("on");
-            btn.setAttribute("aria-pressed", String(store.checked.has(key(tr.dataset.l ?? "", tr.dataset.r ?? ""))));
-            el.querySelector("#count").textContent = `${page.total.toLocaleString()} 件 · 既読 ${store.checked.size}`;
-        });
-        el.querySelector("#undo")?.addEventListener("click", () => { store.undo(); void load(); });
-        el.querySelector("#minp")?.addEventListener("input", (e) => {
-            minP = clamp01(Number(e.target.value) || 0);
-            offset = 0;
-            void load();
-        });
-        el.querySelector("#more")?.addEventListener("click", () => { offset += 200; void load(); });
-    };
-    await load();
+          <td>${(asNumber(r.pair_probability) * 100).toFixed(1)}%</td><td>${asNumber(r.exact_count)}</td></tr>`;
+        }).join("") || `<tr><td colspan="5" class="members">${esc(store.t("none"))}</td></tr>`}</tbody></table></div></div>`,
+        bind: (el, page) => {
+            el.querySelector("tbody").addEventListener("click", (e) => {
+                const btn = e.target.closest("button.check");
+                const tr = e.target.closest("tr");
+                if (!btn || !tr)
+                    return;
+                store.toggleCheckedKey(key(tr.dataset.l ?? "", tr.dataset.r ?? ""));
+                tr.classList.toggle("checked", store.checked.has(key(tr.dataset.l ?? "", tr.dataset.r ?? "")));
+                const isRecorded = store.checked.has(key(tr.dataset.l ?? "", tr.dataset.r ?? ""));
+                btn.classList.toggle("on", isRecorded);
+                btn.setAttribute("aria-pressed", String(isRecorded));
+                btn.setAttribute("aria-label", `${store.t(isRecorded ? "recorded" : "reviewed")}: ${tr.dataset.l ?? ""} / ${tr.dataset.r ?? ""}`);
+                btn.textContent = store.t(isRecorded ? "recorded" : "reviewed");
+                el.querySelector("#count").textContent = store.t("reviewCount", { n: page.total, read: store.checked.size });
+            });
+            el.querySelector("#reviewer")?.addEventListener("input", (e) => {
+                store.reviewer = e.target.value;
+                store.write("nayose.reviewer", store.reviewer);
+            });
+            el.querySelector("#undo")?.addEventListener("click", () => { store.undo(); void refresh(false); });
+            const minp = el.querySelector("#minp");
+            const applyMinP = () => {
+                minP = clamp01(Number(minp.value) / 100 || 0);
+                minp.setAttribute("aria-valuetext", `${Math.round(minP * 100)}%`);
+                const out = el.querySelector("#minp-val");
+                if (out)
+                    out.textContent = `${Math.round(minP * 100)}%`;
+                offset = 0;
+                void refresh(false);
+            };
+            minp?.addEventListener("input", applyMinP);
+            minp?.addEventListener("change", applyMinP);
+            el.querySelector("#page-size")?.addEventListener("change", (e) => {
+                pageSize = Number(e.target.value) || 200;
+                offset = 0;
+                void refresh(false);
+            });
+            el.querySelector("#more")?.addEventListener("click", () => { offset += pageSize; void refresh(false); });
+            el.querySelector("#filter-clear")?.addEventListener("click", () => {
+                filterEntity = "";
+                location.hash = "#/review";
+            });
+        },
+    });
+    await refresh(true);
 }
 export async function mountConfusion(el, port, store) {
-    el.innerHTML = `<div class="panel">${SKELETON()}</div>`;
-    const data = await port.confusion();
-    const actions = ["AUTO_LINK", "REVIEW", "NO_MATCH", "INSUFFICIENT_INPUT"];
-    const maxCell = Math.max(1, ...data.scenarios.flatMap((s) => actions.map((a) => s.actions[a] ?? 0)));
-    const scenRows = data.scenarios
-        .map((s) => `<tr class="scen" tabindex="0" data-scenario="${esc(s.scenario)}"><th scope="row">${esc(s.scenario)}</th>${actions
-        .map((a) => { const v = s.actions[a] ?? 0; return `<td class="heat" style="--heat:${Math.round((v / maxCell) * 50)}%">${v}</td>`; })
-        .join("")}</tr>`)
-        .join("");
-    const pairRows = ["true_positives", "false_positives", "true_negatives", "false_negatives", "precision", "recall", "specificity", "f1", "auc"]
-        .filter((m) => m in data.pairs)
-        .map((m) => `<tr><th scope="row">${esc(m)}</th><td>${Number(data.pairs[m]).toFixed(4)}</td></tr>`)
-        .join("");
-    el.innerHTML = `<div class="panel">${crumb("#/confusion", "混同行列")}
-    <div class="card"><h3>ペア検証器 — 未見テスト分割</h3><table><tbody>${pairRows}</tbody></table></div>
-    <div class="card"><h3>クエリ判定（scenario × action）— 行クリックで内訳</h3>
+    await mountView(el, {
+        skeleton: SKELETON(),
+        load: () => port.confusion(),
+        render: (data) => {
+            const actions = ["AUTO_LINK", "REVIEW", "NO_MATCH", "INSUFFICIENT_INPUT"];
+            const maxCell = Math.max(1, ...data.scenarios.flatMap((s) => actions.map((a) => s.actions[a] ?? 0)));
+            const scenRows = data.scenarios
+                .map((s) => `<tr class="scen" tabindex="0" data-scenario="${esc(s.scenario)}"><th scope="row">${esc(s.scenario)}</th>${actions
+                .map((a) => { const v = s.actions[a] ?? 0; return `<td class="heat" style="--heat:${Math.round((v / maxCell) * 50)}%">${v}</td>`; })
+                .join("")}</tr>`)
+                .join("");
+            const pairRows = ["true_positives", "false_positives", "true_negatives", "false_negatives", "precision", "recall", "specificity", "f1", "auc"]
+                .filter((m) => m in data.pairs)
+                .map((m) => `<tr><th scope="row">${esc(m)}</th><td>${Number(data.pairs[m]).toFixed(4)}</td></tr>`)
+                .join("");
+            return `<div class="panel">${crumb(store, "#/confusion", store.t("confusion"))}
+    <div class="card"><h3>${esc(store.t("pairTest"))}</h3><table><tbody>${pairRows}</tbody></table></div>
+    <div class="card"><h3>${esc(store.t("queryDecisions"))}</h3>
       <table><thead><tr><th>scenario</th>${actions.map((a) => `<th>${esc(a)}</th>`).join("")}</tr></thead>
       <tbody>${scenRows}</tbody></table><div id="drill" role="region" aria-live="polite"></div></div></div>`;
-    const drill = el.querySelector("#drill");
-    el.querySelectorAll("tr.scen").forEach((tr) => {
-        const fire = () => {
-            const scen = str(tr.getAttribute("data-scenario"));
-            const rows = data.decisions[scen] ?? [];
-            drill.innerHTML = `<h4 class="muted">${esc(scen)} — ${rows.length} 件</h4>
-        <table><thead><tr><th>query</th><th>action</th><th>top entity</th><th>確率</th><th>top1</th></tr></thead>
-        <tbody>${rows.map((r) => `<tr><td>${esc(r.query_id)}</td><td>${esc(r.action)}</td><td>${esc(r.top_nayose_id)}</td><td>${(asNumber(r.top_probability) * 100).toFixed(1)}%</td><td>${esc(r.identity_top1_correct)}</td></tr>`).join("")}</tbody></table>`;
-        };
-        tr.addEventListener("click", fire);
-        tr.addEventListener("keydown", (ev) => {
-            const e = ev;
-            if (e.key === "Enter" || e.key === " ") {
-                e.preventDefault();
-                fire();
-            }
-        });
+        },
+        bind: (el, data) => {
+            const drill = el.querySelector("#drill");
+            el.querySelectorAll("tr.scen").forEach((tr) => {
+                const fire = () => {
+                    const scen = str(tr.getAttribute("data-scenario"));
+                    const rows = data.decisions[scen] ?? [];
+                    drill.innerHTML = `<h4 class="muted">${esc(scen)} — ${esc(store.t("count", { n: rows.length }))}</h4>
+            <table><thead><tr><th>query</th><th>action</th><th>top entity</th><th>${esc(store.t("score"))}</th><th>top1</th></tr></thead>
+            <tbody>${rows.map((r) => `<tr><td>${esc(r.query_id)}</td><td>${esc(r.action)}</td><td>${esc(r.top_nayose_id)}</td><td>${(asNumber(r.top_probability) * 100).toFixed(1)}%</td><td>${esc(r.identity_top1_correct)}</td></tr>`).join("")}</tbody></table>`;
+                };
+                tr.addEventListener("click", fire);
+                tr.addEventListener("keydown", (ev) => {
+                    const e = ev;
+                    if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        fire();
+                    }
+                });
+            });
+        },
     });
 }
 export async function mountMetrics(el, port, store) {
-    el.innerHTML = `<div class="panel">${SKELETON()}</div>`;
-    const data = await port.metrics();
-    el.innerHTML = `<div class="panel">${crumb("#/metrics", "指標")}
-    <div class="kpi">${data.kpis.map(([l, v]) => `<div class="card"><div class="v">${(v * 100).toFixed(1)}%</div><div class="l">${esc(l)}</div>${bar(v)}</div>`).join("")}</div>
-    <div class="card"><h3>エンティティ</h3><div class="v" style="font-size:1.4rem">${(data.extras.entities ?? 0).toLocaleString()}</div>
-      <div class="members">候補エッジ ${(data.extras.edges ?? 0).toLocaleString()} · シングルトン率 ${((data.extras.singleton ?? 0) * 100).toFixed(1)}%</div></div></div>`;
+    // F: metric unit toggle (% vs ratio) — display only
+    let unit = "percent";
+    const flip = createFlipAnimator(".kpi .card .v");
+    const render = (data) => {
+        const fmt = (v) => (unit === "percent" ? `${(v * 100).toFixed(1)}%` : v.toFixed(4));
+        return `<div class="panel">${crumb(store, "#/metrics", store.t("metrics"))}
+    <div class="card toolbar"><label class="members">${esc(store.t("units"))}<select id="met-unit"><option value="percent" ${unit === "percent" ? "selected" : ""}>%</option><option value="ratio" ${unit === "ratio" ? "selected" : ""}>0–1</option></select></label></div>
+    <div class="kpi">${data.kpis.map(([l, v]) => `<div class="card"><div class="v">${fmt(v)}</div><div class="l">${esc(l)}</div>${bar(v)}</div>`).join("")}</div>
+    <div class="card"><h3>${esc(store.t("entities"))}</h3><div class="v" style="font-size:1.4rem">${(data.extras.entities ?? 0).toLocaleString()}</div>
+      <div class="members">${esc(store.t("edgesSummary", { n: data.extras.edges ?? 0, rate: `${((data.extras.singleton ?? 0) * 100).toFixed(1)}%` }))}</div></div></div>`;
+    };
+    await mountView(el, {
+        skeleton: SKELETON(),
+        load: () => port.metrics(),
+        render,
+        bind: (view, data) => {
+            const bindUnit = () => {
+                view.querySelector("#met-unit")?.addEventListener("change", (e) => {
+                    flip.capture(view);
+                    unit = e.target.value;
+                    view.innerHTML = render(data);
+                    flip.play(view);
+                    bindUnit();
+                });
+            };
+            bindUnit();
+        },
+    });
 }
 export async function mountEntities(el, port, store) {
-    el.innerHTML = `<div class="panel">${SKELETON()}</div>`;
-    // reuses search port with empty-ish query -> server caps list
-    const hits = await port.entities("");
-    el.innerHTML = `<div class="panel">${crumb("#/entities", "エンティティ")}
-    <div class="card"><h3>エンティティ一覧（先頭 ${hits.length} 件）</h3>
-      ${hits.map((r) => `<div class="card" style="margin:.45rem 0"><h3><a href="#/entity/${esc(r.nayose_id)}">${esc(r.name_kanji)}</a>
-        <span class="muted">${esc(r.name_kana || "")}</span></h3><div class="members">${asNumber(r.record_count)} 件</div></div>`).join("") || '<div class="empty">ありません</div>'}
-    </div></div>`;
+    // F: display knobs — page size + sort (client-side on the fetched page)
+    let size = 50;
+    let sortMode = "records";
+    const apply = (hits) => [...hits].sort((a, b) => sortMode === "records"
+        ? asNumber(b.record_count) - asNumber(a.record_count)
+        : String(a.name_kanji).localeCompare(String(b.name_kanji), "ja"));
+    const paint = async () => {
+        await mountView(el, {
+            skeleton: SKELETON(),
+            load: async () => (await port.entities("", size)).rows,
+            render: (hits) => `<div class="panel">${crumb(store, "#/entities", store.t("entities"))}
+    <div class="card"><div class="toolbar"><h3 style="margin:0">${esc(store.t("entityList", { n: hits.length }))}</h3>
+      <label class="members">${esc(store.t("pageSize"))}<select id="ent-size">${[25, 50, 100, 200].map(n => `<option ${n === size ? "selected" : ""}>${n}</option>`).join("")}</select></label>
+      <label class="members">${esc(store.t("sort"))}<select id="ent-sort"><option value="records" ${sortMode === "records" ? "selected" : ""}>${esc(store.t("sortRecords"))}</option><option value="name" ${sortMode === "name" ? "selected" : ""}>${esc(store.t("sortName"))}</option></select></label></div>
+      ${apply(hits).map((r) => `<div class="card" style="margin:.45rem 0"><h3><a href="#/entity/${esc(r.nayose_id)}">${esc(r.name_kanji)}</a>
+        <span class="muted">${esc(r.name_kana || "")}</span></h3><div class="members">${esc(store.t("record_count"))}: ${asNumber(r.record_count)}</div></div>`).join("") || `<div class="empty">${esc(store.t("none"))}</div>`}
+    </div></div>`,
+            bind: (view) => {
+                view.querySelector("#ent-size")?.addEventListener("change", (e) => {
+                    size = Number(e.target.value) || 50;
+                    void paint();
+                });
+                view.querySelector("#ent-sort")?.addEventListener("change", (e) => {
+                    sortMode = e.target.value;
+                    void paint();
+                });
+            },
+        });
+    };
+    await paint();
 }
 export async function mountEntity(el, port, store, id) {
-    el.innerHTML = `<div class="panel">${SKELETON()}</div>`;
-    const detail = await port.entity(id);
-    const e = detail.entity;
-    const lin = Object.entries(detail.lineage)
-        .map(([f, ts]) => `<div class="lin"><span>${esc(f)}</span>${ts.map((t) => `<span>${esc(t)}</span>`).join("")}</div>`)
-        .join("");
-    el.innerHTML = `<div class="panel">${crumb("#/entities", "エンティティ", "#/entity/" + esc(id), esc(id))}
-    <div class="card"><h2>${esc(e.name_kanji)} <span class="muted">${esc(e.name_kana)}</span></h2>
-      <div class="members">${esc(id)} · ${asNumber(e.record_count)} 件 · ${esc(e.date_birth)} · ${esc(e.address)}</div></div>
-    ${lin ? `<div class="card"><h3>フィールド由来（lineage）</h3>${lin}</div>` : ""}
-    <div class="card"><h3>所属レコード</h3><table><thead><tr><th>record</th><th>カナ</th><th>電話</th></tr></thead>
-    <tbody>${detail.members.map((m) => `<tr><td>${esc(m.record_id)}</td><td>${esc(m.name_kana)}</td><td>${esc(m.phone)}</td></tr>`).join("")}</tbody></table></div></div>`;
+    await mountEntityDetail(el, port, store, id);
 }
 export async function mountCompare(el, port, store, l, r) {
-    el.innerHTML = `<div class="panel">${SKELETON()}</div>`;
-    const rows = await port.compare(l, r);
-    const left = rows.find((x) => str(x.record_id) === l);
-    const right = rows.find((x) => str(x.record_id) === r);
-    if (!left || !right) {
-        el.innerHTML = `<div class="panel"><div class="empty">レコードが見つかりません</div></div>`;
-        return;
-    }
-    const fields = diffFields(left);
-    const side = (rec, other) => `<table><tbody>${fields.map((f) => `<tr><th scope="row">${esc(f)}</th><td class="${str(rec[f]) !== str(other[f]) ? "diff-hi" : ""}">${esc(rec[f])}</td></tr>`).join("")}</tbody></table>`;
-    el.innerHTML = `<div class="panel">${crumb("#/review", "レビュー待機")}
+    await mountView(el, {
+        skeleton: SKELETON(),
+        load: () => port.compare(l, r),
+        render: (rows) => {
+            const left = rows.find((x) => str(x.record_id) === l);
+            const right = rows.find((x) => str(x.record_id) === r);
+            if (!left || !right) {
+                return `<div class="panel"><div class="empty">${esc(store.t("notFound"))}</div></div>`;
+            }
+            const fields = diffFields(left);
+            const side = (rec, other) => `<table><tbody>${fields.map((f) => `<tr><th scope="row">${esc(f)}</th><td class="${str(rec[f]) !== str(other[f]) ? "diff-hi" : ""}">${esc(rec[f])}</td></tr>`).join("")}</tbody></table>`;
+            return `<div class="panel">${crumb(store, "#/review", store.t("review"))}
     <div class="diff">
       <div class="card"><h3>${esc(l)}</h3>${side(left, right)}</div>
       <div class="card"><h3>${esc(r)}</h3>${side(right, left)}</div>
-    </div><p class="members">差分行はハイライト表示。</p></div>`;
+    </div><p class="members">${esc(store.t("diffHelp"))}</p></div>`;
+        },
+    });
 }
 export async function mountCompareRuns(el, port, store) {
     const runs = store.runs.map((r) => r.id);
     const a = store.run;
     const b = runs.find((r) => r !== a) ?? a;
     const opts = (sel) => runs.map((r) => `<option value="${esc(r)}" ${r === sel ? "selected" : ""}>${esc(r)}</option>`).join("");
-    el.innerHTML = `<div class="panel">${crumb("#/compare-runs", "比較")}
+    const go = async () => {
+        try {
+            await mountView(el.querySelector("#out"), {
+                skeleton: SKELETON(2),
+                load: async () => {
+                    const runA = el.querySelector("#runA").value;
+                    const runB = el.querySelector("#runB").value;
+                    return Promise.all([port.metricsFor(runA), port.metricsFor(runB)]);
+                },
+                render: ([mA, mB]) => {
+                    const byA = new Map(mA.kpis), byB = new Map(mB.kpis);
+                    const rows = [...new Set([...byA.keys(), ...byB.keys()])].map((label) => {
+                        const va = byA.get(label) ?? 0, vb = byB.get(label) ?? 0;
+                        const delta = vb - va;
+                        const cls = Math.abs(delta) > 0.005 ? (delta > 0 ? "ok" : "bad") : "blank";
+                        return `<tr><th scope="row">${esc(label)}</th><td>${(va * 100).toFixed(1)}%</td><td>${(vb * 100).toFixed(1)}%</td>
+              <td class="${cls}">${delta >= 0 ? "+" : ""}${(delta * 100).toFixed(1)}%</td></tr>`;
+                    }).join("");
+                    const runA = el.querySelector("#runA").value;
+                    const runB = el.querySelector("#runB").value;
+                    return `<h4 class="muted">${esc(runA)} → ${esc(runB)}</h4>
+            <table><thead><tr><th>${esc(store.t("metrics"))}</th><th>A</th><th>B</th><th>Δ</th></tr></thead><tbody>${rows}</tbody></table>`;
+                },
+            });
+        }
+        catch (err) {
+            el.querySelector("#out").innerHTML = `<p class="members">${esc(store.t("error"))}: ${esc(String(err?.message ?? err))}</p>`;
+        }
+    };
+    await mountView(el, {
+        load: async () => undefined,
+        render: () => `<div class="panel">${crumb(store, "#/compare-runs", store.t("compare"))}
     <div class="card"><div class="toolbar">
       <label class="members">run A<select id="runA">${opts(a)}</select></label>
       <label class="members">run B<select id="runB">${opts(b)}</select></label>
-      <button type="button" class="more" id="go">比較</button></div>
-      <div id="out" role="region" aria-live="polite"><div class="members">実行バンドル間の主要指標を比較します。</div></div></div></div>`;
-    const out = el.querySelector("#out");
-    const go = async () => {
-        out.innerHTML = SKELETON(2);
-        try {
-            const [mA, mB] = await Promise.all([
-                port.metricsFor(el.querySelector("#runA").value),
-                port.metricsFor(el.querySelector("#runB").value),
-            ]);
-            const byA = new Map(mA.kpis), byB = new Map(mB.kpis);
-            const rows = [...new Set([...byA.keys(), ...byB.keys()])].map((label) => {
-                const va = byA.get(label) ?? 0, vb = byB.get(label) ?? 0;
-                const delta = vb - va;
-                const cls = Math.abs(delta) > 0.005 ? (delta > 0 ? "ok" : "bad") : "blank";
-                return `<tr><th scope="row">${esc(label)}</th><td>${(va * 100).toFixed(1)}%</td><td>${(vb * 100).toFixed(1)}%</td>
-          <td class="${cls}">${delta >= 0 ? "+" : ""}${(delta * 100).toFixed(1)}%</td></tr>`;
-            }).join("");
-            out.innerHTML = `<h4 class="muted">${esc(el.querySelector("#runA").value)} → ${esc(el.querySelector("#runB").value)}</h4>
-        <table><thead><tr><th>指標</th><th>A</th><th>B</th><th>Δ</th></tr></thead><tbody>${rows}</tbody></table>`;
-        }
-        catch (err) {
-            out.innerHTML = `<p class="members">エラー: ${esc(String(err?.message ?? err))}</p>`;
-        }
-    };
-    el.querySelector("#go").addEventListener("click", () => void go());
+      <button type="button" class="more" id="go">${esc(store.t("compare"))}</button></div>
+      <div id="out" role="region" aria-live="polite"><div class="members">${esc(store.t("compareHelp"))}</div></div></div></div>`,
+        bind: (el) => {
+            el.querySelector("#go").addEventListener("click", () => void go());
+        },
+    });
 }

@@ -11,10 +11,18 @@ view/endpoint/decision" checklists). One command for status:
 python scripts/audit_repo.py       # ruff, mypy, tsc, npm test, pytest (+ E2E opt-in)
 ```
 
-Legacy app layer (`nayose_cli.py`, `nayose_inference.py`) is stable but a
-refactor target — add new behavior in `api/`, `frontend/`, `synthetic/`.
+The original root-level app layer (`nayose_cli.py`) was retired and the engine
+migrated to `api/engine.py`; all behavior lives in `api/`, `frontend/`,
+`synthetic/`.
 
 ## Quick Start
+
+> Instant environments: open this repo in **VSCode Dev Containers** (`.devcontainer/`)
+> for an identical dev box, or pull the tagged image from GHCR. Git/CI/Docker/cloud
+> workflow: **`docs/CLOUD.md`**; ops runbook: **`docs/OPERATIONS.md`**;
+> GPU training: **`docs/REMOTE_GPU.md`**. Evidence-first matching and the
+> Japanese/English UI: **[`docs/MATCHING_UI.md`](docs/MATCHING_UI.md)**.
+> 5-minute stakeholder demo: **[`docs/DEMO.md`](docs/DEMO.md)**.
 
 Both notebooks share `data/` by default. The generator writes the visible
 snapshots (`reference_records`, `incoming_queries`) plus the six hidden truth
@@ -43,29 +51,21 @@ output directory. `NayoseEngine.load` **fingerprint-checks the bundle against
 the reference data** and refuses stale combinations:
 
 ```python
-from nayose_inference import load_engine
+from api.engine import load_engine
 
 engine = load_engine()  # models/ + data/ (after a fresh nayose run)
-# or point at a specific bundle + generation:
-# engine = load_engine(model_dir="nayose_output/run_20260902_abcdef", data_dir="data")
-
-result = engine.recommend(
-    {
-        "name_kanji": "山田太郎",
-        "phone": "090-1234-5678",
-    }
-)
-
+result = engine.recommend({"name_kanji": "山田太郎", "phone": "090-1234-5678"})
 print(result.action)  # AUTO_LINK
 print(result.top_nayose_id)  # N000012345
-print(result.top_probability)  # 0.856
 ```
 
-CLI:
+Headless training and serving (the supported paths — semantics identical to
+the notebooks):
 
 ```bash
-python nayose_cli.py --name "山田太郎" --phone "090-1234-5678"
-python nayose_cli.py --interactive
+python scripts/train.py --data-dir data --models-dir models \
+  --seed 42 --device cpu --model-family off
+python -m api.main                          # then open http://127.0.0.1:8899
 ```
 
 ## Project Structure
@@ -73,8 +73,9 @@ python nayose_cli.py --interactive
 ```
 ├── synthetic_data.ipynb        # Data generation pipeline
 ├── nayose.ipynb                # Model training & evaluation
-├── nayose_inference.py         # Standalone inference engine
-├── nayose_cli.py               # CLI interface
+├── api/                        # Serving (FastAPI) + engine facade
+│   ├── main.py                 #   typed endpoints, services, auth
+│   └── engine.py               #   trained-artifact loading + fingerprint guard
 │
 ├── data/                       # Training data (gitignored)
 │   ├── raw/                        # immutable reference data (ken_all, personas, EDINET)

@@ -1,5 +1,3 @@
-// Pure core: no DOM, no fetch — unit-testable with node:test.
-// Kept side-effect free so "unit" tests are real units (hermetic, deterministic).
 export function parseRoute(hash) {
     const parts = hash.replace(/^#\/?/, "").split("?")[0].split("/").filter((p) => p.length > 0);
     return { name: parts[0] ?? "search", args: parts.slice(1) };
@@ -18,17 +16,18 @@ export function asNumber(v, fallback = 0) {
     const n = Number(v);
     return Number.isFinite(n) ? n : fallback;
 }
-export function likeEscaped(q) {
-    return q.replace(/[%_\\]/g, (c) => "\\" + c);
-}
-export function satisfiesMinScore(score, minP) {
-    return asNumber(score) >= clamp01(minP);
-}
-export function pick(row, keys) {
-    const out = {};
-    for (const k of keys) {
-        if (k in row)
-            out[k] = row[k];
+export async function pollJob(getStatus, initial, timeoutSec = 300, onUpdate) {
+    let job = initial;
+    const deadline = Date.now() + timeoutSec * 1000;
+    onUpdate?.(job);
+    while (Date.now() < deadline) {
+        if (job.stage === "complete" || job.stage === "failed")
+            return job;
+        job = await getStatus();
+        onUpdate?.(job);
+        if (job.stage === "complete" || job.stage === "failed")
+            return job;
+        await new Promise(resolve => setTimeout(resolve, 1000));
     }
-    return out;
+    return job;
 }
