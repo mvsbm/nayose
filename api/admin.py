@@ -1,5 +1,5 @@
-"""Admin service (SRP): one owner for training/generation/serving-control jobs,
-the audit log, the manual corpus (D: data entry) and destructive ops (C).
+"""Application service for admin jobs, serving controls, audit events, and
+manual data-entry mutations.
 
 Design notes
 ------------
@@ -235,8 +235,7 @@ class AdminService:
         env_overrides: dict[str, str],
         stream_progress: bool = False,
     ) -> None:
-        """Run a subprocess, OPTIONALLY streaming parsed ETA/progress lines into
-        the job (Observer: the job record is the single source the UI polls)."""
+        """Run a subprocess and optionally stream parsed progress into the job."""
         self._update(job_id, stage_label)
         env = {**os.environ, "PYTHONUNBUFFERED": "1", **env_overrides}
         proc = subprocess.Popen(
@@ -494,8 +493,7 @@ class AdminService:
             return [row["record_id"] for row in rows_with_id]
 
     def _write_atomic(self, frame: pd.DataFrame) -> None:
-        """Transactional write: temp file + os.replace, so a concurrent reader
-        never sees a half-written parquet (mirrors DecisionsStore)."""
+        """Write a complete parquet replacement without exposing a partial file."""
         self.manual_dir.mkdir(parents=True, exist_ok=True)
         tmp = self._manual_path().with_suffix(".parquet.tmp")
         frame.to_parquet(tmp, index=False)

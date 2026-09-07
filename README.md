@@ -17,8 +17,8 @@ migrated to `api/engine.py`; all behavior lives in `api/`, `frontend/`,
 
 ## Quick Start
 
-> Instant environments: open this repo in **VSCode Dev Containers** (`.devcontainer/`)
-> for an identical dev box, or pull the tagged image from GHCR. Git/CI/Docker/cloud
+> Reproducible environments: open this repo in **VSCode Dev Containers** (`.devcontainer/`)
+> for a configured dev box, or pull the tagged image from GHCR. Git/CI/Docker/cloud
 > workflow: **`docs/CLOUD.md`**; ops runbook: **`docs/OPERATIONS.md`**;
 > GPU training: **`docs/REMOTE_GPU.md`**. Evidence-first matching and the
 > Japanese/English UI: **[`docs/MATCHING_UI.md`](docs/MATCHING_UI.md)**.
@@ -59,8 +59,8 @@ print(result.action)  # AUTO_LINK
 print(result.top_nayose_id)  # N000012345
 ```
 
-Headless training and serving (the supported paths — semantics identical to
-the notebooks):
+Headless training and serving (the supported paths — using the same bundle
+contract as the notebooks):
 
 ```bash
 python scripts/train.py --data-dir data/current --models-dir models \
