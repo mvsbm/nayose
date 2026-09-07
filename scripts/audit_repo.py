@@ -21,7 +21,14 @@ NODE = shutil.which("node")
 
 def run(name: str, cmd: list[str], cwd: Path, timeout: int = 900, env=None) -> bool:
     print(f"  {name:<32} ", end="", flush=True)
-    proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout, env=env)
+    try:
+        proc = subprocess.run(
+            cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout, env=env
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print("FAIL")
+        print(f"{type(exc).__name__}: {exc}")
+        return False
     ok = proc.returncode == 0
     print("PASS" if ok else "FAIL")
     if not ok:
