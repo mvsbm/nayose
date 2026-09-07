@@ -36,9 +36,7 @@ def main() -> int:
 
     # 1-3: Python lint, formatting, and types
     results["ruff"] = run("ruff (lint)", [*PY, "ruff", "check", "."], REPO)
-    results["ruff format"] = run(
-        "ruff (format)", [*PY, "ruff", "format", "--check", "."], REPO
-    )
+    results["ruff format"] = run("ruff (format)", [*PY, "ruff", "format", "--check", "."], REPO)
     results["mypy"] = run(
         "mypy (types)", [*PY, "mypy", "api", "synthetic", "scripts", "tests"], REPO
     )

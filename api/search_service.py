@@ -491,9 +491,7 @@ class SearchService:
     ) -> dict[str, Any]:
         plan = self.interpreter.interpret(query, filters)
         telemetry = SearchTelemetry()
-        exact = telemetry.measure(
-            "exact", lambda: self.exact.retrieve(run_id, plan, limit) or []
-        )
+        exact = telemetry.measure("exact", lambda: self.exact.retrieve(run_id, plan, limit) or [])
         exact = self._apply_filters(exact, plan.filters)
         exact = self.ranker.rank(exact, plan, "exact")
         if not plan.raw_query:
@@ -502,9 +500,7 @@ class SearchService:
             )
 
         ranked = (
-            telemetry.measure(
-                "semantic", lambda: self.semantic.retrieve(run_id, plan, limit)
-            )
+            telemetry.measure("semantic", lambda: self.semantic.retrieve(run_id, plan, limit))
             if semantic
             else None
         )
@@ -543,9 +539,7 @@ class SearchService:
         )
 
     @staticmethod
-    def _apply_filters(
-        hits: list[dict[str, Any]], filters: SearchFilters
-    ) -> list[dict[str, Any]]:
+    def _apply_filters(hits: list[dict[str, Any]], filters: SearchFilters) -> list[dict[str, Any]]:
         return [hit for hit in hits if filters.matches(hit)]
 
 

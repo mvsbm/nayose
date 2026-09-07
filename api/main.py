@@ -277,7 +277,9 @@ class QueryService:
                 matched = search_cols
             if filters and filters.party_type and "party_type" in available:
                 party_type = filters.party_type.replace("'", "''")
-                where_conditions.append(f"lower(CAST(party_type AS VARCHAR)) = lower('{party_type}')")
+                where_conditions.append(
+                    f"lower(CAST(party_type AS VARCHAR)) = lower('{party_type}')"
+                )
             if filters and filters.min_record_count is not None and "record_count" in available:
                 where_conditions.append(f"record_count >= {max(0, int(filters.min_record_count))}")
             where = f"WHERE {' AND '.join(where_conditions)}" if where_conditions else ""
@@ -889,6 +891,8 @@ def current_search_service() -> SearchService:
     ):
         SEARCH_SERVICE = build_search_service(QUERIES, RECOMMEND)
     return SEARCH_SERVICE
+
+
 DECISIONS = DecisionsStore()
 ADMIN = AdminService(DATA_ROOT, MODELS_DIR, MANUAL_DIR)
 ADMIN._engine_reset = lambda: RECOMMEND.reset_engine()
@@ -972,7 +976,15 @@ def normalize_preview(text: str = "") -> dict[str, str]:
     normalized = normalize_query_fields(text)
     return {
         field: normalized[field]
-        for field in ("name_kanji", "name_kana", "phone", "postal_code", "address", "email", "date_birth")
+        for field in (
+            "name_kanji",
+            "name_kana",
+            "phone",
+            "postal_code",
+            "address",
+            "email",
+            "date_birth",
+        )
     }
 
 
@@ -1055,7 +1067,11 @@ def health() -> dict[str, Any]:
     current = next((r for r in runs if r.get("current")), runs[0] if runs else None)
     release = release_status(DATA_ROOT, MODELS_DIR)
     return {
-        "status": "ok" if current is not None and release.compatible else "degraded" if current else "no_run",
+        "status": "ok"
+        if current is not None and release.compatible
+        else "degraded"
+        if current
+        else "no_run",
         "run": current["id"] if current else None,
         "fingerprint": release.model_fingerprint[:12] if release.model_fingerprint else "",
         "data_fingerprint": release.data_fingerprint,
@@ -1067,7 +1083,9 @@ def health() -> dict[str, Any]:
         "models_dir": str(MODELS_DIR),
         "now_utc": datetime.now(timezone.utc).isoformat(),  # noqa: UP017 (this runtime lacks datetime.UTC)
         "stats": STATS.snapshot(),
-        "engine_warm": RECOMMEND.engine_ready(current["id"] if current else "") if release.compatible else False,
+        "engine_warm": RECOMMEND.engine_ready(current["id"] if current else "")
+        if release.compatible
+        else False,
     }
 
 

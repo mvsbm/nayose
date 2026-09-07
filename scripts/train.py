@@ -145,8 +145,7 @@ def verify_bundle(args: argparse.Namespace) -> None:
     if run is None:
         raise SystemExit("FAIL: no run bundle found under models/runs/")
     aborted = [
-        p for p in runs_root.iterdir()
-        if p.is_dir() and not (p / "run_manifest.json").exists()
+        p for p in runs_root.iterdir() if p.is_dir() and not (p / "run_manifest.json").exists()
     ]
     if aborted:
         msg = f"aborted/incomplete runs without run_manifest.json: {[p.name for p in aborted]}"
