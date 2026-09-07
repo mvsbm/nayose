@@ -102,6 +102,8 @@ def validate_model_for_data(run_dir: Path, data_root: Path) -> str:
     data_fingerprint = _manifest_fingerprint(data_target) if data_target else None
     if not model_fingerprint:
         raise ValueError("model manifest has no data fingerprint")
-    if data_fingerprint and model_fingerprint != data_fingerprint:
+    if not data_fingerprint:
+        raise ValueError("current data manifest has no data fingerprint")
+    if model_fingerprint != data_fingerprint:
         raise ValueError("model/data fingerprint mismatch")
     return model_fingerprint

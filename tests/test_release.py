@@ -36,6 +36,16 @@ def test_release_status_requires_matching_current_aliases(tmp_path):
     assert status.model_target == "run_a"
 
 
+def test_model_promotion_rejects_missing_data_alias(tmp_path):
+    data_root = tmp_path / "data"
+    run = tmp_path / "run_a"
+    run.mkdir(parents=True)
+    manifest(run, "run_manifest.json", "data-a")
+
+    with pytest.raises(ValueError, match="current data manifest"):
+        validate_model_for_data(run, data_root)
+
+
 def test_model_promotion_rejects_stale_data(tmp_path):
     data_root = tmp_path / "data"
     generation = data_root / "generations" / "gen_a"
