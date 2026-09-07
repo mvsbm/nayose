@@ -20,7 +20,7 @@ api/main.py   FastAPI: typed domain endpoints (+ debug-only raw SQL)
 ## Frontend layering (hexagonal / ports & adapters)
 
 ```
-domain/   schema.ts (contract) · core.ts (pure logic)      ← no DOM, no fetch
+frontend/ts/   schema.ts (contract) · core.ts (pure logic)      ← no DOM, no fetch
 port.ts   QueryPort + Storage interfaces (the only thing views may depend on)
 infra/    ApiAdapter (DuckDB-backed typed endpoints) + memo cache; LocalStorage
 store.ts  observable store + Command/undo for decisions
@@ -49,7 +49,7 @@ All queries are typed endpoints (`/api/entities`, `/api/entity/{id}`,
 ## Data flow (one loop)
 
 ```
-generate (synthetic/) → run matcher (scripts/train.py / nayose.ipynb) → bundle + lineage_summary
+generate (synthetic/) → run matcher (scripts/train.py / nayose.ipynb) → immutable bundle + generation field_lineage
 → API serves bundle parquet via DuckDB → Web views (search/review/audit)
 → decisions written back (models/decisions) → next audit reads them
 ```

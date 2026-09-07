@@ -46,7 +46,7 @@ LOGGER = logging.getLogger(__name__)
 
 ADMIN_ACTIONS = ("reload_engine", "settings", "promote", "prune", "reset_decisions")
 EXACT_MODES = ("hybrid", "exact_only", "fuzzy_only")
-MODEL_FAMILIES = ("off", "ruri", "f2llm", "qwen")
+MODEL_FAMILIES = ("off", "ruri", "f2llm", "f2llm_0.6b", "qwen")
 DEVICES = ("auto", "cpu", "mps", "cuda")
 PROFILES = tuple(GENERATION_PROFILES)
 DIFFICULTIES = tuple(GENERATION_DIFFICULTIES)

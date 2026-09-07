@@ -45,7 +45,7 @@ curl http://127.0.0.1:8000/api/health            # readiness probe (auth-exempt)
   (`truth_id`, `scenario`, `split`, `record_quality`, `transformation`, ...).
 - Every record/query field must have a lineage row
   (`field_lineage`: item_id × field, canonical vs observed, owner, transformation).
-- Notebook cell 9 and `tests/` enforce this; run them before changing the schema.
+- The notebook preflight invariants and `tests/` enforce this; run them before changing the schema.
 - `tests/test_arch_contract.py` enforces the architecture contract (DIP, ISP, CSS
   class dictionary, no layout/stacking on bare element selectors, no sticky table
   cells). It ships with the suite — drift fails `pytest`, never the browser.

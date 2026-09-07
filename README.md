@@ -91,19 +91,10 @@ NAYOSE_DASH_PORT=8899 python -m api.main  # then open http://127.0.0.1:8899
 │       └── field_lineage.parquet  # per-field provenance audit (1.9M rows @100k)
 │
 └── models/                     # Trained artifacts (gitignored)
-    ├── pair_verifier.joblib    # LightGBM pair matching model
-    ├── pair_calibrator.joblib  # Probability calibration
-    ├── entity_classifier.joblib
-    ├── entity_scaler.joblib
-    ├── entity_calibrator.joblib
-    ├── tfidf_vectorizer.joblib # TF-IDF text vectorizer
-    ├── reference_tfidf.npz     # Sparse TF-IDF matrix
-    ├── entity_index.parquet    # Canonical entity forms
-    ├── record_entity_mapping.parquet
-    ├── benchmark_results.parquet
-    ├── scenario_metrics.parquet
-    ├── training_metrics.parquet
-    └── training_manifest.json
+    ├── runs/run_<ts>_<hash>/   # immutable bundle + run_manifest.json
+    ├── current -> runs/...     # validated serving alias
+    ├── registry.json           # append-only run metadata
+    └── decisions/<run>.json    # review state bound to that run manifest
 ```
 
 ## Architecture
@@ -247,7 +238,7 @@ NAYOSE_MODELS_DIR=models NAYOSE_DATA_DIR=data/current \
 Views: 検索（既定画面）・照合テスト (live `/api/recommend`) · レビュー待機
 （件数・確率フィルタ・既読保存）・レコード比較（パンくず・エンティティ連携）・
 混同行列（ヒート・内訳ドリル）・指標（バー付き）・エンティティ（lineage 表示）。
-Architecture (hexagonal): `domain/` (pure schema+core) · `port.ts`
+Architecture (hexagonal): `frontend/ts/schema.ts` + `core.ts` (pure schema/core) · `port.ts`
 (QueryPort/Storage interfaces) · `infra/` (ApiAdapter + cache, LocalStorageStore) ·
 `features/` (views depend only on the port) · `store.ts` (observable store with
 Command/undo for decisions) · `app.ts` composition root (`boot()` injects
@@ -258,7 +249,7 @@ API (typed domain endpoints; raw SQL only behind `NAYOSE_DEBUG_SQL=1`):
 `/api/review?min_p=&offset=` · `/api/metrics` · `/api/confusion` ·
 `/api/compare` · `/api/recommend` (fingerprint-guarded) · `/api/stats`
 (per-endpoint hits+ms). Caching: server-side per-run LRU + client adapter memo;
-`lineage_summary.parquet` materialized at matcher save for fast drill.
+field lineage remains in the immutable generation's hidden `field_lineage` table.
 
 **Cross-run diff** (`#/compare-runs`): pick run A/B, `ポート.metricsFor(run)` →
 side-by-side KPI table with Δ (green/red deltas, tabular numerals).
