@@ -318,7 +318,9 @@ class NayoseEngine:
         ).hexdigest()
 
     @classmethod
-    def load(cls, model_dir: str | Path = "models", data_dir: str | Path = "data") -> NayoseEngine:
+    def load(
+        cls, model_dir: str | Path = "models/current", data_dir: str | Path = "data/current"
+    ) -> NayoseEngine:
         """Load a model bundle and its matching reference, then return a ready engine.
 
         Enforces dataset<->model generation linkage: a run/training manifest next to
@@ -646,6 +648,6 @@ def _apply_manifest_thresholds(config) -> None:
         )
 
 
-def load_engine(model_dir: str = "models", data_dir: str = "data") -> NayoseEngine:
+def load_engine(model_dir: str = "models/current", data_dir: str = "data/current") -> NayoseEngine:
     """Load and return a ready-to-use engine."""
     return NayoseEngine.load(model_dir, data_dir)

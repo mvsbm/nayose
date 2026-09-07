@@ -98,6 +98,17 @@ def test_scoring_failure_is_not_disguised_as_probability():
         ExplainedMatcher(fake_engine(broken=True)).recommend({"name_kanji": "佐藤"}, lambda _: None)
 
 
+def test_engine_load_defaults_to_promoted_aliases():
+    import inspect
+
+    from api.engine import NayoseEngine, load_engine
+
+    assert inspect.signature(NayoseEngine.load).parameters["model_dir"].default == "models/current"
+    assert inspect.signature(NayoseEngine.load).parameters["data_dir"].default == "data/current"
+    assert inspect.signature(load_engine).parameters["model_dir"].default == "models/current"
+    assert inspect.signature(load_engine).parameters["data_dir"].default == "data/current"
+
+
 def test_engine_refuses_bundles_without_fingerprint_guard(tmp_path):
     from api.engine import NayoseEngine
 
