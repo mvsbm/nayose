@@ -4,7 +4,7 @@
 CLI == notebook contract. The notebook is the reference pipeline (index →
 candidates → pair features → entity-disjoint verifier → clustering → query
 scoring → bundle export); this command runs it headlessly with NAYOSE_*
-overrides, then VERIFIES the promoted bundle before exiting 0.
+overrides, verifies it, and promotes it only after fingerprint checks pass.
 
 Usage:
     python scripts/train.py --data-dir data/current --models-dir models \\
@@ -24,6 +24,9 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from api.release import atomic_directory_alias, validate_model_for_data  # noqa: E402
 
 NOTEBOOK = ROOT / "nayose.ipynb"
 REQUIRED_BUNDLE_TABLES = (
@@ -104,6 +107,7 @@ def _env_for(args: argparse.Namespace) -> dict[str, str]:
         "NAYOSE_LOW_MEMORY_MODELS": "1",
         "NAYOSE_ALLOW_SVD_FALLBACK": "1",
         "NAYOSE_PYTORCH_ENABLE_MPS_FALLBACK": "1",
+        "NAYOSE_PROMOTE": "0",
     }
     return env
 
@@ -128,21 +132,14 @@ def run_notebook(args: argparse.Namespace, env: dict[str, str]) -> float:
     return time.monotonic() - t0
 
 
-def verify_bundle(args: argparse.Namespace) -> None:
+def verify_bundle(args: argparse.Namespace) -> Path:
     """The load guard in NayoseEngine refuses a bundle whose fingerprint does
     not match the reference; fail here, not at serve time."""
     models = Path(args.models_dir).resolve()
     snapshot = Path(args.data_dir).resolve()
     data = (snapshot / "current").resolve() if (snapshot / "current").exists() else snapshot
     runs_root = models / "runs"
-    runs = sorted(
-        (p for p in runs_root.iterdir() if p.is_dir()),
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
-    )
-    current = (models / "current").resolve() if (models / "current").exists() else None
-    run = current if current is not None else (runs[0] if runs else None)
-    if run is None:
+    if not runs_root.is_dir():
         raise SystemExit("FAIL: no run bundle found under models/runs/")
     aborted = [
         p for p in runs_root.iterdir() if p.is_dir() and not (p / "run_manifest.json").exists()
@@ -157,6 +154,14 @@ def verify_bundle(args: argparse.Namespace) -> None:
             print(f"pruned {len(aborted)} aborted run(s)")
         else:
             print(f"WARN: {msg} (--prune-aborted to remove)")
+    runs = sorted(
+        (p for p in runs_root.iterdir() if p.is_dir() and (p / "run_manifest.json").exists()),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    run = runs[0] if runs else None
+    if run is None:
+        raise SystemExit("FAIL: no complete run bundle found under models/runs/")
     manifest_path = run / "run_manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     missing = [t for t in REQUIRED_BUNDLE_TABLES if not (run / f"{t}.parquet").exists()]
@@ -181,6 +186,40 @@ def verify_bundle(args: argparse.Namespace) -> None:
     for m in ("candidate_metrics", "pair_metrics", "query_metrics"):
         if m in manifest:
             print(f"  {m}: {manifest[m]}")
+    return run
+
+
+def promote_bundle(args: argparse.Namespace, run: Path) -> None:
+    models = Path(args.models_dir).resolve()
+    snapshot = Path(args.data_dir).resolve()
+    if snapshot.name == "current":
+        data_root = snapshot.parent
+    elif snapshot.parent.name == "generations":
+        data_root = snapshot.parent.parent
+    else:
+        data_root = snapshot
+    fingerprint = validate_model_for_data(run, data_root)
+    atomic_directory_alias(run, models / "current")
+    registry_path = models / "registry.json"
+    registry = (
+        json.loads(registry_path.read_text(encoding="utf-8")) if registry_path.exists() else []
+    )
+    manifest = json.loads((run / "run_manifest.json").read_text(encoding="utf-8"))
+    registry.append(
+        {
+            "run_id": run.name,
+            "created_at": manifest.get("created_at_utc", ""),
+            "config_hash": manifest.get("config_hash", ""),
+            "data_fingerprint": fingerprint,
+            "model_family": manifest.get("config", {}).get("model_family", ""),
+            "device": manifest.get("device", ""),
+            "backends": manifest.get("backends", {}),
+        }
+    )
+    registry_tmp = registry_path.with_name(f".{registry_path.name}.tmp.{os.getpid()}")
+    registry_tmp.write_text(json.dumps(registry, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(registry_tmp, registry_path)
+    print(f"promoted {run.name} (fingerprint {fingerprint[:12]})")
 
 
 def main() -> int:
@@ -194,8 +233,11 @@ def main() -> int:
     env = _env_for(args)
     elapsed = run_notebook(args, env)
     print(f"training finished in {elapsed / 60:.1f} min")
-    if not args.no_verify:
-        verify_bundle(args)
+    if args.no_verify:
+        print("bundle verification skipped; leaving models/current unchanged")
+        return 0
+    run = verify_bundle(args)
+    promote_bundle(args, run)
     return 0
 
 
