@@ -100,8 +100,15 @@ def data_generation_for_fingerprint(data_root: Path, fingerprint: str) -> Path |
 
 def validate_model_for_data(run_dir: Path, data_root: Path) -> str:
     model_fingerprint = _manifest_fingerprint(run_dir)
-    data_link = data_root / "current"
-    data_target = data_link.resolve() if data_link.exists() else None
+    configured_root = Path(data_root)
+    data_link = configured_root / "current"
+    data_target = (
+        configured_root.resolve()
+        if configured_root.name == "current"
+        else data_link.resolve()
+        if data_link.exists()
+        else None
+    )
     data_fingerprint = _manifest_fingerprint(data_target) if data_target else None
     if not model_fingerprint:
         raise ValueError("model manifest has no data fingerprint")
