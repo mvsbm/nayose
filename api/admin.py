@@ -31,6 +31,7 @@ from api.admin_jobs import AdminJobRunner
 from api.embedding_config import SUPPORTED_MODEL_FAMILIES
 from api.evidence import VISIBLE_FIELDS
 from api.manual_store import ManualStore
+from api.operational_lock import advisory_file_lock
 from api.progress import ProgressUpdate
 from api.progress import parse as parse_progress
 from api.release import atomic_directory_alias, safe_run_id, validate_model_for_data
@@ -61,8 +62,14 @@ class AuditLog:
     def record(self, actor: str, action: str, detail: dict[str, Any]) -> dict[str, Any]:
         row = {"ts": _now(), "actor": actor, "action": action, **detail}
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self._lock, self.path.open("a", encoding="utf-8") as fh:
+        with (
+            self._lock,
+            advisory_file_lock(self.path.with_suffix(".lock")),
+            self.path.open("a", encoding="utf-8") as fh,
+        ):
             fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
         return row
 
     def tail(self, limit: int = 50) -> list[dict[str, Any]]:
