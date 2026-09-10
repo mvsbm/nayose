@@ -60,8 +60,6 @@ class EntityQueries:
         return normalize_query_fields(q)
 
     def _nearest_choices(self, run_dir: Path, fields: tuple[str, ...]) -> list[dict[str, Any]]:
-        key = f"nearest-choices:{run_dir.resolve()}:{','.join(fields)}"
-
         def load() -> list[dict[str, Any]]:
             con = duckdb.connect()
             try:
@@ -120,7 +118,7 @@ class EntityQueries:
                         choices.append({"text": value, "field": field, "entity": entity})
             return choices
 
-        return self.context.cached(key, load)
+        return load()
 
     def nearest_entities(
         self,
