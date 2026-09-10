@@ -172,9 +172,12 @@ def timed(name: str):
         def wrapper(*args, **kwargs):
             t0 = time.perf_counter()
             try:
-                return fn(*args, **kwargs)
-            finally:
-                STATS.record(name, time.perf_counter() - t0)
+                result = fn(*args, **kwargs)
+            except Exception:
+                STATS.record(name, time.perf_counter() - t0, error=True)
+                raise
+            STATS.record(name, time.perf_counter() - t0)
+            return result
 
         return wrapper
 
@@ -185,9 +188,12 @@ def op(name: str, fn):
     """Run + record timing/hits; keeps endpoint signatures visible to FastAPI."""
     t0 = time.perf_counter()
     try:
-        return fn()
-    finally:
-        STATS.record(name, time.perf_counter() - t0)
+        result = fn()
+    except Exception:
+        STATS.record(name, time.perf_counter() - t0, error=True)
+        raise
+    STATS.record(name, time.perf_counter() - t0)
+    return result
 
 
 @app.get("/", include_in_schema=False)
