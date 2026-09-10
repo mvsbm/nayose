@@ -51,6 +51,23 @@ def test_query_interpreter_selects_structured_intent():
     assert plan.field_weights["email"] > plan.field_weights["name_kanji"]
 
 
+def test_candidate_merger_keeps_provenance_after_reaching_limit():
+    from api.search_service import CandidateMerger
+
+    rows = CandidateMerger().merge(
+        [
+            ("exact", [hit("same", field="name_kanji")]),
+            ("semantic", [hit("same", field="semantic", score=0.9)]),
+            ("fuzzy", [hit("other", field="name_kanji", score=0.8)]),
+        ],
+        limit=1,
+    )
+
+    assert [row["nayose_id"] for row in rows] == ["same"]
+    assert rows[0]["retrieval_sources"] == ["exact", "semantic"]
+    assert [item["source"] for item in rows[0]["retrieval_evidence"]] == ["exact", "semantic"]
+
+
 def test_search_service_merges_candidates_and_applies_filters():
     exact = FakeRetriever(
         [

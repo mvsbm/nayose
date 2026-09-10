@@ -332,6 +332,8 @@ class CandidateMerger:
                         current["retrieval_sources"].append(source)
                         current["retrieval_evidence"].append(evidence)
                     continue
+                if len(ordered) >= limit:
+                    continue
                 current = {
                     **hit,
                     "retrieval_sources": [source],
@@ -339,8 +341,6 @@ class CandidateMerger:
                 }
                 by_id[entity_id] = current
                 ordered.append(current)
-                if len(ordered) >= limit:
-                    return ordered
         return ordered
 
 
