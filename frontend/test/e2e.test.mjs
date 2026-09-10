@@ -25,8 +25,13 @@ import {
   searchSeed,
   startServer,
   waitBodyText,
+  waitAttribute,
   waitCount,
+  waitComputedStyle,
+  waitDecision,
+  waitDecisionCount,
   waitHash,
+  waitInputValue,
   waitLang,
   waitManualCount,
   waitVisible,
@@ -54,28 +59,152 @@ test("e2e: search -> entity -> decisions persisted server-side", { skip: !ENABLE
     await page.fill("#q", term);
     await waitCount(page, "#results .hit", 1);
     const href = await page.getAttribute("#results .hit", "href");
-    assert.ok(href && href.startsWith("#/entity/"), "result links to entity route");
+    assert.ok(href && href.startsWith("#/search?entity="), "result opens the search detail workspace");
     await page.click("#results .hit");
-    await waitVisible(page, "#view [data-entity]");
+    await waitVisible(page, "#search-detail [data-selected-entity]");
     const escaped = term.replace(/[.*+?^${}()|[\]\\\\]/g, "\\$&");
-    assert.match(await page.textContent("[data-entity] h2"), new RegExp(escaped));
+    assert.match(await page.textContent("#search-detail [data-selected-entity] h2"), new RegExp(escaped));
 
     // review workflow: check an edge -> server-side persistence
     await navigateFresh(page, "#/review");
     await waitVisible(page, "[data-l] button.check");
     await page.locator("[data-l] button.check").first().click();
-    await page.waitForTimeout(900); // debounce (500ms) + round trip
     const runId = await page.evaluate(() => document.querySelector("#run").value);
-    const res = await fetch(`${BASE}/api/decisions?run_id=${encodeURIComponent(runId)}`);
-    const body = await res.json();
+    await waitDecisionCount(page, runId, 1, 10000);
+    const body = await page.evaluate(async id => {
+      const response = await fetch(`/api/decisions?run_id=${encodeURIComponent(id)}`);
+      return response.json();
+    }, runId);
     assert.ok(body.items.length >= 1, "decision persisted server-side");
 
     // cross-run diff renders
+    await waitDecisionCount(page, runId, 1, 10000);
     await navigateFresh(page, "#/compare-runs");
     await waitVisible(page, "#go");
     await page.click("#go");
     await waitCount(page, "#out table tbody tr", 1);
     assert.match(await page.textContent("#out table"), /candidate recall/);
+  });
+});
+
+test("e2e: stale entity detail response cannot overwrite the latest selection", { skip: !ENABLED }, async () => {
+  await runJourney(browser, "search-detail-race", async (page) => {
+    await navigateFresh(page, "#/search");
+    await page.fill("#q", await searchSeed(page));
+    await waitCount(page, "#results .hit", 2);
+    const ids = await page.$$eval("#results .hit", links =>
+      links.slice(0, 2).map(link => link.getAttribute("data-entity-select")),
+    );
+    assert.ok(ids[0] && ids[1] && ids[0] !== ids[1], "need two distinct entity results");
+    await page.route("**/api/entity/**", async route => {
+      const id = new URL(route.request().url()).pathname.split("/").pop();
+      if (id === ids[0]) await new Promise(resolve => setTimeout(resolve, 500));
+      await route.continue();
+    });
+    await page.locator("#results .hit").nth(0).click();
+    await page.locator("#results .hit").nth(1).click();
+    await waitVisible(page, `#search-detail [data-selected-entity="${ids[1]}"]`);
+    assert.equal(
+      await page.locator("#search-detail [data-selected-entity]").getAttribute("data-selected-entity"),
+      ids[1],
+      "late response for the first selection replaced the latest detail",
+    );
+  });
+});
+
+test("e2e: stale search response cannot replace a newer query", { skip: !ENABLED }, async () => {
+  await runJourney(browser, "search-query-race", async (page) => {
+    await navigateFresh(page, "#/search");
+    const terms = await page.evaluate(async () => {
+      const response = await fetch("/api/entities?q=&run_id=&limit=10");
+      const rows = (await response.json()).rows;
+      return rows.slice(0, 2).map(row => String(row.name_kanji ?? "").slice(0, 2));
+    });
+    assert.ok(terms[0] && terms[1] && terms[0] !== terms[1], "need two distinct search terms");
+    await page.route("**/api/entities?*", async route => {
+      const query = new URL(route.request().url()).searchParams.get("q");
+      if (query === terms[0]) await new Promise(resolve => setTimeout(resolve, 500));
+      await route.continue();
+    });
+    const firstResponse = page.waitForResponse(response =>
+      new URL(response.url()).searchParams.get("q") === terms[0],
+    );
+    await page.fill("#q", terms[0]);
+    await page.waitForRequest(request => new URL(request.url()).searchParams.get("q") === terms[0]);
+    const secondResponse = page.waitForResponse(response =>
+      new URL(response.url()).searchParams.get("q") === terms[1],
+    );
+    await page.fill("#q", terms[1]);
+    await Promise.all([firstResponse, secondResponse]);
+    await waitInputValue(page, "#q", terms[1]);
+    const escaped = terms[1].replace(/[.*+?^${}()|[\]\\\\]/g, "\\\\$&");
+    assert.match(await page.textContent("#results"), new RegExp(escaped), "stale search results won the race");
+  });
+});
+
+test("e2e: Entity Explorer keeps search visible through delayed page and detail races", { skip: !ENABLED }, async () => {
+  await runJourney(browser, "entity-explorer-race", async (page) => {
+    await navigateFresh(page, "#/entities");
+    await waitVisible(page, "#entity-explorer-query");
+    const terms = await page.evaluate(async () => {
+      const response = await fetch("/api/entities?q=&limit=10");
+      const rows = (await response.json()).rows;
+      return rows.map(row => String(row.name_kanji ?? "").slice(0, 2)).filter(Boolean).slice(0, 2);
+    });
+    assert.equal(terms.length, 2, "need two search terms");
+    assert.notEqual(terms[0], terms[1], "search terms must differ");
+    await page.route("**/api/entities/explorer?*", async route => {
+      const query = new URL(route.request().url()).searchParams.get("q");
+      if (query === terms[0]) await new Promise(resolve => setTimeout(resolve, 500));
+      await route.continue();
+    });
+    const firstResponse = page.waitForResponse(response => new URL(response.url()).searchParams.get("q") === terms[0]);
+    const firstRequest = page.waitForRequest(request => new URL(request.url()).searchParams.get("q") === terms[0]);
+    await page.fill("#entity-explorer-query", terms[0]);
+    await page.click("#entity-explorer-form button[type=submit]");
+    await firstRequest;
+    await waitVisible(page, "#entity-explorer-query");
+    const secondResponse = page.waitForResponse(response => new URL(response.url()).searchParams.get("q") === terms[1]);
+    await page.fill("#entity-explorer-query", terms[1]);
+    await page.click("#entity-explorer-form button[type=submit]");
+    await Promise.all([firstResponse, secondResponse]);
+    await waitInputValue(page, "#entity-explorer-query", terms[1]);
+    await waitBodyText(page, terms[1]);
+    assert.equal(await page.locator("#entity-explorer-query").isVisible(), true, "search bar disappeared after the race");
+  });
+});
+
+test("e2e: Entity Explorer ignores a stale delayed entity selection", { skip: !ENABLED }, async () => {
+  await runJourney(browser, "entity-explorer-selection-race", async (page) => {
+    await navigateFresh(page, "#/entities");
+    await waitVisible(page, "#entity-explorer-query");
+    await waitCount(page, "[data-entity-select]", 2);
+    const ids = await page.$$eval("[data-entity-select]", rows => rows.slice(0, 2).map(row => row.getAttribute("data-entity-select")));
+    assert.ok(ids[0] && ids[1] && ids[0] !== ids[1], "need two distinct entities");
+    await page.route("**/api/entity/**", async route => {
+      const parts = new URL(route.request().url()).pathname.split("/");
+      if (parts[3] === ids[0]) await new Promise(resolve => setTimeout(resolve, 500));
+      await route.continue();
+    });
+    await page.locator(`[data-entity-select="${ids[0]}"]`).click();
+    await waitCount(page, "[data-entity-select]", 2);
+    await page.locator(`[data-entity-select="${ids[1]}"]`).click();
+    await waitVisible(page, `[data-selected-entity="${ids[1]}"]`);
+    assert.equal(await page.locator(".entity-explorer-detail").getAttribute("data-selected-entity"), ids[1]);
+    assert.equal(await page.locator("#entity-explorer-query").isVisible(), true, "search bar disappeared during selection race");
+  });
+});
+
+test("e2e: Entity Explorer leads with overview and progressive evidence", { skip: !ENABLED }, async () => {
+  await runJourney(browser, "entity-explorer-information-hierarchy", async (page) => {
+    await navigateFresh(page, "#/entities");
+    await waitVisible(page, ".entity-explorer-overview");
+    await waitVisible(page, "#entity-explorer-footprint");
+    assert.equal(await page.locator("#entity-explorer-observed").getAttribute("open"), null);
+    assert.equal(await page.locator(".entity-explorer-map").count(), 0);
+    assert.equal(await page.locator("body").textContent().then(text => text.includes("reference_records")), false);
+    await page.locator("#entity-explorer-observed summary").click();
+    await waitVisible(page, ".entity-explorer-evidence-table");
   });
 });
 
@@ -114,7 +243,8 @@ test("e2e: review decision survives a page reload", { skip: !ENABLED }, async ()
     await unchecked.waitFor({ state: "visible" });
     const pairKey = await unchecked.getAttribute("data-l");
     await unchecked.locator("button.check").click();
-    await page.waitForTimeout(900); // debounce (500ms) + round trip
+    const runId = await page.evaluate(() => document.querySelector("#run").value);
+    await waitDecision(page, runId, pairKey, 10000);
     await navigateFresh(page, "#/review"); // true reload: decision must survive
     await waitVisible(page, `tr[data-l="${pairKey}"]`);
     const row = page.locator(`tr[data-l="${pairKey}"]`);
@@ -133,30 +263,27 @@ test("e2e: language preference persists across reload, customer data untouched",
     const kanjiBefore = await page.textContent("#results .hit h3");
     await page.click("#language");
     await waitLang(page, "en");
-    assert.equal(await page.$$eval('[data-nav="entities"]', els => els[0].textContent), "Entities");
+    assert.equal(await page.$$eval('[data-nav="entities"]', els => els[0].textContent), "Entity explorer");
     await navigateFresh(page); // true reload: locale must survive
     assert.equal(await page.evaluate(() => document.documentElement.lang), "en", "locale restored from storage");
     await page.fill("#q", term);
     await waitCount(page, "#results .hit", 1);
     const kanjiAfter = await page.textContent("#results .hit h3");
     assert.equal(kanjiAfter, kanjiBefore, "customer data must not be translated");
-    assert.match(await page.textContent("main"), /Find matches/);
+    assert.match(await page.textContent("main"), /Search existing customers/);
   });
 });
 
-test("e2e: live match shows real stages, thresholds, evidence and backend (engine)", { skip: !ENABLED }, async () => {
+test("e2e: data-entry match check returns a server recommendation", { skip: !ENABLED }, async () => {
   await runJourney(browser, "match-evidence", async (page) => {
-    await navigateFresh(page, "#/search");
-    await page.click("#rt-sample");
-    // sample row is bundle-agnostic: every fixture renders a source record
-    await waitBodyText(page, "入力元レコード", 10000);
-    await page.click("#rt-go");
-    await waitBodyText(page, "照合完了", 600000); // cold engine load can take minutes
-    const out = await page.textContent("#rt-out");
-    assert.match(out, /しきい値/, "thresholds disclosed");
-    assert.match(out, /取得レコード/, "retrieval counts disclosed");
-    assert.match(out, /候補と照合根拠/, "candidate evidence section present");
-    assert.match(out, /検索方式/, "retrieval backend disclosed");
+    await navigateFresh(page, "#/data-entry");
+    await waitVisible(page, '[data-field="name_kanji"]');
+    await page.fill('[data-field="name_kanji"]', "照合確認 太郎");
+    await page.fill('[data-field="phone"]', "090-1111-2222");
+    await page.click("#de-check");
+    await waitVisible(page, "#de-register:not([disabled])", 600000);
+    const output = await page.textContent("#de-match");
+    assert.match(output ?? "", /·\s*\d+(?:\.\d+)?%\s*·\s*N\d+/, "server recommendation rendered");
   });
 });
 
@@ -245,16 +372,90 @@ test("e2e: data entry wizard — match check, register, undo (manual corpus, iso
 test("e2e: F knobs — entity page size + sort, metrics unit toggle", { skip: !ENABLED }, async () => {
   await runJourney(browser, "display-knobs", async (page) => {
     await navigateFresh(page, "#/entities");
-    await waitVisible(page, "#ent-size");
-    await page.selectOption("#ent-size", "100");
-    await waitVisible(page, "#ent-sort");
-    await page.selectOption("#ent-sort", "name");
+    await waitVisible(page, "#entity-explorer-size");
+    await page.selectOption("#entity-explorer-size", "100");
+    await waitVisible(page, "#entity-explorer-sort");
+    await page.selectOption("#entity-explorer-sort", "name");
     await waitVisible(page, "#view .card a");
     await navigateFresh(page, "#/metrics");
     await waitVisible(page, "#met-unit");
     await page.selectOption("#met-unit", "ratio");
     await waitBodyText(page, "0.99");
   });
+});
+
+test("e2e: content panes resize while chrome bars remain fixed", { skip: !ENABLED }, async () => {
+  await runJourney(browser, "content-pane-resize", async (page) => {
+    await navigateFresh(page, "#/search");
+    const searchSash = page.locator('[data-panel-resizer="search-workspace"]');
+    await searchSash.waitFor({ state: "visible" });
+    await searchSash.press("ArrowRight");
+    await waitAttribute(page, '[data-panel-resizer="search-workspace"]', "aria-valuenow", "456");
+    const chrome = await page.evaluate(() => {
+      const top = document.querySelector(".app-bar").getBoundingClientRect();
+      const bottom = document.querySelector("#status-strip").getBoundingClientRect();
+      return {
+        topPosition: getComputedStyle(document.querySelector(".app-bar")).position,
+        topAtViewport: top.top,
+        bottomPosition: getComputedStyle(document.querySelector("#status-strip")).position,
+        bottomAtViewport: bottom.bottom,
+        viewportHeight: window.innerHeight,
+        desktopNavToggle: getComputedStyle(document.querySelector("#nav-toggle")).display,
+      };
+    });
+    assert.equal(chrome.topPosition, "sticky");
+    assert.ok(chrome.topAtViewport <= 1, "top bar is not anchored to the viewport");
+    assert.equal(chrome.bottomPosition, "fixed");
+    assert.ok(chrome.bottomAtViewport >= chrome.viewportHeight - 1, "bottom bar is not anchored to the viewport");
+    assert.equal(chrome.desktopNavToggle, "none", "desktop collapse button remains visible");
+    assert.equal(await page.locator(".app-bar [data-panel-resizer]").count(), 0);
+    assert.equal(await page.locator("#status-strip [data-panel-resizer]").count(), 0);
+
+    await navigateFresh(page, "#/entities");
+    const entitySash = page.locator('[data-panel-resizer="entity-explorer"]');
+    await entitySash.waitFor({ state: "visible" });
+    await entitySash.press("ArrowRight");
+    await waitAttribute(page, '[data-panel-resizer="entity-explorer"]', "aria-valuenow", "536");
+
+    await navigateFresh(page, "#/review");
+    await waitVisible(page, "table tr[data-l][data-r]");
+    const pair = await page.locator("table tr[data-l][data-r]").first().evaluate(row => ({
+      left: row.getAttribute("data-l"),
+      right: row.getAttribute("data-r"),
+    }));
+    await navigateFresh(page, `#/compare/${pair.left}/${pair.right}`);
+    const compareSash = page.locator('[data-panel-resizer="compare"]');
+    await compareSash.waitFor({ state: "visible" });
+    await compareSash.press("ArrowLeft");
+    await waitAttribute(page, '[data-panel-resizer="compare"]', "aria-valuenow", "424");
+  });
+});
+
+test("e2e: navigation sash resizes with pointer input and survives collapse", { skip: !ENABLED }, async () => {
+  await runJourney(
+    browser,
+    "navigation-resize",
+    async (page) => {
+      await navigateFresh(page, "#/metrics");
+      const sash = page.locator("#nav-resizer");
+      const box = await sash.boundingBox();
+      assert.ok(box, "navigation sash is not rendered");
+      const startX = box.x + box.width / 2;
+      const startY = box.y + box.height / 2;
+      await page.mouse.move(startX, startY);
+      await page.mouse.down();
+      await page.mouse.move(startX + 64, startY);
+      await page.mouse.up();
+      await waitAttribute(page, "#nav-resizer", "aria-valuenow", "320");
+      await waitComputedStyle(page, ".shell", "grid-template-columns", "320px");
+      const activeWorkspace = page.locator('.activity-bar a[data-activity="evaluate"]');
+      await activeWorkspace.click();
+      await waitAttribute(page, "#nav-toggle", "aria-expanded", "false");
+      await activeWorkspace.click();
+      await waitAttribute(page, "#nav-toggle", "aria-expanded", "true");
+      assert.equal(await sash.getAttribute("aria-valuenow"), "320", "sidebar width was not preserved");
+    },
+  );
 });
 
 test("e2e: mobile viewport + reduced motion — no page-level overflow, chrome usable", { skip: !ENABLED }, async () => {
@@ -265,12 +466,19 @@ test("e2e: mobile viewport + reduced motion — no page-level overflow, chrome u
       await navigateFresh(page);
       const metrics = await page.evaluate(() => ({
         overflow: document.documentElement.scrollWidth - window.innerWidth,
-        navScrollable: getComputedStyle(document.querySelector(".side")).overflowX,
+        navOverflow: getComputedStyle(document.querySelector(".side")).overflowY,
+        navExpanded: document.querySelector("#nav-toggle").getAttribute("aria-expanded"),
         langBtn: !!document.querySelector("#language"),
       }));
       assert.ok(metrics.overflow <= 1, `page overflows horizontally by ${metrics.overflow}px`);
-      assert.match(metrics.navScrollable, /auto|scroll/, "side nav scrolls horizontally on mobile");
+      assert.match(metrics.navOverflow, /auto|scroll/, "side nav uses a bounded mobile drawer");
+      assert.equal(metrics.navExpanded, "false", "mobile navigation starts closed");
       assert.ok(metrics.langBtn, "language toggle present on mobile");
+      await page.click("#nav-toggle");
+      await waitAttribute(page, "#nav-toggle", "aria-expanded", "true");
+      assert.equal(await page.locator("#primary-navigation").getAttribute("aria-hidden"), "false");
+      await page.keyboard.press("Escape");
+      await waitAttribute(page, "#nav-toggle", "aria-expanded", "false");
       await page.click("#language");
       await waitLang(page, "en");
     },

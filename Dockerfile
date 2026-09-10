@@ -19,7 +19,7 @@ COPY scripts/ scripts/
 RUN python -m venv /opt/venv \
     && /opt/venv/bin/pip install -U pip "uv==0.9.27" \
     && UV_PROJECT_ENVIRONMENT=/opt/venv /opt/venv/bin/uv sync --frozen --no-dev --no-editable \
-        --extra matcher --extra serve
+        --extra matcher --extra performance --extra serve
 
 # ---- runtime: slim, non-root, drop privileges via su-exec ----
 FROM python:3.13-slim AS runtime

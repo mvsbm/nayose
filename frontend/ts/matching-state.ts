@@ -1,4 +1,4 @@
-import type { MatchJob, QueryPort } from "./port.js";
+import type { MatchJob, MatchingPort } from "./port.js";
 
 export class MatchingState {
   draft: Record<string, string> = {};
@@ -27,7 +27,7 @@ export class MatchingState {
     this.changed();
   }
 
-  async start(port: QueryPort): Promise<void> {
+  async start(port: MatchingPort): Promise<void> {
     if (this.submitting || this.polling) return;
     const epoch = ++this.epoch;
     this.submitted = { ...this.draft };
@@ -47,7 +47,7 @@ export class MatchingState {
     if (epoch === this.epoch && this.job) await this.poll(port);
   }
 
-  async sample(port: QueryPort): Promise<Record<string, string> | null> {
+  async sample(port: MatchingPort): Promise<Record<string, string> | null> {
     if (this.sampling) return null;
     this.sampling = true;
     this.changed();
@@ -62,7 +62,7 @@ export class MatchingState {
     }
   }
 
-  async poll(port: QueryPort): Promise<void> {
+  async poll(port: MatchingPort): Promise<void> {
     if (this.polling || !this.job) return;
     const epoch = this.epoch;
     this.error = "";

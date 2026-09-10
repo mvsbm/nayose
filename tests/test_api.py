@@ -1,5 +1,6 @@
 """API tests: typed domain endpoints against a hermetic fake bundle."""
 
+import json
 import os
 from pathlib import Path
 
@@ -191,6 +192,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(m, "MODELS_DIR", tmp_path)
     monkeypatch.setattr(m, "DATA_DIR", tmp_path / "data")
     monkeypatch.setattr(m, "DATA_ROOT", data)
+    m.DECISIONS = m.DecisionsStore(m.MODELS_DIR)
     m.RUNS = m.RunRepository(m.MODELS_DIR)
     m.QUERIES = m.QueryService(m.RUNS, m.DATA_DIR)
     m.RECOMMEND = m.RecommendService(m.RUNS, m.DATA_DIR)
@@ -227,6 +229,54 @@ def test_entities_search_and_list(client):
     assert client.get("/api/entities" + Q + "&q=.*").json()["rows"] == []
     all_rows = client.get("/api/entities" + Q).json()["rows"]
     assert len(all_rows) == 1
+
+
+def test_entity_explorer_pages_server_side_and_projects_observed_graph(client):
+    page = client.get(
+        "/api/entities/explorer" + Q, params={"q": "佐藤", "offset": 1, "limit": 1, "sort": "name"}
+    )
+    assert page.status_code == 200
+    body = page.json()
+    assert body["total"] == 1
+    assert body["rows"] == []
+    assert body["offset"] == 1
+    assert body["sort"] == "name"
+
+    graph = client.get("/api/entity/N000000001/graph" + Q, params={"include_potential": "false"})
+    assert graph.status_code == 200
+    graph_body = graph.json()
+    kinds = {node["kind"] for node in graph_body["nodes"]}
+    assert {"entity", "record", "policy", "agency", "channel"} <= kinds
+    assert graph_body["edges"]
+    assert {edge["kind"] for edge in graph_body["edges"]} == {"observed"}
+    assert all("truth_id" not in node for node in graph_body["nodes"])
+    assert all("source" in edge["evidence"] for edge in graph_body["edges"])
+
+
+def test_entity_graph_projects_model_candidates_separately(tmp_path):
+    _write_bundle(tmp_path)
+    canonical_path = tmp_path / "runs" / "run_fake" / "canonical_entities.parquet"
+    canonical = pd.read_parquet(canonical_path)
+    other = canonical.iloc[0].copy()
+    other["nayose_id"] = "N000000002"
+    other["name_kanji"] = "鈴木 花子"
+    pd.concat([canonical, pd.DataFrame([other])], ignore_index=True).to_parquet(
+        canonical_path, index=False
+    )
+    mapping_path = tmp_path / "runs" / "run_fake" / "record_to_nayose.parquet"
+    mapping = pd.read_parquet(mapping_path)
+    mapping.loc[mapping["record_id"] == "R0000000001", "nayose_id"] = "N000000002"
+    mapping.to_parquet(mapping_path, index=False)
+
+    from api.main import QueryService, RunRepository
+
+    graph = QueryService(RunRepository(tmp_path), tmp_path / "data").entity_graph(
+        "run_fake", "N000000001", include_potential=True
+    )
+
+    potential = [edge for edge in graph["edges"] if edge["kind"] == "potential"]
+    assert potential and potential[0]["evidence"]["source"] == "review_queue"
+    assert potential[0]["target"] == "entity:N000000002"
 
 
 def test_entities_prioritize_name_matches_over_address_matches(tmp_path):
@@ -270,6 +320,8 @@ def test_dataset_explorer_lists_summarizes_and_pages_visible_columns(client):
     generations = client.get("/api/admin/generations")
     assert generations.status_code == 200
     assert generations.json()[0]["id"] == "gen_fake"
+    assert "entities" in generations.json()[0]["label_en"]
+    assert "observations" in generations.json()[0]["label_en"]
     summary = client.get("/api/admin/generations/gen_fake/summary")
     assert summary.status_code == 200
     tables = {table["id"]: table for table in summary.json()["tables"]}
@@ -283,6 +335,28 @@ def test_dataset_explorer_lists_summarizes_and_pages_visible_columns(client):
     assert body["total"] == 2
     assert body["rows"][0]["name_kanji"] == "佐藤 太郎"
     assert "truth_id" not in body["columns"]
+    keyset = client.get(
+        "/api/admin/generations/gen_fake/records",
+        params={"table": "reference", "after": "R0000000000", "limit": 1, "count": "false"},
+    )
+    assert keyset.status_code == 200
+    assert [row["record_id"] for row in keyset.json()["rows"]] == ["R0000000001"]
+    assert keyset.json()["cursor_column"] == "record_id"
+    assert keyset.json()["has_more"] is False
+    filtered = client.get(
+        "/api/admin/generations/gen_fake/records",
+        params={
+            "table": "reference",
+            "filters": json.dumps({"name_kanji": "佐藤"}),
+            "limit": 1,
+            "count": "false",
+        },
+    )
+    assert filtered.status_code == 200
+    assert filtered.json()["total"] == -1
+    assert filtered.json()["total_exact"] is False
+    assert filtered.json()["has_more"] is True
+    assert filtered.json()["rows"][0]["name_kanji"] == "佐藤 太郎"
 
 
 def test_entities_semantic_merge_orders_and_deduplicates(client, monkeypatch):
@@ -367,7 +441,7 @@ def test_empty_matching_input_does_not_load_engine(client, monkeypatch):
 def test_members_beyond_eight_are_accessible(client):
     from api import main as m
 
-    path = m.DATA_DIR / "reference_records.parquet"
+    path = m.DATA_DIR / "current" / "reference_records.parquet"
     seed = pd.read_parquet(path).iloc[0].to_dict()
     records = [dict(seed, record_id=f"R{i:010d}") for i in range(37)]
     pd.DataFrame(records).to_parquet(path, index=False)
@@ -538,6 +612,31 @@ def test_empty_run_id_resolves_to_current(client):
     assert res.json()["rows"]
 
 
+def test_queries_bind_reference_data_to_model_fingerprint(tmp_path):
+    _write_bundle(tmp_path)
+    newer = tmp_path / "data" / "generations" / "gen_newer"
+    newer.mkdir(parents=True)
+    reference = pd.read_parquet(tmp_path / "data" / "reference_records.parquet")
+    reference["policy_id"] = ["P-new", "P-new-2"]
+    reference.to_parquet(newer / "reference_records.parquet", index=False)
+    (newer / "generation_manifest.json").write_text(
+        '{"data_fingerprint":"different"}', encoding="utf-8"
+    )
+
+    from api.query_service import QueryService
+    from api.release import atomic_directory_alias
+    from api.repositories import RunRepository
+
+    atomic_directory_alias(newer, tmp_path / "data" / "current")
+    service = QueryService(RunRepository(tmp_path), tmp_path / "data" / "current")
+
+    rows = service.entities("run_fake", "P1")
+    detail = service.entity("run_fake", "N000000001")
+
+    assert [row["nayose_id"] for row in rows] == ["N000000001"]
+    assert {row["policy_id"] for row in detail["members"]} == {"P1", "P2"}
+
+
 def test_bearer_auth_opt_in(tmp_path, monkeypatch):
     monkeypatch.setenv("NAYOSE_API_TOKEN", "sekret")
     from api import main as m
@@ -582,6 +681,8 @@ def test_generation_config_and_preview_validate_every_control(client):
     assert preview.status_code == 200
     body = preview.json()
     assert body["counts"]["parties"] == 300
+    assert body["counts"]["entities"] == 340
+    assert body["counts"]["policies"] > 0
     assert body["controls"]["event_rates"]["paper_ocr"] == 0.72
     assert next(event for event in body["events"] if event["id"] == "paper_ocr")["rate"] == 0.72
     assert body["time_window"]["snapshot_date"] <= body["time_window"]["query_date"]

@@ -5,6 +5,7 @@ Usage:
     python scripts/generate_data.py --profile smoke --data-dir tmp_smoke --seed 42
 
 Profiles: preflight | smoke | mac | large_mac | generate_only (default).
+Use --clean-only to stream a canonical entity layer without sabotage or policy context.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root (no install needed)
 
 from synthetic import SyntheticConfig  # noqa: E402 (sys.path bootstrap above)
+from synthetic.clean import write_clean_entities  # noqa: E402
 from synthetic.generation_preview import config_from_controls  # noqa: E402
 from synthetic.pipeline import generate, save_all
 
@@ -32,7 +34,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--difficulty",
-        choices=["debug", "realistic", "severe"],
+        choices=["debug", "realistic", "severe", "challenge"],
         help="dirtiness difficulty (default: NAYOSE_DIFFICULTY or realistic)",
     )
     parser.add_argument("--seed", type=int, help="random seed (default: NAYOSE_SEED or 42)")
@@ -44,6 +46,17 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--controls-json", help="validated generation controls from the admin preview"
+    )
+    parser.add_argument(
+        "--clean-only",
+        action="store_true",
+        help="stream canonical entities only; skip sabotage, policies, and queries",
+    )
+    parser.add_argument(
+        "--chunk-size",
+        type=int,
+        default=50_000,
+        help="rows per output chunk for --clean-only (default: 50,000)",
     )
     return parser.parse_args()
 
@@ -74,6 +87,10 @@ def main() -> None:
             kwargs["n_parties_override"] = args.n_parties
         cfg = SyntheticConfig(**kwargs)  # type: ignore[arg-type]
     t0 = time.perf_counter()
+    if args.clean_only:
+        clean_result = write_clean_entities(cfg, chunk_size=args.chunk_size)
+        print(f"Wrote {clean_result['counts']} clean entities in {time.perf_counter() - t0:.1f}s")
+        return
     result = generate(cfg)
     print(f"Generated {result.counts} in {time.perf_counter() - t0:.1f}s; saving...")
     paths = save_all(cfg, result)

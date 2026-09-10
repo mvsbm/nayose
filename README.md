@@ -25,29 +25,47 @@ migrated to `api/engine.py`; all behavior lives in `api/`, `frontend/`,
 > 5-minute stakeholder demo: **[`docs/DEMO.md`](docs/DEMO.md)**.
 
 Both notebooks read `data/current` by default. The generator writes the visible
-snapshots (`reference_records`, `incoming_queries`) plus the six hidden truth
-tables under `data/ground_truth/` exactly as `nayose.ipynb` consumes them.
+snapshots (`reference_records`, `incoming_queries`) plus core hidden truth
+tables and clean policy lifecycle tables under `data/ground_truth/`.
 
 ### 1. Generate Training Data
 
 ```bash
 source .venv/bin/activate
+uv sync --extra matcher --extra performance --extra train --extra serve --extra dev
 python scripts/generate_data.py --profile smoke --data-dir data --seed 42
-# profiles: preflight / smoke / mac / large_mac / generate_only
+# profiles: ~340 / ~800 / ~6,800 / ~22,700 / ~113,500 canonical entities
 # one-time downloads, cached in data/raw/: Nemotron persona names, Japan Post ken_all, EDINET
 ```
+
+For a large canonical layer, stream clean entities without retaining sabotaged
+records, policies, and lineage in memory:
+
+```bash
+python scripts/generate_data.py --clean-only --n-parties 2000000 \
+  --chunk-size 50000 --seed 42 --data-dir data
+# writes data/clean_generations/clean_<timestamp>_<hash>/ and updates data/clean_current
+```
+
+The full generation path remains capped at 2,000,000 base entities because it
+materializes all observations, policy lifecycle tables, and field lineage before
+saving. The clean-only path is chunked and is the validated route for a 2M
+canonical entity layer; it does not replace `data/current`.
 
 ### 2. Train / Evaluate the Matcher
 
 ```bash
-# CPU/SVD preflight (off) or neural (ruri) on MPS/CUDA; UI off for batch
-NAYOSE_MODEL_FAMILY=off NAYOSE_DEVICE=cpu NAYOSE_UI=0     jupyter nbconvert --to notebook --execute nayose.ipynb
+# Supported headless path: executes the notebook, validates the bundle, and
+# materializes the target-platform exact/ANN artifacts.
+python scripts/train.py --data-dir data/current --models-dir models \
+  --seed 42 --device cpu --model-family off
 ```
 
 ### 3. Run Inference
 
-`nayose.ipynb` writes a model bundle (models + index + run_manifest) into its
-output directory. `NayoseEngine.load` **fingerprint-checks the bundle against
+`scripts/train.py` executes `nayose.ipynb`, then writes a model bundle (models
++ portable indexes + target-platform ANN + run_manifest) into its output
+directory. `NayoseEngine.load` **fingerprint-checks the bundle against
 the reference data** and refuses stale combinations:
 
 ```python
@@ -63,9 +81,8 @@ Headless training and serving (the supported paths — using the same bundle
 contract as the notebooks):
 
 ```bash
-python scripts/train.py --data-dir data/current --models-dir models \
-  --seed 42 --device cpu --model-family off
-NAYOSE_DASH_PORT=8899 python -m api.main  # then open http://127.0.0.1:8899
+# then open http://127.0.0.1:8899
+NAYOSE_DASH_PORT=8899 NAYOSE_WARM_EMBED=1 python -m api.main
 ```
 
 ## Project Structure
@@ -73,22 +90,27 @@ NAYOSE_DASH_PORT=8899 python -m api.main  # then open http://127.0.0.1:8899
 ```
 ├── synthetic_data.ipynb        # Data generation pipeline
 ├── nayose.ipynb                # Model training & evaluation
-├── api/                        # Serving (FastAPI) + engine facade
-│   ├── main.py                 #   typed endpoints, services, auth
+├── api/                        # Serving (FastAPI) + matching engine
+│   ├── main.py                 #   typed routes, composition, auth
+│   ├── query_service.py        #   server-owned bundle reads
+│   ├── admin.py                #   jobs, settings, and audit coordination
 │   └── engine.py               #   trained-artifact loading + fingerprint guard
 │
 ├── data/                       # Training data (gitignored)
 │   ├── raw/                        # immutable reference data (ken_all, personas, EDINET)
 │   ├── generations/gen_<ts>_<hash>/   # one immutable dataset product per run
 │   │   ├── reference_records.parquet / incoming_queries.parquet / agencies.parquet
-│   │   └── ground_truth/          # six hidden truth tables + field lineage
+│   │   └── ground_truth/          # identity + clean policy truth tables
 │   └── current -> generations/gen_<ts>_<hash>   # promoted generation (consumer-facing)
 │       ├── record_truth.parquet
 │       ├── party_truth.parquet
 │       ├── relation_truth.parquet
 │       ├── query_truth.parquet
 │       ├── evaluation_truth.parquet
-│       └── field_lineage.parquet  # per-field provenance audit (1.9M rows @100k)
+│       ├── field_lineage.parquet  # per-field provenance audit (1.9M rows @100k)
+│       ├── policy_truth.parquet / policy_term_truth.parquet
+│       ├── policy_event_truth.parquet / policy_party_truth.parquet
+│       └── policy_risk_truth.parquet
 │
 └── models/                     # Trained artifacts (gitignored)
     ├── runs/run_<ts>_<hash>/   # immutable bundle + run_manifest.json
@@ -99,12 +121,12 @@ NAYOSE_DASH_PORT=8899 python -m api.main  # then open http://127.0.0.1:8899
 
 ## Architecture
 
-| Component | Pattern | Responsibility |
-|-----------|---------|---------------|
-| `InferenceConfig` | Configuration Object | Immutable settings |
-| `CandidateIndex` | SRP | Candidate retrieval |
-| `NayoseEngine` | Facade | Single entry point |
-| `normalize_*()` | SRP | Field normalization |
+| Component | Responsibility |
+|-----------|----------------|
+| `InferenceConfig` | Immutable serving settings |
+| `CandidateIndex` | Candidate retrieval |
+| `NayoseEngine` | Artifact loading, validation, and recommendation |
+| `normalize_*()` | Field normalization |
 
 ## Model family
 
@@ -112,9 +134,10 @@ NAYOSE_DASH_PORT=8899 python -m api.main  # then open http://127.0.0.1:8899
 
 | Family | Embedding | Notes |
 |---|---|---|
-| `off` (default) | — | SVD fallback baseline |
-| `f2llm` | `codefuse-ai/F2LLM-v2-1.7B` | Optional dense retrieval; weights are downloaded and cached by the runtime |
-| `f2llm_0.6b` | `codefuse-ai/F2LLM-v2-0.6B` | Smaller optional dense model |
+| `off` (default) | — | Deterministic SVD baseline |
+| `f2llm_330m` | `codefuse-ai/F2LLM-v2-330M` | Recommended fixed dense candidate-retrieval model |
+| `f2llm` | `codefuse-ai/F2LLM-v2-1.7B` (or `NAYOSE_EMBEDDING_MODEL`) | Optional dense retrieval; weights are downloaded and cached by the runtime |
+| `f2llm_0.6b` | `codefuse-ai/F2LLM-v2-0.6B` | Smaller optional model |
 | `ruri` | Ruri encoder/reranker path | Optional A/B entry |
 | `qwen` | Qwen embedding/reranker path | Optional |
 
@@ -127,7 +150,9 @@ Optimizations for MPS + time complexity:
 - **usearch (HNSW)** ANN index for dense retrieval instead of brute-force;
 - exact blocks + character sparse retrieval remain as high-precision anchors.
 
-> One-time cold-encode cost (Apple MPS, 1.7B): ~50–120 ms/text → ~2–4 h for 100k records, paid once per generation and cached. Use `f2llm_0.6b` for quick exploratory runs.
+> One-time cold-encode cost is paid once per immutable generation and cached by
+> `(data_fingerprint, model_id)`. Use `f2llm_330m` for the production candidate
+> path; benchmark the actual device before selecting batch sizes.
 
 ### Realism upgrades: kana-driven names + source-driven corruption (config-tuned)
 
@@ -177,28 +202,35 @@ Hardness levers (all in `synthetic/noise.py` / `engine.py`):
 
 Encoding decision: index the **normalized observed** record (distribution
 matches serve-time dirty queries; `party_truth` is hidden at deploy time).
-Entity-consensus (centroid) embeddings over observed records are the planned
-upgrade for clean-like anchoring without truth leakage.
+F2LLM candidate discovery also materializes separate record, name, address, and
+search-only alias views; aliases retain source-record provenance and never
+rewrite entity profiles. Record candidates are fused with exact and sparse
+channels before structured pair verification, so dense similarity never becomes
+an identity decision by itself.
 
 ## Tunable parameters (hyperparameters) — all env-overridable
 
 | Group | Env | Default | Meaning |
 |---|---|---|---|
 | Data gen | `NAYOSE_SEED` | 42 | RNG seed (reproducibility) |
-| | `NAYOSE_PROFILE` | generate_only | preflight/smoke/mac/large_mac/generate_only (size) |
-| | `NAYOSE_DIFFICULTY` | realistic | debug/realistic/severe (dirtiness rates) |
-| | `NAYOSE_N_PARTIES` | 0 | override party count |
+| | `NAYOSE_PROFILE` | generate_only | 300/700/6,000/20,000/100,000 base entities |
+| | `NAYOSE_N_PARTIES` | 0 | full-generation base entity override; hard cap 2,000,000 |
+| | `NAYOSE_DIFFICULTY` | realistic | debug/realistic/challenge/severe (dirtiness rates) |
 | Retrieval | `NAYOSE_EXACT_BLOCK_CAP` | 80 | block-exhaustive cap (skips oversized blocks) |
+| | `NAYOSE_DENSE_VIEWS` | 1 | materialize field-aware F2LLM name/address/alias artifacts |
 | | `NAYOSE_SPARSE_TOPK` / `NAYOSE_DENSE_TOPK` | 24 / 16 | k per retrieval channel |
 | | `NAYOSE_CANDIDATE_CAP` | 80 | max candidate records per query |
 | | `NAYOSE_SPARSE_BATCH` / `NAYOSE_NEURAL_BATCH` | 512 / 16 | batch sizes |
 | Embeddings | `NAYOSE_EMBEDDING_MODEL` | F2LLM-v2-1.7B | dense encoder (0.6B/1.7B) |
-| | `NAYOSE_DEVICE` | auto | mps/cuda/cpu |
-| | `NAYOSE_USE_DENSE` | 1 | dense channel on/off |
-| | `NAYOSE_SVD_DIM` | 32 | SVD fallback dims (`off` model) |
+| | `NAYOSE_DEVICE` | auto | mps/cuda/cpu; explicit unavailable devices fail fast |
+| | `NAYOSE_USE_DENSE` | 1 | dense channel on/off; bundle artifacts remain strict |
+| | `NAYOSE_CPU_THREADS` | auto | per-process numerical thread budget |
+| | `NAYOSE_PROCESS_WORKERS` | 1 | process count used to divide CPU threads |
+| | `NAYOSE_INDEX_BACKEND` | polars | bulk index materialization backend |
+| | `NAYOSE_SVD_DIM` | 32 | SVD dimensions for the `off` model |
 | Pair model | `NAYOSE_PAIR_MODEL` | auto | auto/lightgbm/sklearn |
 | | `NAYOSE_NEG_PER_POS` | 6 | negatives per positive in training sample |
-| | `NAYOSE_MODEL_THREADS` | 2 | worker threads |
+| | `NAYOSE_MODEL_THREADS` | auto | bounded model-training threads |
 | Calibration/decision | `NAYOSE_PAIR_AUTO_PRECISION` | 0.985 | Wilson lower-bound target (train-set-proof) |
 | | `NAYOSE_PAIR_REVIEW_PRECISION` | 0.80 | review threshold target |
 | | `NAYOSE_ENTITY_AUTO_PRECISION` | 0.97 | entity auto precision target |
@@ -225,10 +257,10 @@ MPS-serving alternative.
 A no-build modern frontend (`frontend/`) + thin API (`api/main.py`), served
 locally by one process. DuckDB executes read-only SQL over the run bundle
 parquets (single local process; swap the data adapter to DuckDB-WASM later).
-Design follows the 2025 consensus principles: calm tech, progressive
-disclosure, uncertainty-first (verdict + lineage shown in flow), URL-as-state
-routes (`#/entity/:id`, `#/compare/:l/:r`), ⌘K palette, local-first,
-reduced-motion + AA contrast (front-end checklist aligned).
+The interface uses progressive disclosure and shows verdict uncertainty with
+lineage in the flow. Routes are URL-addressable (`#/entity/:id`,
+`#/compare/:l/:r`), the palette is keyboard accessible, and reduced-motion and
+AA contrast requirements are covered by the frontend checks.
 
 ```bash
 NAYOSE_MODELS_DIR=models NAYOSE_DATA_DIR=data/current \
@@ -237,17 +269,23 @@ NAYOSE_MODELS_DIR=models NAYOSE_DATA_DIR=data/current \
 
 Views: 検索（既定画面）・照合テスト (live `/api/recommend`) · レビュー待機
 （件数・確率フィルタ・既読保存）・レコード比較（パンくず・エンティティ連携）・
-混同行列（ヒート・内訳ドリル）・指標（バー付き）・エンティティ（lineage 表示）。
-Architecture (hexagonal): `frontend/ts/schema.ts` + `core.ts` (pure schema/core) · `port.ts`
-(QueryPort/Storage interfaces) · `infra/` (ApiAdapter + cache, LocalStorageStore) ·
-`features/` (views depend only on the port) · `store.ts` (observable store with
-Command/undo for decisions) · `app.ts` composition root (`boot()` injects
-port/store/runs; **no import side effects**).
+混同行列（ヒート・内訳ドリル）・指標（バー付き）・エンティティ探索（検索・
+サーバー側ページング・代表情報・出所関係）・管理（複数世代のデータ閲覧、
+全体/列フィルタ、固定列、ページング）。
+Frontend boundaries: `frontend/ts/schema.ts` + `core.ts` (pure schema/core) ·
+`port.ts` (typed capability and storage interfaces) · `infra.ts` (ApiAdapter +
+cache, LocalStorageStore) · feature modules (views depend only on ports; the
+admin dataset grid is isolated in `dataset-grid.ts`) ·
+`store.ts` (observable state with reversible decisions) · `app.ts` assembly
+(`boot()` injects port/store/runs; **no import side effects**).
 
 API (typed domain endpoints; raw SQL only behind `NAYOSE_DEBUG_SQL=1`):
-`/api/runs` · `/api/entities?q=` · `/api/entity/{id}` (lineage) ·
+`/api/runs` · `/api/entities?q=` · `/api/entities/explorer` ·
+`/api/entity/{id}` (lineage) · `/api/entity/{id}/graph` ·
 `/api/review?min_p=&offset=` · `/api/metrics` · `/api/confusion` ·
-`/api/compare` · `/api/recommend` (fingerprint-guarded) · `/api/stats`
+`/api/compare` · `/api/recommend` (fingerprint-guarded) · `/api/admin/generations`
+· `/api/admin/generations/{id}/summary` · `/api/admin/generations/{id}/records`
+(global/column filters, bounded pages, optional keyset `after` cursor) · `/api/stats`
 (per-endpoint hits+ms). Caching: server-side per-run LRU + client adapter memo;
 field lineage remains in the immutable generation's hidden `field_lineage` table.
 

@@ -11,11 +11,14 @@ function unavailableCard(store) {
     wrapper.innerHTML = `<div class="empty"><h3>${esc(store.t("adminDisabledTitle"))}</h3><p>${esc(store.t("adminDisabledHelp"))}</p></div>`;
     return wrapper;
 }
-export async function mountAdmin(el, port, store) {
+export async function mountAdmin(el, port, store, scope) {
+    const lifetime = scope;
     let state;
     let catalog;
     try {
         [state, catalog] = await Promise.all([port.adminState(), port.adminGenerationConfig()]);
+        if (lifetime?.isDisposed)
+            return;
     }
     catch {
         el.replaceChildren(unavailableCard(store));
@@ -24,6 +27,8 @@ export async function mountAdmin(el, port, store) {
     let generations = [];
     try {
         generations = await port.adminGenerations();
+        if (lifetime?.isDisposed)
+            return;
     }
     catch {
         generations = [];
@@ -41,7 +46,12 @@ export async function mountAdmin(el, port, store) {
     };
     let previewTimer;
     let previewRequest = 0;
+    let panelLayout;
+    let datasetBinding;
+    lifetime.add({ dispose: () => datasetBinding?.dispose() });
     const updatePreviewDom = () => {
+        if (lifetime?.isDisposed)
+            return;
         const output = el.querySelector("#gen-preview");
         if (output) {
             output.setAttribute("aria-busy", String(ui.preview.pending));
@@ -69,22 +79,26 @@ export async function mountAdmin(el, port, store) {
             : `${store.t("previewError")}: ${message}`;
     };
     const requestPreview = (immediate = false) => {
+        if (lifetime?.isDisposed)
+            return;
         ui.preview.pending = true;
         ui.preview.error = "";
         updatePreviewDom();
         if (previewTimer)
             clearTimeout(previewTimer);
         const run = () => {
+            if (lifetime?.isDisposed)
+                return;
             const request = ++previewRequest;
             const controls = cloneGenerationControls(ui.controls);
             void port.adminGenerationPreview(controls).then(result => {
-                if (request !== previewRequest)
+                if (lifetime?.isDisposed || request !== previewRequest)
                     return;
                 ui.preview.preview = result;
                 ui.preview.pending = false;
                 updatePreviewDom();
             }).catch(error => {
-                if (request !== previewRequest)
+                if (lifetime?.isDisposed || request !== previewRequest)
                     return;
                 ui.preview.pending = false;
                 ui.preview.error = previewError(error);
@@ -94,9 +108,11 @@ export async function mountAdmin(el, port, store) {
         if (immediate)
             run();
         else
-            previewTimer = setTimeout(run, 220);
+            previewTimer = lifetime.addTimeout(run, 220);
     };
     const note = (text) => {
+        if (lifetime?.isDisposed)
+            return;
         ui.note = text;
         void paint();
     };
@@ -113,7 +129,7 @@ export async function mountAdmin(el, port, store) {
         ui.jobStatus[selector] = out.innerHTML;
     };
     const runJob = (action, params, outSelector) => {
-        if (ui.busy)
+        if (lifetime?.isDisposed || ui.busy)
             return;
         ui.busy = true;
         updatePreviewDom();
@@ -122,9 +138,13 @@ export async function mountAdmin(el, port, store) {
             out.textContent = store.t("jobStarted");
         delete ui.jobStatus[outSelector];
         port.adminStart(action, params).then(job => pollJob(() => port.adminJob(job.id), job, 600, current => {
+            if (lifetime?.isDisposed)
+                return;
             if (out)
                 renderJob(out, current, outSelector);
-        }).then(async (done) => {
+        }, lifetime.signal).then(async (done) => {
+            if (lifetime?.isDisposed)
+                return;
             ui.busy = false;
             if (done.stage === "complete") {
                 const result = done.result ?? {};
@@ -145,6 +165,8 @@ export async function mountAdmin(el, port, store) {
             }
             await paint();
         })).catch(error => {
+            if (lifetime?.isDisposed)
+                return;
             ui.busy = false;
             note(`${store.t(String(error.message ?? error))} ${store.t("errorNextStep")}`);
         });
@@ -156,6 +178,8 @@ export async function mountAdmin(el, port, store) {
             .catch(error => note(`${store.t(String(error.message ?? error))} ${store.t("errorNextStep")}`));
     };
     const paint = async () => {
+        if (lifetime?.isDisposed)
+            return;
         const previousDetails = new Set([...el.querySelectorAll("details[id]")].filter(details => details.open).map(details => details.id));
         const preserveDetails = el.querySelector("details[id]") !== null;
         el.innerHTML = renderAdminPage({ state: ui.state, catalog: ui.catalog, controls: ui.controls, preview: ui.preview, busy: ui.busy, note: ui.note, jobStatus: ui.jobStatus, dataset: ui.dataset }, store);
@@ -169,10 +193,13 @@ export async function mountAdmin(el, port, store) {
         }
         bindGenerationControls(el, ui.catalog, ui.controls, store, () => requestPreview());
         el.querySelector("#gen-reset")?.addEventListener("click", () => resetGenerationControls(el, ui.catalog, ui.controls, ui.catalog.defaults, store, () => requestPreview(true)));
-        bindPanelLayout(el, store);
+        panelLayout?.dispose();
+        panelLayout = lifetime.add(bindPanelLayout(el, store));
+        datasetBinding?.dispose();
+        datasetBinding = undefined;
         const datasetHost = el.querySelector("#dataset-explorer-host");
         if (datasetHost)
-            bindDatasetExplorer(datasetHost, ui.dataset, port, store);
+            datasetBinding = bindDatasetExplorer(datasetHost, ui.dataset, port, store);
         syncControlOutputs(el, ui.catalog, ui.controls, store);
         el.querySelector("#gen-go")?.addEventListener("click", () => runJob("generate", cloneGenerationControls(ui.controls), "#gen-job"));
         el.querySelector("#gen-preview-go")?.addEventListener("click", () => requestPreview(true));

@@ -12,7 +12,9 @@ python scripts/generate_data.py --profile generate_only \
 # writes data/generations/gen_<ts>_<hash>/ and repoints data/current
 ```
 
-- Profiles: `preflight | smoke | mac | large_mac | generate_only`.
+- Profiles are named by estimated canonical-entity size in the dashboard: `~340 | ~800 | ~6,800 | ~22,700 | ~113,500` (internal IDs remain `preflight | smoke | mac | large_mac | generate_only`).
+- For a canonical-only large layer, use `python scripts/generate_data.py --clean-only --n-parties 2000000 --chunk-size 50000`; this writes an immutable `clean_generations/` product and updates `clean_current` without replacing `data/current`.
+- Full generation is capped at 2,000,000 base entities because observations, policies, and field lineage are currently materialized before saving. The clean-only stream is the validated 2M path; larger full generations require chunked policy/lineage orchestration first.
 - Dirtiness: `--difficulty realistic` (default) | `debug | severe`.
 - In the dashboard, **Admin → Data & training** exposes every registered
   corruption event, its probability, affected fields, example, channel
@@ -49,9 +51,21 @@ LightGBM alongside torch (MPS deadlock; see AGENTS.md).
 The pipeline refuses loads above `NAYOSE_MAX_FULL_RECORDS` (default 100,000)
 by design; raise it deliberately when the machine has headroom
 (e.g. `NAYOSE_MAX_FULL_RECORDS=700000` for a ~620k-record snapshot).
-On CPU boxes default to `--model-family off` (dense retrieval via SVD
-fallback — fast, deterministic); set `--model-family ruri` on a GPU/MPS box
-when you want neural cross-encoder reranking.
+On CPU boxes default to `--model-family off` (deterministic SVD embeddings with
+usearch ANN); set `--model-family ruri` on a GPU/MPS box when you want neural
+embedding/reranking workloads. The serving path requires the exact and dense ANN
+artifacts recorded in the bundle manifest; it never silently rebuilds or switches
+retrieval backends.
+
+For an existing unpromoted bundle copied to another target platform, materialize
+its native ANN artifact before packaging it:
+
+```bash
+python scripts/materialize_bundle.py \
+    --run-dir /staging/models/runs/run_<id> \
+    --data-dir /staging/data/current \
+    --index-backend polars
+```
 
 ## 3. Serve
 
@@ -68,6 +82,9 @@ NAYOSE_DASH_PORT=8899 python -m api.main
 | `NAYOSE_REVIEWER_DEFAULT` | reviewer identity when the `X-Reviewer` header is absent |
 | `NAYOSE_DEBUG_SQL=1` | enable `POST /api/query` (SELECT/WITH only) for debugging |
 | `NAYOSE_EXACT_MODE` | channel-attribution experiments (honored in graph+retrieval) |
+| `NAYOSE_CPU_THREADS` | explicit per-process numerical thread budget; default uses CPU affinity/process count |
+| `NAYOSE_PROCESS_WORKERS` | API process count used to divide the CPU budget |
+| `NAYOSE_DEVICE` | `auto`, `cpu`, `cuda`, or `mps`; explicit unavailable accelerators fail fast |
 
 - `GET /api/health` — readiness/hygiene probe (auth-exempt): current run,
   data/model fingerprints, compatibility, run count, endpoint stats, and timestamps.

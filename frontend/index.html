@@ -14,38 +14,51 @@
 <body>
   <a class="skip" href="#view" data-i18n="skip">本文へスキップ</a>
   <header class="glass app-bar">
-    <h1>Nayose <span class="muted" data-i18n="title">照合監査</span></h1>
-    <label class="run"><span class="muted">run</span>
-      <select id="run" data-i18n-aria="run" aria-label="実行バンドル選択"></select>
-    </label>
-    <span id="run-fp" class="members" aria-live="polite"></span>
-    <button id="cmd" type="button" class="chip" data-i18n-aria="palette" aria-label="コマンドパレット">⌘K <span data-i18n="search">検索</span></button>
-    <button id="theme" type="button" class="chip" data-i18n="theme" data-i18n-aria="theme" aria-label="テーマ切替">テーマ</button>
-    <button id="density" type="button" class="chip" data-i18n="density" data-i18n-aria="density" aria-label="表示密度">表示密度</button>
-    <button id="language" type="button" class="chip" lang="en" aria-label="Switch to English">English</button>
+    <div class="app-bar-title">
+      <h1><span class="app-bar-name">Nayose</span><span class="app-bar-context muted" data-i18n="title">照合監査</span></h1>
+    </div>
+    <button id="cmd" type="button" class="chip app-bar-command" data-i18n-aria="palette" aria-label="コマンドパレット"><span class="app-bar-command-key">⌘K</span><span data-i18n="search">検索</span></button>
+    <div class="app-bar-actions">
+      <label class="run"><span class="muted">run</span>
+        <select id="run" data-i18n-aria="run" aria-label="実行バンドル選択"></select>
+      </label>
+      <span id="run-fp" class="members" aria-live="polite"></span>
+      <button id="theme" type="button" class="chip" data-i18n="theme" data-i18n-aria="theme" aria-label="テーマ切替">テーマ</button>
+      <button id="density" type="button" class="chip" data-i18n="density" data-i18n-aria="density" aria-label="表示密度">表示密度</button>
+      <button id="language" type="button" class="chip" lang="en" aria-label="Switch to English">English</button>
+      <button id="nav-toggle" class="side-toggle" type="button" aria-controls="primary-navigation" aria-expanded="true" aria-label="ナビゲーションを折りたたむ"><span class="side-toggle-icon" aria-hidden="true"></span><span class="side-toggle-label">ナビゲーションを折りたたむ</span></button>
+    </div>
   </header>
-  <div id="status-strip" class="status-strip" hidden aria-live="polite"></div>
   <div class="shell">
-    <nav class="glass side" data-i18n-aria="sections" aria-label="セクション">
-      <details open data-nav-group="match"><summary data-i18n="navMatch">照合</summary>
-        <a href="#/search" data-nav="search" data-i18n="search">検索・照合</a>
-        <a href="#/entities" data-nav="entities" data-i18n="entityExplorer">エンティティ探索</a>
+    <aside id="activity-navigation" class="glass activity-bar" data-i18n-aria="workspaces" aria-label="ワークスペース">
+      <a href="#/search" data-activity="match" data-activity-routes="search,entities,entity" aria-label="照合"><span class="activity-bar-icon" data-icon="⌕" aria-hidden="true"></span><span class="activity-bar-label" data-i18n="navMatch">照合</span></a>
+      <a href="#/review" data-activity="review" data-activity-routes="review,data-entry,compare" aria-label="確認と登録"><span class="activity-bar-icon" data-icon="✓" aria-hidden="true"></span><span class="activity-bar-label" data-i18n="navReview">確認と登録</span></a>
+      <a href="#/metrics" data-activity="evaluate" data-activity-routes="metrics,confusion,compare-runs" aria-label="評価"><span class="activity-bar-icon" data-icon="▦" aria-hidden="true"></span><span class="activity-bar-label" data-i18n="navEvaluate">評価</span></a>
+      <a href="#/admin" id="activity-admin" data-activity="admin" data-activity-routes="admin" aria-label="管理" hidden><span class="activity-bar-icon" data-icon="⚙" aria-hidden="true"></span><span class="activity-bar-label" data-i18n="navAdmin">管理</span></a>
+    </aside>
+    <nav id="primary-navigation" class="glass side" data-i18n-aria="sections" aria-label="セクション">
+      <details open data-nav-group="match"><summary data-nav-label="match"><span class="side-icon" data-icon="⌕" aria-hidden="true"></span><span class="side-label" data-i18n="navMatch">照合</span></summary>
+        <a href="#/search" data-nav="search"><span class="side-icon" data-icon="⌕" aria-hidden="true"></span><span class="side-label" data-i18n="search">検索・照合</span></a>
+        <a href="#/entities" data-nav="entities"><span class="side-icon" data-icon="◉" aria-hidden="true"></span><span class="side-label" data-i18n="entityExplorer">エンティティ探索</span></a>
       </details>
-      <details open data-nav-group="review"><summary data-i18n="navReview">確認と登録</summary>
-        <a href="#/review" data-nav="review" data-i18n="review">レビュー待機</a>
-        <a href="#/data-entry" data-nav="data-entry" id="nav-data-entry" data-i18n="dataEntry" hidden>データ登録</a>
+      <details open data-nav-group="review"><summary data-nav-label="review"><span class="side-icon" data-icon="✓" aria-hidden="true"></span><span class="side-label" data-i18n="navReview">確認と登録</span></summary>
+        <a href="#/review" data-nav="review"><span class="side-icon" data-icon="✓" aria-hidden="true"></span><span class="side-label" data-i18n="review">レビュー待機</span></a>
+        <a href="#/data-entry" data-nav="data-entry" id="nav-data-entry" hidden><span class="side-icon" data-icon="＋" aria-hidden="true"></span><span class="side-label" data-i18n="dataEntry">データ登録</span></a>
       </details>
-      <details open data-nav-group="evaluate"><summary data-i18n="navEvaluate">評価</summary>
-        <a href="#/metrics" data-nav="metrics" data-i18n="metrics">指標</a>
-        <a href="#/confusion" data-nav="confusion" data-i18n="confusion">混同行列</a>
-        <a href="#/compare-runs" data-nav="compare-runs" data-i18n="compareRuns">run 比較</a>
+      <details open data-nav-group="evaluate"><summary data-nav-label="evaluate"><span class="side-icon" data-icon="▦" aria-hidden="true"></span><span class="side-label" data-i18n="navEvaluate">評価</span></summary>
+        <a href="#/metrics" data-nav="metrics"><span class="side-icon" data-icon="▥" aria-hidden="true"></span><span class="side-label" data-i18n="metrics">指標</span></a>
+        <a href="#/confusion" data-nav="confusion"><span class="side-icon" data-icon="▦" aria-hidden="true"></span><span class="side-label" data-i18n="confusion">混同行列</span></a>
+        <a href="#/compare-runs" data-nav="compare-runs"><span class="side-icon" data-icon="⇄" aria-hidden="true"></span><span class="side-label" data-i18n="compareRuns">run 比較</span></a>
       </details>
-      <details id="nav-admin-group" data-nav-group="admin" hidden><summary data-i18n="navAdmin">管理</summary>
-        <a href="#/admin" data-nav="admin" data-i18n="dataTrain">データと学習</a>
+      <details id="nav-admin-group" data-nav-group="admin" hidden><summary data-nav-label="admin"><span class="side-icon" data-icon="⚙" aria-hidden="true"></span><span class="side-label" data-i18n="navAdmin">管理</span></summary>
+        <a href="#/admin" data-nav="admin" id="nav-admin"><span class="side-icon" data-icon="⚙" aria-hidden="true"></span><span class="side-label" data-i18n="dataTrain">データと学習</span></a>
       </details>
     </nav>
+    <div id="nav-resizer" class="side-resizer" role="separator" aria-orientation="vertical" data-i18n-aria="resizeNavigation" aria-label="ナビゲーション幅を変更" aria-valuemin="220" aria-valuemax="420" aria-valuenow="256" tabindex="0" hidden></div>
+    <button id="nav-scrim" class="side-scrim" type="button" data-i18n-aria="closeNavigation" aria-label="ナビゲーションを閉じる" tabindex="-1" hidden></button>
     <main id="view" tabindex="-1"></main>
   </div>
+  <div id="status-strip" class="status-strip" aria-live="polite"><span data-i18n="statusTitle">システム状態</span></div>
   <div id="palette" role="dialog" aria-modal="true" hidden data-i18n-aria="palette" aria-label="コマンドパレット">
     <div class="glass box">
       <input id="palette-input" data-i18n-placeholder="paletteHint" data-i18n-aria="palette" type="search" placeholder="検索・移動…（例：N0000123）" autocomplete="off" aria-controls="palette-results" aria-activedescendant="">

@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from api.search_service import (
+    EntitySearchRequest,
     QueryInterpreter,
     SearchFilters,
     SearchService,
@@ -19,6 +20,16 @@ class FakeRetriever:
     def retrieve(self, run_id, plan, limit):
         self.calls.append((run_id, plan.raw_query, plan.filters))
         return self.rows
+
+
+class FakePageRetriever:
+    def __init__(self, page: dict[str, Any]):
+        self.page = page
+        self.calls: list[EntitySearchRequest] = []
+
+    def retrieve(self, request: EntitySearchRequest) -> dict[str, Any]:
+        self.calls.append(request)
+        return self.page
 
 
 def hit(entity_id: str, *, field: str, party_type: str = "person", score: float = 0.0):
@@ -40,7 +51,7 @@ def test_query_interpreter_selects_structured_intent():
     assert plan.field_weights["email"] > plan.field_weights["name_kanji"]
 
 
-def test_search_facade_merges_candidates_and_applies_filters():
+def test_search_service_merges_candidates_and_applies_filters():
     exact = FakeRetriever(
         [
             hit("address-hit", field="address", party_type="person"),
@@ -71,7 +82,69 @@ def test_search_facade_merges_candidates_and_applies_filters():
     assert exact.calls[0][2].party_type == "person"
 
 
-def test_search_facade_preserves_fallback_mode_without_semantic_backend():
+def test_search_service_explorer_uses_shared_plan_and_exhaustive_page():
+    page = FakePageRetriever(
+        {
+            "rows": [hit("entity", field="name_kanji")],
+            "total": 1,
+            "offset": 0,
+            "limit": 25,
+            "query": "佐藤",
+            "sort": "name",
+            "filters": {"party_type": "person"},
+        }
+    )
+    service = SearchService(
+        exact=FakeRetriever([]),
+        fuzzy=FakeRetriever([]),
+        semantic=FakeRetriever([]),
+        suggest=lambda *_: None,
+        paged_exact=page,
+    )
+
+    result = service.explore(
+        EntitySearchRequest(
+            run_id="run",
+            query="佐藤",
+            sort="name",
+            filters=SearchFilters(party_type="person"),
+        )
+    )
+
+    assert result["search_mode"] == "exact"
+    assert result["total_is_exact"] is True
+    assert result["query_plan"]["filters"] == {"party_type": "person"}
+    assert page.calls[0].sort == "name"
+
+
+def test_search_service_explorer_reports_bounded_hybrid_fallback():
+    page = FakePageRetriever(
+        {
+            "rows": [],
+            "total": 0,
+            "offset": 0,
+            "limit": 25,
+            "query": "佐藤",
+            "sort": "relevance",
+            "filters": {},
+        }
+    )
+    service = SearchService(
+        exact=FakeRetriever([]),
+        fuzzy=FakeRetriever([hit("nearest", field="name_kanji", score=0.8)]),
+        semantic=FakeRetriever(None),
+        suggest=lambda *_: None,
+        paged_exact=page,
+    )
+
+    result = service.explore(EntitySearchRequest(run_id="run", query="佐藤"))
+
+    assert result["search_mode"] == "hybrid_fallback"
+    assert result["total_is_exact"] is False
+    assert result["rows"][0]["nayose_id"] == "nearest"
+
+
+def test_search_service_preserves_fallback_mode_without_semantic_backend():
     service = SearchService(
         exact=FakeRetriever([]),
         fuzzy=FakeRetriever([hit("nearest", field="name_kanji", score=0.8)]),

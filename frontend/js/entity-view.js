@@ -1,12 +1,14 @@
 import { esc } from "./schema.js";
 import { comparisonTable, FIELD_GROUPS, recordFields, value } from "./evidence-view.js";
-export async function mountEntityDetail(el, port, store, id) {
+export async function mountEntityDetail(el, port, store, id, scope) {
     const params = new URLSearchParams(location.hash.split("?")[1] ?? "");
     const requestedPage = Number(params.get("page")) || 1;
     const page = Math.max(1, Math.min(1000000, Math.floor(requestedPage)));
     const requestedSize = Number(params.get("size"));
     const size = [10, 25, 50, 100].includes(requestedSize) ? requestedSize : 25;
     const detail = await port.entity(id, (page - 1) * size, size);
+    if (scope?.isDisposed)
+        return;
     const t = (key) => esc(store.t(key));
     const { entity, members, total } = detail;
     const pageLink = (p, s = size) => `#/entity/${encodeURIComponent(id)}?page=${p}&size=${s}`;
@@ -60,6 +62,19 @@ export async function mountEntityDetail(el, port, store, id) {
             picked.delete(rid);
         store.selectMember(id, rid, input.checked);
         updateSelection();
+    }));
+    el.querySelectorAll("[data-member]").forEach((row) => row.addEventListener("click", (event) => {
+        const target = event.target;
+        if (target.closest("input, a, button, details, summary"))
+            return;
+        const input = row.querySelector("[data-select]");
+        if (!input || input.disabled)
+            return;
+        const view = row.ownerDocument.defaultView;
+        if (!view)
+            return;
+        input.checked = !input.checked;
+        input.dispatchEvent(new view.Event("change"));
     }));
     el.querySelector("#member-clear").addEventListener("click", () => {
         picked.forEach(rid => store.selectMember(id, rid, false));

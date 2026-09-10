@@ -1,4 +1,4 @@
-// Composition root (hexagonal): build port+store, mount shell, route.
+// Assemble the transport, state store, shell, and route.
 // No side effects at import time; tests call boot({ port, store }) with mocks.
 import { createPort } from "./infra.js";
 import { Store } from "./store.js";
@@ -7,23 +7,30 @@ import { checkedKey, parseRoute } from "./core.js";
 import { mountCompare, mountCompareRuns, mountConfusion, mountEntities, mountEntity, mountMetrics, mountReview, mountSearch, } from "./features.js";
 import { mountAdmin } from "./admin-view.js";
 import { mountDataEntry } from "./data-entry-view.js";
+import { mountNavigation } from "./navigation.js";
+import { createViewScope, disposable, DisposableStore } from "./lifecycle.js";
+import { CommandRegistry, createWorkbenchCommands } from "./commands.js";
+import { ROUTES, routeDescriptor } from "./routes.js";
 const VIEWS = {
-    search: (v, p, s) => mountSearch(v, p, s),
+    search: (v, p, s, _args, scope) => mountSearch(v, p, s, scope),
     review: (v, p, s) => mountReview(v, p, s),
     confusion: (v, p, s) => mountConfusion(v, p, s),
     metrics: (v, p, s) => mountMetrics(v, p, s),
-    entities: (v, p, s) => mountEntities(v, p, s),
-    entity: (v, p, s, a) => mountEntity(v, p, s, a[0] ?? ""),
+    entities: (v, p, s, _args, scope) => mountEntities(v, p, s, scope),
+    entity: (v, p, s, a, scope) => mountEntity(v, p, s, a[0] ?? "", scope),
     compare: (v, p, s, a) => mountCompare(v, p, s, a[0] ?? "", a[1] ?? ""),
     "compare-runs": (v, p, s) => mountCompareRuns(v, p, s),
-    admin: (v, p, s) => mountAdmin(v, p, s),
-    "data-entry": (v, p, s) => mountDataEntry(v, p, s),
+    admin: (v, p, s, _args, scope) => mountAdmin(v, p, s, scope),
+    "data-entry": (v, p, s, _args, scope) => mountDataEntry(v, p, s, scope),
 };
 export async function boot(opts = {}) {
     const store = opts.store ?? new Store();
     const port = opts.port ?? createPort();
+    const lifetime = new DisposableStore();
+    const capabilities = { admin: false, dataEntry: false };
     const view = document.querySelector("main#view");
     let activeView;
+    let activeViewScope;
     let navigation = 0;
     const themeKey = (theme) => theme === "auto" ? "themeAuto" : theme === "dark" ? "themeDark" : "themeLight";
     const densityKey = (density) => density === "compact" ? "densityCompact" : "densityComfortable";
@@ -53,12 +60,17 @@ export async function boot(opts = {}) {
         localizeShell();
     };
     applyChromeAppearance();
-    const unTheme = store.on("theme", applyChromeAppearance);
-    const unDensity = store.on("density", applyChromeAppearance);
+    lifetime.add(disposable(store.on("theme", applyChromeAppearance)));
+    lifetime.add(disposable(store.on("density", applyChromeAppearance)));
     const systemTheme = typeof window.matchMedia === "function" ? window.matchMedia("(prefers-color-scheme: dark)") : null;
     const onSystemTheme = () => { if (store.theme === "auto")
         applyChromeAppearance(); };
-    systemTheme?.addEventListener("change", onSystemTheme);
+    if (systemTheme) {
+        systemTheme.addEventListener("change", onSystemTheme);
+        lifetime.add(disposable(() => systemTheme.removeEventListener("change", onSystemTheme)));
+    }
+    const navigationController = mountNavigation(document.querySelector(".shell"), document.querySelector("#activity-navigation"), document.querySelector("#primary-navigation"), document.querySelector("#nav-resizer"), document.querySelector("#nav-toggle"), document.querySelector("#nav-scrim"), store);
+    lifetime.add(disposable(navigationController.destroy));
     const paint = async (html) => {
         view.innerHTML = `<div class="panel">${html}</div>`;
         view.focus({ preventScroll: true });
@@ -66,16 +78,22 @@ export async function boot(opts = {}) {
     const navigate = async () => {
         const ticket = ++navigation;
         activeView?.dispatchEvent(new window.Event("unmount"));
+        activeViewScope?.dispose();
         const target = document.createElement("div");
         activeView = target;
+        activeViewScope = createViewScope(target);
         view.replaceChildren(target);
         if (!store.runs.length) {
             await paint(`<div class="empty"><h2>${esc(store.t("noRun"))}</h2><p>${esc(store.t("noRunHelp"))}</p></div>`);
             return;
         }
         const route = parseRoute(location.hash);
-        const navRoute = route.name === "entity" ? "entities" : route.name === "compare" ? "review" : route.name;
-        document.querySelectorAll(".side a").forEach((a) => a.setAttribute("aria-current", a.getAttribute("data-nav") === navRoute ? "page" : ""));
+        const navRoute = routeDescriptor(route.name).nav;
+        document.querySelectorAll(".side a[data-nav]").forEach((a) => a.setAttribute("aria-current", a.getAttribute("data-nav") === navRoute ? "page" : ""));
+        document.querySelectorAll(".activity-bar a[data-activity]").forEach((a) => {
+            const routes = (a.dataset.activityRoutes ?? "").split(",");
+            a.setAttribute("aria-current", routes.includes(navRoute) ? "page" : "");
+        });
         document.querySelectorAll(".side details[data-nav-group]").forEach((group) => {
             if (group.querySelector(`[data-nav="${navRoute}"]`))
                 group.open = true;
@@ -83,10 +101,10 @@ export async function boot(opts = {}) {
         window.scrollTo(0, 0);
         const render = VIEWS[route.name];
         try {
-            await (render ? render(target, port, store, route.args) : mountSearch(target, port, store));
+            await (render ? render(target, port, store, route.args, activeViewScope) : mountSearch(target, port, store, activeViewScope));
         }
         catch (err) {
-            if (ticket !== navigation)
+            if (lifetime.isDisposed || ticket !== navigation)
                 return;
             target.innerHTML = `<div class="empty"><p>${esc(store.t("error"))}: ${esc(store.t(String(err.message ?? err)))}</p><button class="more" id="retry">${esc(store.t("retry"))}</button></div>`;
             target.querySelector("#retry")?.addEventListener("click", () => void navigate());
@@ -94,21 +112,17 @@ export async function boot(opts = {}) {
     };
     const onHashChange = () => { void navigate(); };
     window.addEventListener("hashchange", onHashChange);
+    lifetime.add(disposable(() => window.removeEventListener("hashchange", onHashChange)));
     const switchLanguage = () => store.setLocale(store.locale === "ja" ? "en" : "ja");
-    document.querySelector("#language").addEventListener("click", switchLanguage);
-    const unLocale = store.on("locale", () => { localizeShell(); void navigate(); });
-    let unCheckedStatus = () => { };
+    const languageButton = document.querySelector("#language");
+    languageButton.addEventListener("click", switchLanguage);
+    lifetime.add(disposable(() => languageButton.removeEventListener("click", switchLanguage)));
+    lifetime.add(disposable(store.on("locale", () => { localizeShell(); void navigate(); })));
+    const strip = document.querySelector("#status-strip");
     const cleanup = () => {
         activeView?.dispatchEvent(new window.Event("unmount"));
-        window.removeEventListener("hashchange", onHashChange);
-        document.querySelector("#language")?.removeEventListener("click", switchLanguage);
-        unLocale();
-        unTheme();
-        unDensity();
-        systemTheme?.removeEventListener("change", onSystemTheme);
-        if (healthTimer)
-            window.clearInterval(healthTimer);
-        unCheckedStatus();
+        activeViewScope?.dispose();
+        lifetime.dispose();
         strip.hidden = true;
     };
     // run selector + first-run guidance
@@ -139,7 +153,7 @@ export async function boot(opts = {}) {
     const picked = store.runs.find((r) => r.id === store.run);
     fp.textContent = picked?.fingerprint ? `fingerprint ${esc(picked.fingerprint)}` : "";
     port.run(store.run);
-    sel.addEventListener("change", () => {
+    const onRunChange = () => {
         store.setRun(sel.value);
         store.write("nayose.run", store.run);
         port.run(store.run);
@@ -147,12 +161,16 @@ export async function boot(opts = {}) {
         const p = store.runs.find((r) => r.id === store.run);
         fp.textContent = p?.fingerprint ? `fingerprint ${esc(p.fingerprint)}` : "";
         void navigate();
-    });
+    };
+    sel.addEventListener("change", onRunChange);
+    lifetime.add(disposable(() => sel.removeEventListener("change", onRunChange)));
     // Admin and data entry are local-first surfaces with no separate credential.
     try {
         const cap = await port.adminCapability().catch(() => ({ capable: false }));
+        capabilities.admin = cap.capable;
+        capabilities.dataEntry = cap.capable;
         if (cap.capable) {
-            document.querySelectorAll("#nav-admin-group, #nav-data-entry").forEach(n => n.removeAttribute("hidden"));
+            document.querySelectorAll("#nav-admin-group, #nav-data-entry, #activity-admin").forEach(n => n.removeAttribute("hidden"));
         }
         try {
             localStorage.removeItem("nayose.adminToken");
@@ -161,9 +179,16 @@ export async function boot(opts = {}) {
     }
     catch { /* server unavailable: keep the nav hidden */ }
     // decision persistence: localStorage (offline) + server-side (survives machines)
-    store.checked = new Set(JSON.parse(store.read("nayose.checked") ?? "[]"));
+    const storedChecked = store.read("nayose.checked");
+    try {
+        const parsed = JSON.parse(storedChecked ?? "[]");
+        store.checked = new Set(Array.isArray(parsed) ? parsed.filter((key) => typeof key === "string") : []);
+    }
+    catch {
+        store.checked = new Set();
+    }
     store.reviewer = store.read("nayose.reviewer") ?? "";
-    store.on("checked", () => store.write("nayose.checked", JSON.stringify([...store.checked])));
+    const persistChecked = () => store.write("nayose.checked", JSON.stringify([...store.checked]));
     try {
         const remote = await port.loadDecisions();
         if (remote.length) {
@@ -173,28 +198,40 @@ export async function boot(opts = {}) {
     catch {
         /* server unreachable -> keep localStorage state */
     }
-    let saveTimer;
-    store.on("checked", () => {
-        store.write("nayose.checked", JSON.stringify([...store.checked]));
-        window.clearTimeout(saveTimer);
-        saveTimer = window.setTimeout(() => {
+    let decisionSave = Promise.resolve();
+    let decisionTimer;
+    const persistDecisions = () => {
+        persistChecked();
+        window.clearTimeout(decisionTimer);
+        decisionTimer = lifetime.addTimeout(() => {
             const now = new Date().toISOString();
             const items = [...store.checked].map((key) => {
                 const parts = key.split("|");
                 return { left: parts[1] ?? "", right: parts[2] ?? "", ts: now, reviewer: store.reviewer };
             });
-            void port.saveDecisions(items).catch(() => { });
+            decisionSave = decisionSave
+                .catch(() => { })
+                .then(() => port.saveDecisions(items))
+                .catch(() => { });
         }, 500);
-    });
+    };
+    lifetime.add(disposable(store.on("checked", persistDecisions)));
     // appearance preferences are state transitions projected by applyChromeAppearance
-    document.querySelector("#theme")?.addEventListener("click", () => store.toggleTheme());
-    document.querySelector("#density")?.addEventListener("click", () => store.toggleDensity());
+    const themeButton = document.querySelector("#theme");
+    const densityButton = document.querySelector("#density");
+    const onThemeClick = () => store.toggleTheme();
+    const onDensityClick = () => store.toggleDensity();
+    themeButton?.addEventListener("click", onThemeClick);
+    densityButton?.addEventListener("click", onDensityClick);
+    if (themeButton)
+        lifetime.add(disposable(() => themeButton.removeEventListener("click", onThemeClick)));
+    if (densityButton)
+        lifetime.add(disposable(() => densityButton.removeEventListener("click", onDensityClick)));
     // E — system status strip (visibility of system status): health poll drives it
-    const strip = document.querySelector("#status-strip");
     const renderHealth = async () => {
         try {
             const h = await port.health();
-            if (!strip.isConnected)
+            if (lifetime.isDisposed || !strip.isConnected)
                 return;
             const fpBadge = store.run && h.run && store.run !== h.run
                 ? `<span class="bad">${esc(store.t("fpMismatch"))}</span>`
@@ -215,11 +252,16 @@ export async function boot(opts = {}) {
         }
         catch { /* server unreachable: keep the strip silent */ }
     };
-    unCheckedStatus = store.on("checked", () => void renderHealth());
+    lifetime.add(disposable(store.on("checked", () => void renderHealth())));
     void renderHealth();
     const healthIntervalMs = opts.healthIntervalMs ?? 30000;
-    const healthTimer = healthIntervalMs > 0 ? window.setInterval(() => void renderHealth(), healthIntervalMs) : 0;
-    // ⌘K palette (keyboard-first) — powered by the same QueryPort
+    if (healthIntervalMs > 0) {
+        const healthTimer = window.setInterval(() => void renderHealth(), healthIntervalMs);
+        lifetime.add(disposable(() => window.clearInterval(healthTimer)));
+    }
+    const commandRegistry = new CommandRegistry();
+    lifetime.add(commandRegistry.registerAll(createWorkbenchCommands(ROUTES)));
+    // ⌘K palette (keyboard-first) — powered by the typed command/query ports
     const palette = document.querySelector("#palette");
     const pInput = document.querySelector("#palette-input");
     const pList = document.querySelector("#palette-results");
@@ -249,24 +291,24 @@ export async function boot(opts = {}) {
         const target = restore?.isConnected ? restore : document.querySelector("#cmd");
         target?.focus();
     };
-    const paletteActions = () => [
-        { label: store.t("actionThemeLight"), meta: "action:theme-light", go: () => { store.setTheme("light"); closePalette(); } },
-        { label: store.t("actionThemeDark"), meta: "action:theme-dark", go: () => { store.setTheme("dark"); closePalette(); } },
-        { label: store.t("actionThemeAuto"), meta: "action:theme-auto", go: () => { store.setTheme("auto"); closePalette(); } },
-        { label: store.t("actionDensityComfortable"), meta: "action:density-comfortable", go: () => { store.setDensity("comfortable"); closePalette(); } },
-        { label: store.t("actionDensityCompact"), meta: "action:density-compact", go: () => { store.setDensity("compact"); closePalette(); } },
-        { label: store.t("actionHelp"), meta: "action:help", go: () => { pStat.textContent = store.t("commandHelp"); } },
-    ];
+    const commandContext = () => ({
+        t: (key) => store.t(key),
+        closePalette,
+        navigate: (hash) => { location.hash = hash; },
+        toggleNavigation: () => navigationController.toggle(),
+        setTheme: (theme) => store.setTheme(theme),
+        setDensity: (density) => store.setDensity(density),
+        announce: (message) => { pStat.textContent = message; },
+        capabilities,
+    });
     async function paletteSearch(q) {
         const request = ++paletteRequest;
         const query = q.trim().toLocaleLowerCase();
-        const nav = [["search", store.t("search")], ["review", store.t("review")], ["entities", store.t("entityExplorer")], ["confusion", store.t("confusion")], ["metrics", store.t("metrics")], ["compare-runs", store.t("compareRuns")]];
-        if (!document.querySelector("#nav-data-entry[hidden]"))
-            nav.push(["data-entry", store.t("dataEntry")]);
-        if (!document.querySelector("#nav-admin[hidden]"))
-            nav.push(["admin", store.t("dataTrain")]);
-        const items = nav.map(([id, label]) => ({ label, meta: `#/${id}`, go: () => { closePalette(); location.hash = `#/${id}`; } }));
-        items.push(...paletteActions().filter(item => !query || `${item.label} ${item.meta}`.toLocaleLowerCase().includes(query)));
+        const items = commandRegistry.list(commandContext(), query).map((command) => ({
+            label: command.label,
+            meta: command.meta,
+            go: () => commandRegistry.execute(command.id, commandContext()),
+        }));
         if (q.length >= 2) {
             pStat.textContent = store.t("searching");
             try {
@@ -295,8 +337,8 @@ export async function boot(opts = {}) {
         pList.setAttribute("aria-activedescendant", pActive >= 0 ? `p-${pActive}` : "");
         pList.querySelector(`[data-i="${pActive}"]`)?.scrollIntoView({ block: "nearest" });
     };
-    pInput.addEventListener("input", () => void paletteSearch(pInput.value));
-    pInput.addEventListener("keydown", (e) => {
+    const onPaletteInput = () => void paletteSearch(pInput.value);
+    const onPaletteKeydown = (e) => {
         if (e.key === "ArrowDown" || e.key === "ArrowUp") {
             e.preventDefault();
             if (pItems.length) {
@@ -312,13 +354,19 @@ export async function boot(opts = {}) {
         else if (e.key === "Escape") {
             closePalette();
         }
-    });
-    pList.addEventListener("click", (e) => {
+    };
+    const onPaletteListClick = (e) => {
         const li = e.target.closest("li");
         const i = Number(li?.dataset.i);
         if (pItems[i])
             pItems[i].go();
-    });
+    };
+    pInput.addEventListener("input", onPaletteInput);
+    pInput.addEventListener("keydown", onPaletteKeydown);
+    pList.addEventListener("click", onPaletteListClick);
+    lifetime.add(disposable(() => pInput.removeEventListener("input", onPaletteInput)));
+    lifetime.add(disposable(() => pInput.removeEventListener("keydown", onPaletteKeydown)));
+    lifetime.add(disposable(() => pList.removeEventListener("click", onPaletteListClick)));
     const paletteKey = (e) => {
         if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
             e.preventDefault();
@@ -332,12 +380,18 @@ export async function boot(opts = {}) {
             closePalette();
         }
     };
+    const commandButton = document.querySelector("#cmd");
+    const onPaletteBackdrop = (e) => { if (e.target === palette)
+        closePalette(); };
     document.addEventListener("keydown", paletteKey);
-    document.querySelector("#cmd")?.addEventListener("click", openPalette);
-    palette.addEventListener("click", (e) => { if (e.target === palette)
-        closePalette(); });
+    commandButton?.addEventListener("click", openPalette);
+    palette.addEventListener("click", onPaletteBackdrop);
+    lifetime.add(disposable(() => document.removeEventListener("keydown", paletteKey)));
+    if (commandButton)
+        lifetime.add(disposable(() => commandButton.removeEventListener("click", openPalette)));
+    lifetime.add(disposable(() => palette.removeEventListener("click", onPaletteBackdrop)));
     await navigate();
-    return { destroy: () => { cleanup(); document.removeEventListener("keydown", paletteKey); document.querySelector("#cmd")?.removeEventListener("click", openPalette); } };
+    return { destroy: cleanup };
 }
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 // Real browser: auto-start. Tests import this module with a ?boot=N query

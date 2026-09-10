@@ -1,11 +1,7 @@
-// E2E infrastructure (Playwright): the ONLY entry point to browser automation.
-//
-// SRP/Facade: journeys must not touch raw Playwright primitives (waitForFunction
-// 3-position-args gotcha, reload() memory-cache, context sharing are all sharp
-// edges owned HERE). DIP: e2e.test.mjs imports helpers, never "playwright".
-// Isolation: every journey gets a FRESH context (clean localStorage/DOM), so a
-// failed journey cannot contaminate the next one. The bundle is COPIED to a
-// temp root, so repo runtime artifacts are never mutated.
+// E2E infrastructure (Playwright): the only entry point to browser automation.
+// Journeys use these helpers instead of raw browser primitives. This module
+// owns waits, navigation, fresh contexts, and transport observation. Bundles
+// are copied to a temporary root so runtime artifacts are never mutated.
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import {
@@ -141,9 +137,10 @@ export async function launchBrowser() {
 }
 
 async function waitBoot(page) {
-  // navigate() sets aria-current on the active nav link for EVERY route — a
-  // route-independent boot-complete signal.
+  // Navigation and view data are separate async boundaries. Wait for both so
+  // callers never inspect the active container between skeleton and content.
   await page.waitForSelector(".side a[aria-current]", { timeout: 15000 });
+  await page.waitForSelector("#view .panel, #view .empty", { timeout: 15000 });
 }
 
 // Deterministic navigation primitive: a changing PATH query always produces a
@@ -161,6 +158,22 @@ export async function waitBodyText(page, needle, timeout = 15000) {
   await page.waitForFunction((text) => document.body.textContent.includes(text), needle, { timeout });
 }
 
+export async function waitAttribute(page, selector, attribute, value, timeout = 15000) {
+  await page.waitForFunction(
+    ({ selector, attribute, value }) => document.querySelector(selector)?.getAttribute(attribute) === value,
+    { selector, attribute, value },
+    { timeout },
+  );
+}
+
+export async function waitComputedStyle(page, selector, property, includes, timeout = 15000) {
+  await page.waitForFunction(
+    ({ selector, property, includes }) => getComputedStyle(document.querySelector(selector))[property].includes(includes),
+    { selector, property, includes },
+    { timeout },
+  );
+}
+
 export async function waitHash(page, prefix, timeout = 15000) {
   await page.waitForFunction((p) => location.hash.startsWith(p), prefix, { timeout });
 }
@@ -175,6 +188,40 @@ export async function waitCount(page, selector, min, timeout = 15000) {
     { selector, min },
     { timeout },
   );
+}
+
+export async function waitInputValue(page, selector, value, timeout = 15000) {
+  await page.waitForFunction(
+    ({ selector, value }) => document.querySelector(selector)?.value === value,
+    { selector, value },
+    { timeout },
+  );
+}
+
+export async function waitDecisionCount(page, runId, min = 1, timeout = 15000) {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    const body = await page.evaluate(async id => {
+      const response = await fetch(`/api/decisions?run_id=${encodeURIComponent(id)}`);
+      return response.json();
+    }, runId);
+    if (body.items.length >= min) return;
+    await page.waitForTimeout(250);
+  }
+  throw new Error(`decision count did not reach ${min} for ${runId}`);
+}
+
+export async function waitDecision(page, runId, leftRecordId, timeout = 15000) {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    const body = await page.evaluate(async id => {
+      const response = await fetch(`/api/decisions?run_id=${encodeURIComponent(id)}`);
+      return response.json();
+    }, runId);
+    if (body.items.some(item => item.left === leftRecordId)) return;
+    await page.waitForTimeout(250);
+  }
+  throw new Error(`decision for ${leftRecordId} was not persisted for ${runId}`);
 }
 
 // Poll a manual-corpus count on the server (data-entry cycles are count-driven).

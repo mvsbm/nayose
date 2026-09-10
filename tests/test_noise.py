@@ -1,5 +1,7 @@
 """Unit tests for the dirty-data engine (no external data)."""
 
+from typing import Any, cast
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -120,3 +122,100 @@ def test_existing_stable_query_is_clean(cfg):
     rng = np.random.default_rng(3)
     result = QueryCorruptor(NoiseConfig()).corrupt("existing_stable", PARTY, rng)
     assert all(result.values[f] == PARTY[f] for f in CUSTOMER_FIELDS)
+
+
+def test_existing_changed_query_has_multiple_noncanonical_fields():
+    changed = []
+    for seed in range(80):
+        result = QueryCorruptor(NoiseConfig()).corrupt(
+            "existing_changed", PARTY, np.random.default_rng(seed)
+        )
+        changed.append(sum(result.values[field] != PARTY[field] for field in CUSTOMER_FIELDS))
+    assert min(changed) >= 3
+    assert sum(value == 0 for value in changed) == 0
+
+
+def test_challenge_query_profile_has_coherent_high_damage():
+    noise = noise_for_config(SyntheticConfig(profile="preflight", difficulty="challenge"))
+    changed = []
+    damaged = []
+    for seed in range(80):
+        changed_result = QueryCorruptor(noise).corrupt(
+            "existing_changed", PARTY, np.random.default_rng(seed)
+        )
+        damaged_result = QueryCorruptor(noise).corrupt(
+            "existing_damaged", PARTY, np.random.default_rng(seed)
+        )
+        changed.append(
+            sum(changed_result.values[field] != PARTY[field] for field in CUSTOMER_FIELDS)
+        )
+        damaged.append(
+            sum(damaged_result.values[field] != PARTY[field] for field in CUSTOMER_FIELDS)
+        )
+    assert min(changed) >= 6
+    assert min(damaged) >= 8
+    stale_labels = [
+        label
+        for seed in range(200)
+        for _, label in QueryCorruptor(noise)
+        .corrupt("existing_changed", PARTY, np.random.default_rng(seed))
+        .lineage
+    ]
+    assert "stale_snapshot" in stale_labels
+
+
+def test_existing_damaged_query_is_a_real_hard_case():
+    damaged = []
+    for seed in range(80):
+        result = QueryCorruptor(NoiseConfig()).corrupt(
+            "existing_damaged", PARTY, np.random.default_rng(seed)
+        )
+        damaged.append(sum(result.values[field] != PARTY[field] for field in CUSTOMER_FIELDS))
+    assert min(damaged) >= 5
+    assert sum(value >= 6 for value in damaged) >= 40
+
+
+def test_queries_keep_agency_and_channel_from_the_same_source():
+    from synthetic.engine import generate_queries
+
+    parties = pd.DataFrame([PARTY.to_dict()] * 4)
+    party_truth = pd.DataFrame(
+        {"truth_id": [f"T{i:010d}" for i in range(4)], "hard_case": [""] * 4}
+    )
+    agencies = pd.DataFrame(
+        {
+            "agency_id": ["A001", "A002"],
+            "channel": ["web", "legacy_migration"],
+        }
+    )
+    query_mix = {
+        "existing_stable": 1.0,
+        "existing_changed": 0.0,
+        "existing_damaged": 0.0,
+        "new_customer": 0.0,
+        "related_only": 0.0,
+        "insufficient": 0.0,
+    }
+    cfg = SyntheticConfig(
+        profile="preflight",
+        n_parties_override=4,
+        query_share=1.0,
+        query_mix=query_mix,
+    )
+    queries, _, _ = generate_queries(
+        cfg,
+        NoiseConfig(),
+        parties,
+        {i: i for i in range(4)},
+        party_truth,
+        {f"T{i:010d}": [f"R{i:010d}"] for i in range(4)},
+        cast(Any, None),
+        cast(Any, None),
+        cast(Any, None),
+        cast(Any, None),
+        np.random.default_rng(19),
+        agencies=agencies,
+    )
+    joined = queries.merge(agencies, on="agency_id", suffixes=("_query", "_agency"))
+    assert len(joined) == len(queries)
+    assert (joined["channel_query"] == joined["channel_agency"]).all()

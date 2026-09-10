@@ -99,6 +99,16 @@ def normalize_record(rec: dict[str, Any]) -> dict[str, str]:
         "n_email_local": n_email.split("@")[0] if "@" in n_email else n_email,
         "n_email_domain": n_email.split("@")[1] if "@" in n_email else "",
         "retrieval_text": " ".join(
-            filter(None, [n_name, n_kana, n_dob, n_postal, n_address, n_phone, n_email])
+            [
+                f"type={_compact(str(rec.get('party_type', 'person')))}",
+                f"name={n_name}",
+                f"kana={n_kana}",
+                f"romaji={_compact(str(rec.get('name_romaji', '')).strip())}",
+                f"dob={n_dob}",
+                f"postal={n_postal}",
+                f"address={n_address}",
+                f"phone={n_phone}",
+                f"email={n_email}",
+            ]
         ),
     }

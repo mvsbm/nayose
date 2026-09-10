@@ -1,10 +1,7 @@
-// Infra: ApiAdapter (QueryPort over typed FastAPI endpoints) is a PURE
-// TRANSPORT — every request goes out, nothing is cached. Caching is a
-// separate concern owned by MemoProxy (Decorator/Proxy pattern): it wraps any
-// QueryPort and memoizes read ops, cleared on run switch. createPort is the
-// Factory: it composes the default transport with the memo decorator.
-// SQL lives SERVER-SIDE in typed endpoints; a raw-SQL door exists only
-// behind NAYOSE_DEBUG_SQL.
+// ApiAdapter is the transport for typed FastAPI endpoints. It does not cache;
+// MemoProxy wraps read operations and clears them when the run changes. SQL
+// lives server-side in typed endpoints; a raw-SQL door exists only behind
+// NAYOSE_DEBUG_SQL.
 import {
   AdminCapability,
   AdminState,
@@ -16,24 +13,55 @@ import {
   GenerationControls,
   GenerationPreview,
   EntityDetail,
+  EntityExplorerPage,
+  EntityGraph,
   EntityHit,
+  EntitySort,
   HealthInfo,
   ManualList,
   MetricsViewData,
   MatchJob,
-  QueryPort,
+  WorkbenchPort,
   RecommendResult,
   ReviewPage,
   RunInfo,
   SearchFilters,
   SearchResult,
 } from "./port.js";
-
-export class ApiError extends Error {}
+import { adaptDatasetRows } from "./dataset-adapter.js";
+import { ApiError } from "./api-error.js";
 
 function adaptSearchResult(data: unknown): SearchResult {
   if (!data || typeof data !== "object" || !Array.isArray((data as { rows?: unknown }).rows)) throw new ApiError("search_schema_mismatch");
   return data as SearchResult;
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function adaptEntityExplorerPage(data: unknown): EntityExplorerPage {
+  if (!isObject(data)) throw new ApiError("entity_explorer_schema_mismatch");
+  const page = data as Partial<EntityExplorerPage>;
+  const validSorts = new Set(["relevance", "records", "name", "last_seen"]);
+  const validModes = new Set(["exact", "hybrid_fallback"]);
+  if (!Array.isArray(page.rows) || typeof page.total !== "number" || typeof page.offset !== "number" || typeof page.limit !== "number" || typeof page.query !== "string" || !validSorts.has(page.sort ?? "") || !validModes.has(page.search_mode ?? "") || typeof page.total_is_exact !== "boolean" || !isObject(page.filters) || !isObject(page.query_plan) || !isObject(page.search_trace)) {
+    throw new ApiError("entity_explorer_schema_mismatch");
+  }
+  return page as EntityExplorerPage;
+}
+
+function adaptEntityGraph(data: unknown): EntityGraph {
+  if (!isObject(data)) throw new ApiError("entity_graph_schema_mismatch");
+  const graph = data as Partial<EntityGraph>;
+  const validKinds = new Set(["entity", "record", "policy", "agency", "channel"]);
+  const validEdgeKinds = new Set(["observed", "potential"]);
+  const validNode = (node: unknown): boolean => isObject(node) && typeof node.id === "string" && typeof node.label === "string" && validKinds.has(String(node.kind)) && isObject(node.metadata);
+  const validEdge = (edge: unknown): boolean => isObject(edge) && typeof edge.source === "string" && typeof edge.target === "string" && typeof edge.relation === "string" && validEdgeKinds.has(String(edge.kind)) && isObject(edge.evidence);
+  if (typeof graph.entity_id !== "string" || !Array.isArray(graph.nodes) || !Array.isArray(graph.edges) || graph.nodes.some(node => !validNode(node)) || graph.edges.some(edge => !validEdge(edge)) || typeof graph.truncated !== "boolean" || typeof graph.potential_matches_available !== "boolean") {
+    throw new ApiError("entity_graph_schema_mismatch");
+  }
+  return graph as EntityGraph;
 }
 
 function adaptGenerationPreview(data: unknown): GenerationPreview {
@@ -47,12 +75,13 @@ function adaptGenerationPreview(data: unknown): GenerationPreview {
 
 async function fetchJson(path: string, init?: RequestInit): Promise<unknown> {
   const controller = new AbortController();
+  const externalSignal = init?.signal;
+  const abortFromCaller = (): void => controller.abort();
+  if (externalSignal?.aborted) controller.abort();
+  else externalSignal?.addEventListener("abort", abortFromCaller, { once: true });
   const timeout = setTimeout(() => controller.abort(), 20000);
   const headers = new Headers(init?.headers ?? {});
-  // Bearer adapter: the transport attaches a deployment token when present, so
-  // the GUI works behind NAYOSE_API_TOKEN too. The token is stored under
-  // "nayose.token" (e.g. set by an authed wrapper page) — views never think
-  // about auth; the Facade owns that sharp edge.
+  // Attach the deployment token when present. Views do not handle auth.
   try {
     const token = localStorage.getItem("nayose.token");
     if (token) headers.set("Authorization", `Bearer ${token}`);
@@ -65,14 +94,16 @@ async function fetchJson(path: string, init?: RequestInit): Promise<unknown> {
     }
     return await res.json();
   } catch (err) {
+    if (externalSignal?.aborted) throw new ApiError("request_cancelled");
     if (controller.signal.aborted) throw new ApiError("request_timeout");
     throw err;
   } finally {
     clearTimeout(timeout);
+    externalSignal?.removeEventListener("abort", abortFromCaller);
   }
 }
 
-export class ApiAdapter implements QueryPort {
+export class ApiAdapter implements WorkbenchPort {
   private runId = "";
 
   run(id: string): void {
@@ -104,9 +135,27 @@ export class ApiAdapter implements QueryPort {
   adminDatasetSummary(generationId: string): Promise<DatasetSummary> {
     return fetchJson(`/api/admin/generations/${encodeURIComponent(generationId)}/summary`).then(d => d as DatasetSummary);
   }
-  adminDatasetRows(generationId: string, table: string, query: string, offset: number, limit: number): Promise<DatasetRows> {
-    const params = new URLSearchParams({ table, q: query, offset: String(offset), limit: String(limit) });
-    return fetchJson(`/api/admin/generations/${encodeURIComponent(generationId)}/records?${params}`).then(d => d as DatasetRows);
+  adminDatasetRows(
+    generationId: string,
+    table: string,
+    query: string,
+    offset: number,
+    limit: number,
+    filters: Record<string, string> = {},
+    includeTotal = false,
+    after = "",
+    signal?: AbortSignal,
+  ): Promise<DatasetRows> {
+    const params = new URLSearchParams({
+      table,
+      q: query,
+      offset: String(offset),
+      limit: String(limit),
+      count: String(includeTotal),
+    });
+    if (after) params.set("after", after);
+    if (Object.keys(filters).length) params.set("filters", JSON.stringify(filters));
+    return fetchJson(`/api/admin/generations/${encodeURIComponent(generationId)}/records?${params}`, { signal }).then(adaptDatasetRows);
   }
   adminStart(action: string, params: object): Promise<MatchJob> {
     return fetchJson("/api/admin/jobs", {
@@ -156,6 +205,15 @@ export class ApiAdapter implements QueryPort {
     if (filters?.party_type) params.set("party_type", filters.party_type);
     if (filters?.min_record_count) params.set("min_record_count", String(filters.min_record_count));
     return fetchJson(`/api/entities?${params.toString()}`).then(adaptSearchResult);
+  }
+  entityExplorer(q: string, offset: number, limit: number, sort: EntitySort, filters?: SearchFilters): Promise<EntityExplorerPage> {
+    const params = new URLSearchParams({ q, run_id: this.runId, offset: String(offset), limit: String(limit), sort });
+    if (filters?.party_type) params.set("party_type", filters.party_type);
+    if (filters?.min_record_count) params.set("min_record_count", String(filters.min_record_count));
+    return fetchJson(`/api/entities/explorer?${params.toString()}`).then(adaptEntityExplorerPage);
+  }
+  entityGraph(id: string, includePotential = false): Promise<EntityGraph> {
+    return fetchJson(`/api/entity/${encodeURIComponent(id)}/graph?run_id=${encodeURIComponent(this.runId)}&include_potential=${includePotential ? "true" : "false"}`).then(adaptEntityGraph);
   }
   normalizePreview(text: string): Promise<Record<string, string>> {
     return fetchJson(`/api/normalize?text=${encodeURIComponent(text)}`).then(d => d as Record<string, string>);
@@ -230,14 +288,13 @@ export class ApiAdapter implements QueryPort {
   }
 }
 
-// Decorator/Proxy: memoizes read ops of any QueryPort, keyed by (run, op,
-// args); run() clears the cache. Mutations and command-adjacent reads
-// (recommend/loadDecisions/saveDecisions) pass through uncached.
-export class MemoProxy implements QueryPort {
+// Memoizes read operations by run, operation, and arguments. run() clears the
+// cache; mutations and command-adjacent reads pass through uncached.
+export class MemoProxy implements WorkbenchPort {
   private runId = "";
   private cache = new Map<string, Promise<unknown>>();
 
-  constructor(private readonly inner: QueryPort) {
+  constructor(private readonly inner: WorkbenchPort) {
     this.inner = inner;
   }
 
@@ -268,8 +325,18 @@ export class MemoProxy implements QueryPort {
   adminDatasetSummary(generationId: string): Promise<DatasetSummary> {
     return this.inner.adminDatasetSummary(generationId);
   }
-  adminDatasetRows(generationId: string, table: string, query: string, offset: number, limit: number): Promise<DatasetRows> {
-    return this.inner.adminDatasetRows(generationId, table, query, offset, limit);
+  adminDatasetRows(
+    generationId: string,
+    table: string,
+    query: string,
+    offset: number,
+    limit: number,
+    filters?: Record<string, string>,
+    includeTotal?: boolean,
+    after?: string,
+    signal?: AbortSignal,
+  ): Promise<DatasetRows> {
+    return this.inner.adminDatasetRows(generationId, table, query, offset, limit, filters, includeTotal, after, signal);
   }
   adminStart(action: string, params: object): Promise<MatchJob> {
     return this.inner.adminStart(action, params);
@@ -310,6 +377,20 @@ export class MemoProxy implements QueryPort {
       "entities",
       `${q}:${limit ?? 50}:${JSON.stringify(filters ?? {})}`,
       () => this.inner.entities(q, limit, filters),
+    );
+  }
+  entityExplorer(q: string, offset: number, limit: number, sort: EntitySort, filters?: SearchFilters): Promise<EntityExplorerPage> {
+    return this.memo(
+      "entityExplorer",
+      `${q}:${offset}:${limit}:${sort}:${JSON.stringify(filters ?? {})}`,
+      () => this.inner.entityExplorer(q, offset, limit, sort, filters),
+    );
+  }
+  entityGraph(id: string, includePotential = false): Promise<EntityGraph> {
+    return this.memo(
+      "entityGraph",
+      `${id}:${includePotential}`,
+      () => this.inner.entityGraph(id, includePotential),
     );
   }
   normalizePreview(text: string): Promise<Record<string, string>> {
@@ -361,6 +442,6 @@ export class MemoProxy implements QueryPort {
 
 // Factory: composes the production port. A WASM data adapter can be swapped
 // in later by passing it as the transport (OCP: no composition changes needed).
-export function createPort(transport?: QueryPort): QueryPort {
+export function createPort(transport?: WorkbenchPort): WorkbenchPort {
   return new MemoProxy(transport ?? new ApiAdapter());
 }

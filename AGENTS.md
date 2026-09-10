@@ -4,13 +4,14 @@
 
 ```bash
 source .venv/bin/activate
-uv pip install -e . --no-deps        # (optional) editable install for scripts, if missing
+uv pip install -e '.[matcher,performance,train,serve]'  # reproducible fast serving/training extras
 python -m pytest tests/ -q           # unit tests (fast, no external data)
 ruff check .                          # lint (config in pyproject.toml)
 ruff format --check .                 # formatting
 mypy synthetic tests                  # type check (engine + tests only)
 python scripts/generate_data.py --profile smoke   # headless pipeline (CLI == notebook contract)
-python scripts/train.py --data-dir data/current --models-dir models --seed 42   # headless training: executes nayose.ipynb, verifies the promoted bundle
+python scripts/train.py --data-dir data/current --models-dir models --seed 42   # headless training + target-platform artifacts
+python scripts/benchmark_runtime.py --iterations 20                         # cold/warm latency benchmark
 python scripts/audit_decisions.py                # decision audit + promoted labels (label feedback loop)
 python -m api.main                              # serve the dashboard (NAYOSE_DASH_PORT, NAYOSE_API_TOKEN, NAYOSE_WARM_EMBED)
 curl http://127.0.0.1:8000/api/health            # readiness probe (auth-exempt)
@@ -20,22 +21,25 @@ curl http://127.0.0.1:8000/api/health            # readiness probe (auth-exempt)
 
 | Path | Responsibility |
 |---|---|
-| `synthetic/` | Engine: `config.py` (presets/rates/data incl. email domains, channel contact profiles, POLICY_PARAMS), `providers.py` (real data sources; persona Han-initial sanitizer), `realism.py` (phone styles + email domains, SRP), `policy.py` (policy aggregate roots + truth timeline / Memento states + temporal validation), `noise.py` (correlated dirty events + lineage; agent profiles consumed), `truth.py` (six ground-truth tables), `engine.py` (orchestration), `pipeline.py` (generate + single save contract) |
-| `api/` | Serving: `main.py` (typed FastAPI endpoints + token gate), `contracts.py` (response schemas incl. admin job stages), `evidence.py` (visible fields + field comparison), `normalize.py` + `features.py` (shared primitives), `retrieval.py` (bundle-aware query encoding), `search.py` (embedding entity search), `matching.py` (scored evidence + async jobs + session threshold overrides), `admin.py` (AdminService: generate/train jobs via subprocess, settings, audit log, manual corpus with atomic parquet writes), `engine.py` (trained-artifact facade + fingerprint guard). |
+| `synthetic/` | Engine: `config.py` (presets/rates/data incl. email domains, channel contact profiles, POLICY_PARAMS), `providers.py` (real data sources; persona Han-initial sanitizer), `realism.py` (phone styles + email domains), `policy.py` (policy aggregate roots + truth timeline states + temporal validation), `noise.py` (correlated dirty events + lineage; agent profiles consumed), `truth.py` (party, relationship, policy, and query ground-truth tables), `engine.py` (orchestration), `pipeline.py` (generate + single save contract) |
+| `api/` | Serving: `main.py` (typed FastAPI routes + token gate), `contracts.py` (response schemas incl. admin job stages), `evidence.py` (visible fields + field comparison), `normalize.py` + `features.py` (shared primitives), `retrieval.py` (bundle-aware query encoding), `search.py` (embedding entity search), `query_service.py` + `repositories.py` (server-owned bundle reads), `matching.py` (scored evidence + async jobs + session threshold overrides), `admin.py` (generate/train jobs, settings, and audit coordination), `manual_store.py` (locked atomic parquet data entry), `decisions.py` (bound review state), `telemetry.py` (endpoint timing), `engine.py` (trained-artifact loading + fingerprint guard). |
 | `tests/` | Unit tests only — must never require external data or downloads |
 | `scripts/generate_data.py` | Headless generation CLI; writes the exact same tables as the notebook |
 | `synthetic_data.ipynb` / `nayose.ipynb` | Thin drivers / reports (do **not** add logic here) |
 | `data/raw` | Immutable reference-data cache (ken_all, personas, EDINET) — never mutate |
-| `data/generations/gen_*` + `data/current` | Immutable dataset products; `current` is the consumer alias |
-| `models/runs/run_*` + `models/current` + `registry.json` | Immutable model bundles & promotion alias |
+| `data/generations/gen_*` + `data/current` | Immutable sabotaged dataset products; `current` is the matcher consumer alias |
+| `data/clean_generations/clean_*` + `data/clean_current` | Immutable streamable canonical entity products; clean-only source layer |
+| `models/runs/run_*` + `models/current` + `registry.json` | Immutable model bundles, CPU-neutral indexes, and target-platform ANN artifacts |
 | `data/`, `models/` | Gitignored runtime artifacts (regenerate, never commit) |
 
 ## Contract (do not break)
 
 - The generator writes to a new `data/generations/gen_<ts>_<hash>/` and points
-  `data/current` at it: `reference_records`, `incoming_queries` + six hidden
+  `data/current` at it: `reference_records`, `incoming_queries` + core hidden
   tables under `ground_truth/` (`record_truth`, `party_truth`,
-  `relation_truth`, `query_truth`, `evaluation_truth`, `field_lineage`) +
+  `relation_truth`, `query_truth`, `evaluation_truth`, `field_lineage`) plus
+  clean policy lifecycle tables (`policy_truth`, `policy_term_truth`,
+  `policy_event_truth`, `policy_party_truth`, `policy_risk_truth`) and
   `generation_manifest.json` (with `data_fingerprint`).
 - The matcher reads `data/current` and writes bundles under
   `models/runs/run_<ts>_<hash>`, promoting `models/current`.
@@ -46,16 +50,17 @@ curl http://127.0.0.1:8000/api/health            # readiness probe (auth-exempt)
 - Every record/query field must have a lineage row
   (`field_lineage`: item_id × field, canonical vs observed, owner, transformation).
 - The notebook preflight invariants and `tests/` enforce this; run them before changing the schema.
-- `tests/test_arch_contract.py` enforces the architecture contract (DIP, ISP, CSS
-  class dictionary, no layout/stacking on bare element selectors, no sticky table
-  cells). It ships with the suite — drift fails `pytest`, never the browser.
+- `tests/test_arch_contract.py` checks frontend port parity, the CSS class
+  dictionary, no layout/stacking on bare element selectors, and no sticky table
+  cells. It ships with the suite — drift fails `pytest`, never the browser.
 
 ## How to add a feature (repeatable path)
 
 New VIEW (#/route):
-1. `port.ts`: add the `QueryPort` method(s) the view needs.
-2. `api/main.py`: add the typed endpoint (DuckDB SQL lives HERE, server-owned);
-   wrap with `op("name", lambda: ...)`; add a fixture-backed test in `tests/test_api.py`.
+1. `port.ts`: add the focused capability method(s) the view needs.
+2. `api/main.py`: add the typed endpoint and call the relevant server-owned
+   service (`api/query_service.py` for DuckDB reads); wrap with
+   `op("name", lambda: ...)`; add a fixture-backed test in `tests/test_api.py`.
 3. `ts/infra.ts`: implement the port method on `ApiAdapter` (+ memo key).
 4. `ts/features.ts`: new `mountX(el, port, store)`; register in `app.ts` VIEWS +
    palette nav; add the sidebar link in `index.html`.
@@ -101,11 +106,10 @@ Definition of done (EVERY change):
   loadDecisions) are pass-through — never cache state that an action mutates.
 - E2E authoring (enforced by `tests/test_arch_contract.py`): journeys call only
   harness primitives from `frontend/test/e2e-util.mjs` — never raw
-  `waitForFunction`/`reload`/context creation (Facade); every journey runs in
-  its own fresh context via `runJourney` (isolation); selectors use ids and
-  semantic `data-*` hooks, never structural paths under `#view` (DIP at the
-  DOM seam); assert domain semantics (e.g. an entity item exists), not
-  incidental artifact counts.
+  `waitForFunction`/`reload`/context creation; every journey runs in its own
+  fresh context via `runJourney`; selectors use ids and semantic `data-*`
+  hooks, never structural paths under `#view`; assert domain semantics (e.g.
+  an entity item exists), not incidental artifact counts.
 - The repo-root engine (`nayose_inference.py`) and CLI (`nayose_cli.py`) are
   RETIRED: the engine lives at `api/engine.py`, the CLI is deleted. `api/` must
   never reference root-level legacy modules; shared normalization/features
@@ -133,13 +137,14 @@ Definition of done (EVERY change):
   typecheck`, keep `frontend/js/` generated (build & commit). Keep
   `frontend/ts/schema.ts` in sync with `api/main.py REQUIRED_COLUMNS`
   (test_schema_contract.py enforces).
-- Frontend architecture is hexagonal: views depend only on `port.ts` interfaces;
-  state flows through `store.ts` (Command/undo); `app.ts` is a composition root
-  with `boot({port, store, runs})` and no import side effects. New views → new
-  feature module + port method; never call fetch/SQL/localStorage directly in views.
+- Frontend boundaries are explicit: views depend only on `port.ts` interfaces;
+  state flows through `store.ts` reversible commands; `app.ts` assembles
+  `boot({port, store, runs})` with no import side effects. New views → new
+  feature module + focused port method; never call fetch/SQL/localStorage
+  directly in views.
 - Decision state persists server-side under `models/decisions/<run>.json`
-  (GET/PUT /api/decisions); the review Command keeps undo on the client.
-- New QueryPort operations need ApiAdapter + MockPort implementations and a
+  (GET/PUT /api/decisions); review updates remain undoable on the client.
+- New port operations need ApiAdapter + MockPort implementations and a
   fixture-backed API test (server) + a mock-port view test (frontend).
 - Server API is typed domain endpoints (no raw SQL to clients; `NAYOSE_DEBUG_SQL=1`
   only for debugging). Every endpoint records stats; keep the fake-bundle API
@@ -160,8 +165,8 @@ Definition of done (EVERY change):
 ## Retired (do not reintroduce)
 
 - `nayose_cli.py` — obsolete CLI app layer, deleted. The engine moved from
-  `nayose_inference.py` to `api/engine.py` (facade: artifact loading + the
-  fingerprint guard). `api/engine.py` carries historical long lines/defensive
+  `nayose_inference.py` to `api/engine.py` (artifact loading + fingerprint
+  guard). `api/engine.py` carries historical long lines/defensive
   naming; it is excluded from mypy and gets `E501/E402/B905/B007` per-file
   ruff ignores in pyproject.toml — new logic goes into `api/` + `frontend/` +
   `synthetic/`, and the arch contract forbids root-level legacy references.

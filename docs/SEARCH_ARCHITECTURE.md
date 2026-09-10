@@ -1,6 +1,6 @@
 # Search architecture contract
 
-Search is a server-owned pipeline. The browser submits a query and filters through `QueryPort`; it never normalizes, ranks, merges, or queries data directly.
+Search is a server-owned pipeline. The browser submits a query and filters through the search port; it never normalizes, ranks, merges, or queries data directly.
 
 ## Required composition
 
@@ -12,31 +12,51 @@ SearchRequest
   -> CandidateRanker strategies
   -> SearchResponseBuilder
   -> SearchResponse + evidence + telemetry
+
+EntitySearchRequest
+  -> QueryInterpreter
+  -> ExactPageRetriever
+  -> exhaustive exact page
+  -> bounded hybrid fallback when relevance search has no exact hits
 ```
 
-The composition root is `api/main.py` (`build_search_service` Factory Method). The pipeline implementation is `api/search_service.py`.
+The composition root is `api/main.py` (`build_search_service`). The pipeline implementation is `api/search_service.py`.
 
-| Component | Pattern | Responsibility |
-|---|---|---|
-| `build_search_service` | Factory Method | Composes the server-owned search graph |
-| `SearchService` | Facade | Coordinates one search request |
-| `QueryInterpreter` | Strategy registry | Builds the immutable `QueryPlan` |
-| `QueryIntentRule` | Strategy | Adds one field-intent signal |
-| `ExactRetriever`, `FuzzyRetriever`, `SemanticRetriever` | Strategy + Adapter | Adapts retrieval backends to one protocol |
-| `CandidateMerger` | Composite | Deduplicates entity candidates and preserves evidence |
-| `IntentAwareRanker` | Strategy registry | Selects a ranking strategy by retrieval source |
-| `SearchResponseBuilder` | Builder | Preserves the API response contract |
-| `SuggestionRetriever` | Adapter | Exposes legacy correction suggestions through a port |
-| `MemoProxy` | Decorator/Proxy | Caches transport reads, including filters |
-| `SearchWorkspace` | State + Observer | Manages query, filters, pending requests, and selection |
+Dense candidate discovery uses immutable, fingerprint-bound artifacts from
+`api/dense_views.py`: record embeddings remain the broad view, while separate
+name, address, and alias indexes preserve field scope. `NameVariantExpander`
+creates search-only aliases with the source record, generation method, and
+confidence; aliases never rewrite canonical entity profiles. Record candidates retain exact-block, sparse, record-dense, and field-view
+scores and ranks, then use conservative, query-aware weighted reciprocal-rank fusion before
+pair verification. The full record-dense rank is primary; only views relevant
+to populated query fields contribute, and name, address, and alias views remain
+lower-weight correlated discovery signals. Field-view scores never overwrite
+the record-dense feature consumed by the trained verifier.
+Dense evidence is discovery evidence, not an identity decision.
 
-## SOLID rules
+| Component | Responsibility |
+|---|---|
+| `build_search_service` | Composes the server-owned search graph |
+| `SearchService` | Coordinates one search request |
+| `QueryInterpreter` | Builds the immutable `QueryPlan` |
+| `QueryIntentRule` | Adds one field-intent signal |
+| `ExactRetriever`, `FuzzyRetriever`, `SemanticRetriever` | Adapt retrieval backends to one candidate shape |
+| `ExactPageRetriever` | Adapts the count-aware exact repository for Explorer pagination |
+| `EntitySearchRequest` | Carries shared query, filter, sort, and page state |
+| `CandidateMerger` | Deduplicates entity candidates and preserves evidence |
+| `IntentAwareRanker` | Selects ranking behavior by retrieval source |
+| `SearchResponseBuilder` | Preserves the API response contract |
+| `SuggestionRetriever` | Exposes correction suggestions through the search port |
+| `MemoProxy` | Caches transport reads, including filters |
+| `SearchWorkspace` | Manages query, filters, pending requests, and selection |
 
-- **SRP:** normalization, intent detection, retrieval, merging, ranking, response construction, and transport are separate responsibilities.
-- **OCP:** add an intent rule, retriever, or rank strategy by registering a new Strategy; do not add a source conditional to `SearchService`.
-- **LSP:** every retriever returns the same candidate shape and may be substituted without changing orchestration.
-- **ISP:** backend protocols contain only the operation needed by their adapter.
-- **DIP:** `SearchService` depends on retriever, planner, merger, ranker, builder, and suggestion protocols; FastAPI owns composition.
+## Extension rules
+
+- Keep normalization, intent detection, retrieval, merging, ranking, response construction, and transport in separate modules.
+- Add an intent rule, retriever, or ranking implementation through the existing registrations; do not add a source-specific conditional to `SearchService`.
+- Retrievers return the same candidate shape so orchestration does not depend on a concrete backend.
+- Keep each backend port limited to the operation its adapter needs.
+- Keep composition in FastAPI and inject search collaborators into `SearchService`.
 
 ## Non-negotiable boundaries
 
@@ -45,6 +65,11 @@ The composition root is `api/main.py` (`build_search_service` Factory Method). T
 - Every merged result retains `retrieval_sources` and `retrieval_evidence`.
 - Every response includes `query_plan` and per-stage `search_trace` telemetry.
 - Exact results remain ahead of semantic/fuzzy results unless a future policy explicitly changes that contract.
-- New retrieval behavior must be a Strategy; do not extend `SearchService` with backend-specific branches.
+- Explorer reports `total_is_exact=false` for bounded similarity fallback results; it never presents a candidate window as an exhaustive corpus count.
+- New retrieval behavior must register a retriever; do not extend `SearchService` with backend-specific branches.
+- Build dense views in batches and cache them inside the generation by data fingerprint and model ID; never materialize one destructive entity centroid.
+- Keep corpus and query text shapes identical. Alias retrieval searches each observed name variant as a separate `name=<value>` query rather than embedding a multi-alias query against single-alias rows.
+- Keep the labeled retrieval-text schema shared by notebook training and API serving; a bundle must not score an unstructured query against a labeled corpus.
+- Treat auto-linking as a safety decision: require calibrated probability, margin, independent evidence families, no hard field conflicts, and an exact date-of-birth or email anchor; phone-only evidence remains reviewable because household contacts can be shared.
 
 `tests/test_search_arch_contract.py` is the executable enforcement layer. `tests/test_arch_contract.py` enforces the broader frontend and CSS architecture. Run `python scripts/audit_repo.py` before merging.

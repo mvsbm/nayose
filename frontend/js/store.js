@@ -1,12 +1,26 @@
 import { translate } from "./i18n.js";
 import { MatchingState } from "./matching-state.js";
+import { readPreferences, writePreferences } from "./preferences.js";
+export const NAVIGATION_WIDTH_MIN = 220;
+export const NAVIGATION_WIDTH_MAX = 420;
+export const NAVIGATION_WIDTH_DEFAULT = 256;
+const boundedNavigationWidth = (width) => Math.min(NAVIGATION_WIDTH_MAX, Math.max(NAVIGATION_WIDTH_MIN, Math.round(width)));
+const storedNavigationWidth = (value) => {
+    if (value === null || value.trim() === "")
+        return NAVIGATION_WIDTH_DEFAULT;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? boundedNavigationWidth(parsed) : NAVIGATION_WIDTH_DEFAULT;
+};
 export class Store {
+    preferences = readPreferences(this);
     run = "";
-    theme = this.readTheme();
-    density = this.read("nayose.density") === "compact" ? "compact" : "comfortable";
+    theme = this.preferences.theme;
+    density = this.preferences.density;
+    navigationCollapsed = this.preferences.navigationCollapsed;
+    navigationWidth = storedNavigationWidth(String(this.preferences.navigationWidth));
     checked = new Set();
     reviewer = "";
-    locale = this.read("nayose.locale") === "en" ? "en" : "ja";
+    locale = this.preferences.locale;
     matching = new MatchingState(() => this.emit("matching"));
     searchQuery = "";
     entitySelection = { id: "", records: [] };
@@ -24,7 +38,8 @@ export class Store {
     }
     setLocale(locale) {
         this.locale = locale;
-        this.write("nayose.locale", locale);
+        this.preferences.locale = locale;
+        writePreferences(this, this.preferences);
         this.emit("locale");
     }
     emit(key) {
@@ -51,7 +66,8 @@ export class Store {
     }
     setTheme(theme) {
         this.theme = theme;
-        this.write("nayose.theme", theme);
+        this.preferences.theme = theme;
+        writePreferences(this, this.preferences);
         this.emit("theme");
     }
     toggleTheme() {
@@ -60,11 +76,30 @@ export class Store {
     }
     setDensity(density) {
         this.density = density;
-        this.write("nayose.density", density);
+        this.preferences.density = density;
+        writePreferences(this, this.preferences);
         this.emit("density");
     }
     toggleDensity() {
         this.setDensity(this.density === "comfortable" ? "compact" : "comfortable");
+    }
+    setNavigationCollapsed(collapsed) {
+        this.navigationCollapsed = collapsed;
+        this.preferences.navigationCollapsed = collapsed;
+        writePreferences(this, this.preferences);
+        this.emit("navigationCollapsed");
+    }
+    toggleNavigation(current = this.navigationCollapsed) {
+        this.setNavigationCollapsed(!current);
+    }
+    setNavigationWidth(width) {
+        const bounded = boundedNavigationWidth(width);
+        if (bounded === this.navigationWidth)
+            return;
+        this.navigationWidth = bounded;
+        this.preferences.navigationWidth = bounded;
+        writePreferences(this, this.preferences);
+        this.emit("navigationWidth");
     }
     toggleCheckedKey(key) {
         const had = this.checked.has(key);
@@ -100,12 +135,6 @@ export class Store {
         this.history = [];
         this.future = [];
         this.emit("checked");
-    }
-    readTheme() {
-        const stored = this.read("nayose.theme");
-        if (stored === "light" || stored === "dark" || stored === "auto")
-            return stored;
-        return "auto";
     }
     read(key) {
         try {

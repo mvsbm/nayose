@@ -1,17 +1,34 @@
-import type { DatasetGeneration, DatasetRows, DatasetSummary, QueryPort } from "./port.js";
+import type { DatasetGeneration, DatasetPort, DatasetRows, DatasetSummary } from "./port.js";
 import type { Store } from "./store.js";
+import { disposable, type Disposable } from "./lifecycle.js";
 import { esc } from "./schema.js";
+import {
+  observeLockedColumns,
+  readColumnFilters,
+  renderColumnPicker,
+  renderDatasetGrid,
+  syncLockedColumns,
+} from "./dataset-grid.js";
 
 export type DatasetTable = "reference" | "queries" | "agencies";
 
+type TableDescriptor = DatasetSummary["tables"][number];
+
 export interface DatasetExplorerState {
   generations: DatasetGeneration[];
+  selectedGenerationIds: string[];
   generationId: string;
   table: DatasetTable;
   query: string;
+  columnFilters: Record<string, string>;
+  visibleColumns: string[];
+  lockedColumns: string[];
+  cursor?: string;
+  cursorHistory: Array<string | undefined>;
   offset: number;
   limit: number;
   summary: DatasetSummary | null;
+  summaries: Record<string, DatasetSummary>;
   rows: DatasetRows | null;
   pending: boolean;
   error: string;
@@ -24,16 +41,25 @@ const TABLE_LABELS: Record<DatasetTable, string> = {
   agencies: "agencies",
 };
 
+const TABLES = Object.keys(TABLE_LABELS) as DatasetTable[];
+
 export function createDatasetExplorerState(generations: DatasetGeneration[]): DatasetExplorerState {
   const current = generations.find(generation => generation.current) ?? generations[0];
   return {
     generations,
+    selectedGenerationIds: current ? [current.id] : [],
     generationId: current?.id ?? "",
     table: "reference",
     query: "",
+    columnFilters: {},
+    visibleColumns: [],
+    lockedColumns: [],
+    cursor: undefined,
+    cursorHistory: [],
     offset: 0,
-    limit: 25,
+    limit: 100,
     summary: null,
+    summaries: {},
     rows: null,
     pending: false,
     error: "",
@@ -41,48 +67,119 @@ export function createDatasetExplorerState(generations: DatasetGeneration[]): Da
   };
 }
 
-export function renderDatasetExplorer(state: DatasetExplorerState, store: Store): string {
-  const t = (key: string, values: Record<string, string | number> = {}) => esc(store.t(key, values));
-  const generationOptions = state.generations.map(generation => `<option value="${esc(generation.id)}" ${generation.id === state.generationId ? "selected" : ""}>${esc(generation.id)}${generation.current ? " ★" : ""}</option>`).join("");
-  const tableOptions = (Object.keys(TABLE_LABELS) as DatasetTable[]).map(table => `<option value="${table}" ${table === state.table ? "selected" : ""}>${t(TABLE_LABELS[table])}</option>`).join("");
-  if (!state.generations.length) return `<details id="dataset-explorer"><summary>${t("datasetExplorer")}</summary><p class="members">${t("datasetUnavailable")}</p></details>`;
-  const summary = state.summary;
-  const tableSummary = summary?.tables.find(table => table.id === state.table);
-  const summaryHtml = summary ? `<div class="kpi"><div class="card"><span class="l">${t("datasetFingerprint")}</span><div class="v">${esc(summary.fingerprint || "—")}</div></div><div class="card"><span class="l">${t("datasetCreated")}</span><div class="v">${esc(summary.created_at || "—")}</div></div><div class="card"><span class="l">${t("datasetTableRows")}</span><div class="v">${number(tableSummary?.rows ?? 0)}</div></div><div class="card"><span class="l">${t("datasetColumns")}</span><div class="v">${number(tableSummary?.columns.length ?? 0)}</div></div></div>` : "";
-  const rowsHtml = state.rows?.rows.length ? `<table><caption>${t("datasetRowsCaption", { n: state.rows.total })}</caption><thead><tr>${state.rows.columns.map(column => `<th scope="col">${esc(store.t(column))}</th>`).join("")}</tr></thead><tbody>${state.rows.rows.map(row => `<tr>${state.rows!.columns.map(column => `<td>${esc(value(row[column]))}</td>`).join("")}</tr>`).join("")}</tbody></table>` : `<p class="members">${state.pending ? t("datasetLoading") : t("datasetNoRows")}</p>`;
-  const total = state.rows?.total ?? 0;
-  const first = total ? state.offset + 1 : 0;
-  const last = Math.min(state.offset + state.limit, total);
-  return `<details id="dataset-explorer"${state.open ? " open" : ""}><summary>${t("datasetExplorer")}</summary><p>${t("datasetExplorerHelp")}</p><div class="toolbar"><label>${t("generation")} <select id="dataset-generation">${generationOptions}</select></label><label>${t("datasetTable")} <select id="dataset-table">${tableOptions}</select></label><label>${t("datasetSearch")} <input id="dataset-filter" type="search" value="${esc(state.query)}" placeholder="${t("datasetSearchPlaceholder")}"></label><button id="dataset-load" class="more" type="button" ${state.pending ? "disabled" : ""}>${t("inspectDataset")}</button></div>${summaryHtml}<div class="table-scroll" tabindex="0" role="region" aria-label="${t("datasetRowsCaption", { n: total })}" aria-busy="${state.pending}">${rowsHtml}</div><div class="toolbar"><span class="members" role="status" aria-live="polite">${t("datasetRange", { first, last, total })}</span><button id="dataset-prev" class="more" type="button" ${state.offset === 0 || state.pending ? "disabled" : ""}>${t("previous")}</button><button id="dataset-next" class="more" type="button" ${last >= total || state.pending ? "disabled" : ""}>${t("next")}</button></div>${state.error ? `<p class="notice" role="alert">${esc(state.error)}</p>` : ""}</details>`;
+function localizedGeneration(generation: DatasetGeneration, store: Store): string {
+  const localized = store.locale === "ja" ? generation.label_ja : generation.label_en;
+  return localized || generation.id;
+}
+
+function generationDescription(generation: DatasetGeneration, store: Store): string {
+  const localized = store.locale === "ja" ? generation.description_ja : generation.description_en;
+  return localized || `${generation.id} · ${generation.fingerprint || "no fingerprint"}`;
+}
+
+function tableDescriptor(state: DatasetExplorerState): TableDescriptor | undefined {
+  return state.summary?.tables.find(table => table.id === state.table);
+}
+
+function allColumns(state: DatasetExplorerState): string[] {
+  return tableDescriptor(state)?.columns ?? state.rows?.columns ?? [];
 }
 
 function number(value: number): string {
   return value.toLocaleString();
 }
 
-function value(raw: unknown): string {
-  if (raw == null) return "";
-  return typeof raw === "object" ? JSON.stringify(raw) : String(raw);
+
+function renderDatasetPicker(state: DatasetExplorerState, store: Store, t: (key: string, values?: Record<string, string | number>) => string): string {
+  const items = state.generations.map(generation => {
+    const checked = state.selectedGenerationIds.includes(generation.id);
+    const current = generation.current ? ` · ${store.t("currentDataset")}` : "";    return `<label class="dataset-picker-choice"><input type="checkbox" data-dataset-select="${esc(generation.id)}" ${checked ? "checked" : ""}><span><strong>${esc(localizedGeneration(generation, store))}${esc(current)}</strong><small>${esc(generationDescription(generation, store))}</small></span></label>`;
+  }).join("");
+  return `<fieldset class="dataset-picker"><legend>${t("datasetSelection")}</legend><p class="members">${t("datasetSelectionHelp")}</p><div class="dataset-picker-choice-list">${items}</div><output class="members" aria-live="polite">${t("selectedDatasets", { n: state.selectedGenerationIds.length })}</output></fieldset>`;
+}
+
+function renderDatasetTabs(state: DatasetExplorerState, store: Store): string {
+  const tabs = state.selectedGenerationIds.map(id => {
+    const generation = state.generations.find(item => item.id === id);
+    if (!generation) return "";
+    const selected = id === state.generationId;
+    return `<button class="dataset-tabs-tab" type="button" role="tab" aria-selected="${selected}" data-dataset-tab="${esc(id)}">${esc(localizedGeneration(generation, store))}</button>`;
+  }).join("");
+  return `<div class="dataset-tabs" role="tablist" aria-label="${esc(store.t("activeDataset"))}">${tabs}</div>`;
+}
+
+
+type Translate = (key: string, values?: Record<string, string | number>) => string;
+
+function renderDatasetSummary(state: DatasetExplorerState, store: Store, columns: string[], t: Translate): string {
+  const summary = state.summary;
+  const descriptor = tableDescriptor(state);
+  const generation = state.generations.find(item => item.id === state.generationId) ?? state.generations[0];
+  if (!summary || !generation) return "";
+  return `<section class="dataset-info"><h3>${esc(localizedGeneration(generation, store))}</h3><p class="members">${esc(generationDescription(generation, store))}</p><div class="kpi"><div class="card"><span class="l">${t("datasetFingerprint")}</span><div class="v">${esc(summary.fingerprint || "—")}</div></div><div class="card"><span class="l">${t("datasetCreated")}</span><div class="v">${esc(summary.created_at || "—")}</div></div><div class="card"><span class="l">${t("datasetTableRows")}</span><div class="v">${number(descriptor?.rows ?? 0)}</div></div><div class="card"><span class="l">${t("datasetColumns")}</span><div class="v">${number(columns.length)}</div></div></div><p class="members">${esc(descriptor?.description ?? "")}</p></section>`;
+}
+
+function renderTableOptions(state: DatasetExplorerState, store: Store): string {
+  return TABLES.map(table => {
+    const item = state.summary?.tables.find(candidate => candidate.id === table);
+    return `<option value="${table}" ${table === state.table ? "selected" : ""}>${esc(item?.label ?? store.t(TABLE_LABELS[table]))}</option>`;
+  }).join("");
+}
+
+function renderDatasetToolbar(state: DatasetExplorerState, store: Store, t: Translate): string {
+  return `<div class="toolbar"><label>${t("datasetTable")} <select id="dataset-table">${renderTableOptions(state, store)}</select></label><label class="dataset-grid-search">${t("datasetSearch")} <input id="dataset-filter" type="search" value="${esc(state.query)}" placeholder="${t("datasetSearchPlaceholder")}"></label><button id="dataset-load" class="more" type="button" ${state.pending ? "disabled" : ""}>${t("inspectDataset")}</button></div>`;
+}
+
+function renderDatasetPaging(state: DatasetExplorerState, total: number, exact: boolean, first: number, last: number, t: Translate): string {
+  const range = exact ? t("datasetRange", { first, last, total }) : t("datasetRangeUnknown", { first, last });
+  const nextDisabled = state.rows?.has_more === false || (!state.rows?.has_more && exact && last >= total) || state.pending;
+  return `<div class="toolbar"><span class="members" role="status" aria-live="polite">${range}</span><button id="dataset-prev" class="more" type="button" ${state.offset === 0 || state.pending ? "disabled" : ""}>${t("previous")}</button><button id="dataset-next" class="more" type="button" ${nextDisabled ? "disabled" : ""}>${t("next")}</button></div>`;
+}
+
+export function renderDatasetExplorer(state: DatasetExplorerState, store: Store): string {
+  const t: Translate = (key, values = {}) => esc(store.t(key, values));
+  if (!state.generations.length) return `<details id="dataset-explorer"><summary>${t("datasetExplorer")}</summary><p class="members">${t("datasetUnavailable")}</p></details>`;
+  const columns = allColumns(state);
+  const total = state.rows?.total ?? 0;
+  const ariaRows = total >= 0 ? total : state.rows?.rows.length ?? 0;
+  const first = state.rows?.rows.length ? state.offset + 1 : 0;
+  const last = state.rows?.rows.length ? state.offset + state.rows.rows.length : 0;
+  const exact = state.rows?.total_exact !== false && total >= 0;
+  return `<details id="dataset-explorer"${state.open ? " open" : ""}><summary>${t("datasetExplorer")}</summary><p>${t("datasetExplorerHelp")}</p>${renderDatasetPicker(state, store, t)}${renderDatasetTabs(state, store)}${renderDatasetToolbar(state, store, t)}${renderDatasetSummary(state, store, columns, t)}${renderColumnPicker(state, store, columns, t)}<div class="dataset-grid-scroll" tabindex="0" role="region" aria-label="${t("datasetRowsCaption", { n: ariaRows })}" aria-busy="${state.pending}">${renderDatasetGrid(state, store, columns, t)}</div>${renderDatasetPaging(state, total, exact, first, last, t)}${state.error ? `<p class="notice" role="alert">${esc(state.error)}</p>` : ""}</details>`;
+}
+
+function reconcileColumns(state: DatasetExplorerState, columns: string[]): void {
+  if (!state.visibleColumns.length) return;
+  state.visibleColumns = state.visibleColumns.filter(column => columns.includes(column));
+  state.lockedColumns = state.lockedColumns.filter(column => state.visibleColumns.includes(column));
 }
 
 async function load(
   state: DatasetExplorerState,
-  port: QueryPort,
+  port: DatasetPort,
   paint: () => void,
   requestId: number,
   currentRequest: () => number,
+  signal: AbortSignal,
 ): Promise<void> {
   if (!state.generationId) return;
   state.pending = true;
   state.error = "";
   paint();
   try {
+    const generationId = state.generationId;
+    const cachedSummary = state.summaries[generationId];
+    const summaryPromise: Promise<DatasetSummary> = cachedSummary
+      ? Promise.resolve(cachedSummary)
+      : port.adminDatasetSummary(generationId);
     const [summary, rows] = await Promise.all([
-      state.summary?.id === state.generationId ? Promise.resolve(state.summary) : port.adminDatasetSummary(state.generationId),
-      port.adminDatasetRows(state.generationId, state.table, state.query, state.offset, state.limit),
+      summaryPromise,
+      port.adminDatasetRows(generationId, state.table, state.query, state.offset, state.limit, state.columnFilters, false, state.cursor, signal),
     ]);
     if (requestId !== currentRequest()) return;
+    state.summaries[generationId] = summary;
     state.summary = summary;
+    reconcileColumns(state, allColumns(state));
     state.rows = rows;
   } catch (error) {
     if (requestId !== currentRequest()) return;
@@ -97,67 +194,172 @@ async function load(
 export function bindDatasetExplorer(
   host: HTMLElement,
   state: DatasetExplorerState,
-  port: QueryPort,
+  port: DatasetPort,
   store: Store,
-): void {
+): Disposable {
   let requestId = 0;
+  let filterTimer: number | undefined;
+  let activeController: AbortController | undefined;
+  let disposed = false;
+  let paintVersion = 0;
+  let stopLockedColumnObserver = (): void => undefined;
   const paint = (): void => {
+    if (disposed) return;
+    const version = ++paintVersion;
     const details = host.querySelector<HTMLDetailsElement>("#dataset-explorer");
     if (details) state.open = details.open;
     host.innerHTML = renderDatasetExplorer(state, store);
     bind();
+    stopLockedColumnObserver();
+    const sync = (): void => syncLockedColumns(host, state.lockedColumns);
+    const observe = (): void => {
+      if (disposed || version !== paintVersion) return;
+      sync();
+      stopLockedColumnObserver = observeLockedColumns(host, sync);
+    };
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(observe);
+    else window.setTimeout(observe, 0);
   };
   const reload = (): void => {
+    if (disposed) return;
+    activeController?.abort();
+    activeController = new AbortController();
     const current = ++requestId;
-    void load(state, port, paint, current, () => requestId);
+    void load(state, port, paint, current, () => requestId, activeController.signal);
+  };
+  const selectGeneration = (id: string): void => {
+    if (!state.selectedGenerationIds.includes(id)) state.selectedGenerationIds.push(id);
+    state.generationId = id;
+    state.summary = state.summaries[id] ?? null;
+    state.rows = null;
+    state.offset = 0;
+    state.visibleColumns = [];
+    state.lockedColumns = [];
+    state.cursor = undefined;
+    state.cursorHistory = [];
+    state.columnFilters = {};
+    reload();
   };
   const bind = (): void => {
-    host.querySelector<HTMLDetailsElement>("#dataset-explorer")?.addEventListener("toggle", event => {
-      state.open = (event.target as HTMLDetailsElement).open;
-    });
-    host.querySelector<HTMLSelectElement>("#dataset-generation")?.addEventListener("change", event => {
-      state.generationId = (event.target as HTMLSelectElement).value;
-      state.offset = 0;
-      state.summary = null;
-      state.rows = null;
-      reload();
-    });
+    host.querySelectorAll<HTMLInputElement>("[data-dataset-select]").forEach(input => input.addEventListener("change", () => {
+      const selected = [...host.querySelectorAll<HTMLInputElement>("[data-dataset-select]:checked")].map(item => item.dataset.datasetSelect ?? "").filter(Boolean);
+      if (!selected.length) {
+        input.checked = true;
+        return;
+      }
+      state.selectedGenerationIds = selected;
+      if (!selected.includes(state.generationId)) selectGeneration(selected[0]!);
+      else paint();
+    }));
+    host.querySelectorAll<HTMLButtonElement>("[data-dataset-tab]").forEach(button => button.addEventListener("click", () => selectGeneration(button.dataset.datasetTab ?? "")));
     host.querySelector<HTMLSelectElement>("#dataset-table")?.addEventListener("change", event => {
       state.table = (event.target as HTMLSelectElement).value as DatasetTable;
       state.offset = 0;
       state.rows = null;
+      state.visibleColumns = [];
+      state.lockedColumns = [];
+      state.cursor = undefined;
+      state.cursorHistory = [];
+      state.columnFilters = {};
       reload();
     });
     host.querySelector<HTMLInputElement>("#dataset-filter")?.addEventListener("keydown", event => {
       if (event.key === "Enter") {
         state.query = (event.target as HTMLInputElement).value.trim();
         state.offset = 0;
+        state.cursor = undefined;
+        state.cursorHistory = [];
         reload();
       }
     });
+    host.querySelector<HTMLInputElement>("#dataset-filter")?.addEventListener("input", event => {
+      window.clearTimeout(filterTimer);
+      filterTimer = window.setTimeout(() => {
+        state.query = (event.target as HTMLInputElement).value.trim();
+        state.offset = 0;
+        state.cursor = undefined;
+        state.cursorHistory = [];
+        reload();
+      }, 260);
+    });
     host.querySelector<HTMLButtonElement>("#dataset-load")?.addEventListener("click", () => {
       state.query = host.querySelector<HTMLInputElement>("#dataset-filter")?.value.trim() ?? "";
+      state.columnFilters = readColumnFilters(host);
       state.offset = 0;
+      state.cursor = undefined;
+      state.cursorHistory = [];
       reload();
     });
+    host.querySelector<HTMLButtonElement>("#dataset-filter-apply")?.addEventListener("click", () => {
+      state.columnFilters = readColumnFilters(host);
+      state.offset = 0;
+      state.cursor = undefined;
+      state.cursorHistory = [];
+      reload();
+    });
+    host.querySelector<HTMLButtonElement>("#dataset-filter-clear")?.addEventListener("click", () => {
+      state.columnFilters = {};
+      state.offset = 0;
+      state.cursor = undefined;
+      state.cursorHistory = [];
+      reload();
+    });
+    host.querySelectorAll<HTMLInputElement>("[data-column-visible]").forEach(input => input.addEventListener("change", () => {
+      const column = input.dataset.columnVisible ?? "";
+      const columns = allColumns(state);
+      const visible = state.visibleColumns.length ? new Set(state.visibleColumns) : new Set(columns);
+      if (input.checked) visible.add(column);
+      else if (visible.size > 1) visible.delete(column);
+      state.visibleColumns = columns.filter(item => visible.has(item));
+      state.lockedColumns = state.lockedColumns.filter(item => state.visibleColumns.includes(item));
+      paint();
+    }));
+    host.querySelectorAll<HTMLInputElement>("[data-column-lock]").forEach(input => input.addEventListener("change", () => {
+      const column = input.dataset.columnLock ?? "";
+      state.lockedColumns = input.checked
+        ? [...state.lockedColumns.filter(item => item !== column), column]
+        : state.lockedColumns.filter(item => item !== column);
+      paint();
+    }));
     host.querySelector<HTMLButtonElement>("#dataset-prev")?.addEventListener("click", () => {
+      state.cursor = state.cursorHistory.pop();
       state.offset = Math.max(0, state.offset - state.limit);
       reload();
     });
     host.querySelector<HTMLButtonElement>("#dataset-next")?.addEventListener("click", () => {
+      const next = state.rows?.next_cursor;
+      if (next) {
+        state.cursorHistory.push(state.cursor);
+        state.cursor = next;
+      }
       state.offset += state.limit;
       reload();
     });
   };
   bind();
   if (state.generationId && !state.rows && !state.pending) reload();
+  return disposable(() => {
+    disposed = true;
+    requestId += 1;
+    activeController?.abort();
+    window.clearTimeout(filterTimer);
+    stopLockedColumnObserver();
+  });
 }
 
-export async function refreshDatasetGenerations(state: DatasetExplorerState, port: QueryPort): Promise<void> {
+export async function refreshDatasetGenerations(state: DatasetExplorerState, port: DatasetPort): Promise<void> {
   state.generations = await port.adminGenerations();
   const current = state.generations.find(generation => generation.current) ?? state.generations[0];
-  if (!state.generations.some(generation => generation.id === state.generationId)) state.generationId = current?.id ?? "";
+  const selected = state.selectedGenerationIds.filter(id => state.generations.some(generation => generation.id === id));
+  state.selectedGenerationIds = selected.length ? selected : current ? [current.id] : [];
+  if (!state.selectedGenerationIds.includes(state.generationId)) state.generationId = state.selectedGenerationIds[0] ?? "";
   state.summary = null;
+  state.summaries = {};
   state.rows = null;
   state.offset = 0;
+  state.visibleColumns = [];
+  state.lockedColumns = [];
+  state.cursor = undefined;
+  state.cursorHistory = [];
+  state.columnFilters = {};
 }

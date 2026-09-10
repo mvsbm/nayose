@@ -4,6 +4,8 @@ the legacy inference module (single source of truth; engine re-exports)."""
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 import numpy as np
 import pandas as pd
 from rapidfuzz.fuzz import ratio
@@ -11,6 +13,13 @@ from rapidfuzz.fuzz import ratio
 
 def _fuzzy(a: str, b: str) -> float:
     return ratio(a, b) / 100.0 if a and b else 0.0
+
+
+def has_safe_identity_anchor(features: Mapping[str, float]) -> bool:
+    """Return whether evidence has exact name plus DOB or email agreement."""
+    name_exact = bool(features.get("name_strict_exact", 0) or features.get("name_loose_exact", 0))
+    stable_exact = bool(features.get("dob_exact", 0) or features.get("email_exact", 0))
+    return name_exact and stable_exact
 
 
 PAIR_FEATURE_COLS = [

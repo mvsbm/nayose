@@ -10,13 +10,11 @@
 // "every element works" is enforced as: every inventory row labelled+live,
 // every exercised action produced a state change, zero runtime errors.
 //
-// Design patterns: Template Method (sweep skeleton: same inventory→assert→act
-// for every route, route-specific steps injected via feels callbacks); SRP
-// (collect/assert/act are separate pure-ish functions); Observer (strict
-// error trap owned by runJourney); DIP (navigation via harness facades, never
-// raw waitForFunction); honesty (hidden-by-design controls are a documented
-// allowlist; no fabricated expectations — entity member actions degrade
-// gracefully when the page has fewer than two members).
+// The sweep shares one inventory→assert→act flow for every route, with
+// route-specific steps supplied by callbacks. Collection, assertions, and
+// actions remain separate; runJourney owns browser errors and navigation.
+// Hidden-by-design controls use a documented allowlist, and member actions
+// degrade gracefully when a page has fewer than two members.
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import AxeBuilder from "@axe-core/playwright";
@@ -56,6 +54,7 @@ const SKIP_ACTIONS = new Set([
   "gen-go", "tr-go", "set-go", // spawn subprocess jobs (admin)
   "dz-confirm", "dz-promote", "dz-prune", "dz-reset", // mutate bundle state
   "de-check", "de-match", "de-register", // start jobs / write manual corpus
+  "filter-clear", // route-specific filter navigation is asserted below
 ]);
 
 // Shell chrome exercised ONCE on the metrics route (feels.metrics) with
@@ -64,20 +63,21 @@ const SKIP_ACTIONS = new Set([
 const CHROME_ONCE = new Set(["cmd", "theme", "density", "language", "run"]);
 
 // Hidden-by-design controls: only shown while a job is running / palette open.
-const HIDDEN_BY_DESIGN = new Set(["rt-resume", "palette-input", "palette-results"]);
+const HIDDEN_BY_DESIGN = new Set(["rt-resume", "palette-input", "palette-results", "nav-scrim", "nav-toggle"]);
 
 // Stateful-disabled controls: disabled is a STATE (page boundary, no selection
 // yet, empty history), not a defect — these flip with user state.
 const STATE_DISABLED = new Set([
   "member-prev", "member-next", "drill", // page boundaries
   "member-compare", "member-clear", // disable until at least one member selected
+  "entity-explorer-prev", "entity-explorer-next", // page boundaries
   "dataset-load", "dataset-prev", "dataset-next", // dataset loading and page boundaries
   "dz-promote", "dz-prune", "dz-reset", "gen-preview-go", "gen-go", // two-step-confirm / preview-pending boundaries
   "de-import", "de-check", "de-match", "de-dry", // wizard gates: armed as rows import / form validates
   "de-register", // armed by a successful match check (data entry wizard step)
 ]);
 
-// SRP: read-only DOM inventory of every interactive candidate + page health.
+// Read-only DOM inventory of every interactive candidate and page health.
 async function collectCandidates(page) {
   return page.evaluate(() => {
     const SELECTOR = [
@@ -122,7 +122,7 @@ async function collectCandidates(page) {
   });
 }
 
-// SRP: pure assertions over the inventory (no DOM, no browser state needed).
+// Pure assertions over the inventory (no DOM or browser state needed).
 function assertInventory(route, { items, leaked, viewChildren }) {
   assert.ok(viewChildren > 0, `${route}: #view rendered empty`);
   assert.ok(!leaked, `${route}: template leakage (undefined/[object Object]/NaN) in body`);
@@ -153,7 +153,7 @@ async function closePalette(page) {
   }
 }
 
-// Template Method: base sweep skeleton; route-specific steps via feels().
+// Base sweep flow with route-specific steps supplied through feels().
 async function sweepRoute(page, route, { hash = "#/", skip = SKIP_ACTIONS, feels = async () => {} } = {}) {
   console.error(`[sweep] ${route} ${hash} — start`);
   await navigateFresh(page, hash);
@@ -226,6 +226,12 @@ const feels = {
     await page.waitForFunction((l) => document.documentElement.lang !== l, lang0);
     await page.locator("#language").click(); // restore
     await page.waitForFunction((l) => document.documentElement.lang === l, lang0);
+    const navExpanded0 = await page.locator("#nav-toggle").getAttribute("aria-expanded");
+    const activeWorkspace = page.locator('.activity-bar a[data-activity="evaluate"]');
+    await activeWorkspace.click();
+    assert.notEqual(await page.locator("#nav-toggle").getAttribute("aria-expanded"), navExpanded0, "Activity Bar did not collapse navigation");
+    await activeWorkspace.click();
+    assert.equal(await page.locator("#nav-toggle").getAttribute("aria-expanded"), navExpanded0, "Activity Bar did not restore navigation");
     await page.locator("#cmd").click();
     await waitVisible(page, "#palette:not([hidden])");
     await page.keyboard.press("Escape");
@@ -320,10 +326,11 @@ test("UI sweep: every route × every interactive element (strict zero-error)", {
       feels: async (p) => { hrefs = await feels.search(p); },
     });
     assert.equal(hrefs.length, 2, "search results did not yield two entity links");
-    assert.ok(hrefs.every(h => h.startsWith("#/entity/")));
-    const [entityA, entityB] = hrefs.map(h => h.split("/").pop());
+    assert.ok(hrefs.every(h => h.startsWith("#/search?entity=")));
+    const entityIds = hrefs.map(href => new URLSearchParams(href.split("?")[1] ?? "").get("entity") ?? "");
+    const [entityA, entityB] = entityIds;
 
-    await sweepRoute(page, "#/entity", { hash: hrefs[0], feels: feels.entity });
+    await sweepRoute(page, "#/entity", { hash: `#/entity/${encodeURIComponent(entityA)}`, feels: feels.entity });
     await sweepRoute(page, "#/compare", {
       hash: `#/compare/${encodeURIComponent(entityA)}/${encodeURIComponent(entityB)}`,
       feels: feels.compare,
@@ -342,7 +349,7 @@ test("UI sweep: every route × every interactive element (strict zero-error)", {
 });
 
 // Pure-node inventory shape test: keeps the sweep's building blocks honest
-// without a browser (the route DIP contract: ids are stable inventory keys).
+// without a browser (route contract: ids are stable inventory keys).
 test("UI sweep: skip-set covers every admin job-starter id", () => {
   for (const id of ["gen-go", "tr-go", "set-go", "dz-confirm", "de-check", "de-register"]) {
     assert.ok(SKIP_ACTIONS.has(id), `heavy control ${id} missing from the skip allowlist`);

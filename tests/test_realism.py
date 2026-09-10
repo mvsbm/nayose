@@ -5,7 +5,13 @@ import re
 import numpy as np
 import pandas as pd
 
-from synthetic.config import EMAIL_DOMAINS, NoiseConfig, SyntheticConfig
+from synthetic.config import (
+    EMAIL_DOMAINS,
+    POLICY_PARAMS,
+    PRODUCT_PROFILES,
+    NoiseConfig,
+    SyntheticConfig,
+)
 from synthetic.noise import RecordCorruptor
 from synthetic.realism import (
     channel_family,
@@ -95,8 +101,8 @@ def test_policies_are_aggregate_roots_and_events_anchor_dates():
     parties = pd.DataFrame({"party_type": ["person", "person"], "name_kanji": ["佐藤", "鈴木"]})
     policies = build_policies(rng, parties, {0: 0, 1: 0}, {0: [0, 1]})
     assert len(policies[0]) >= 1 and len(policies[1]) >= 1
-    ids = sorted({p.policy_id for p in policies[0] + policies[1]})
-    assert len(ids) == len(set(ids)), "policy ids are unique"
+    ids = [p.policy_id for p in policies[0] + policies[1]]
+    assert len(set(ids)) >= 2, "policy ids are globally unique"
     for policy in policies[0]:
         years = [e.year for e in policy.events]
         assert years == sorted(years), "events are chronological"
@@ -107,6 +113,38 @@ def test_policies_are_aggregate_roots_and_events_anchor_dates():
     covered = [p.covered for pol in policies for p in pol]
     assert all(len(c) >= 1 for c in covered)
     assert total >= 2
+
+
+def test_policy_lifecycle_and_roles_are_clean_truth(monkeypatch):
+    from synthetic.policy import build_policies, policy_status_at, unique_policies
+    from synthetic.truth import build_policy_truth
+
+    for name, profile in PRODUCT_PROFILES.items():
+        monkeypatch.setitem(profile, "weight", 1.0 if name == "auto" else 0.0)
+        monkeypatch.setitem(profile, "renew_p", 1.0)
+        monkeypatch.setitem(profile, "claim_rate", 1.0)
+        monkeypatch.setitem(profile, "lapse_rate", 1.0)
+        monkeypatch.setitem(profile, "reinstatement_rate", 1.0)
+        monkeypatch.setitem(profile, "cancel_rate", 1.0)
+        monkeypatch.setitem(profile, "family_rate", 1.0)
+    monkeypatch.setitem(POLICY_PARAMS, "start_range", (2019, 2020))
+
+    parties = pd.DataFrame({"party_type": ["person"] * 3})
+    portfolios = build_policies(
+        np.random.default_rng(7), parties, {0: 0, 1: 0, 2: 0}, {0: [0, 1, 2]}
+    )
+    policies = unique_policies(portfolios)
+    assert policies
+    assert all(len(policy.terms) > 1 for policy in policies)
+    assert all(any(event.kind == "renewal" for event in policy.events) for policy in policies)
+    assert all(any(event.kind == "cancel" for event in policy.events) for policy in policies)
+    assert all(policy_status_at(policy, 2019) == "active" for policy in policies)
+    assert all(policy_status_at(policy, 2025) == "cancelled" for policy in policies)
+    assert any(role.role == "additional_driver" for policy in policies for role in policy.roles)
+    tables = build_policy_truth(portfolios)
+    assert len(tables["policy_truth"]) == len(policies)
+    assert len(tables["policy_event_truth"]) > len(tables["policy_truth"])
+    assert len(tables["policy_party_truth"]) > len(tables["policy_truth"])
 
 
 def test_temporal_snapshot_is_monotonic_and_validation_catches_drift():

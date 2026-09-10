@@ -9,20 +9,19 @@ import numpy as np
 import pandas as pd
 from sklearn.preprocessing import normalize
 
+from api.dense_views import dense_view_queries
+from api.embedding_runtime import (
+    close_query_encoder,
+    configure_query_encoder,
+    configured_batch_size,
+    encode_queries,
+)
+from api.performance import resolve_device
+from api.retrieval_fusion import retrieval_fusion_score, retrieval_methods
+
 
 def _resolve_device(requested: str) -> str:
-    if requested != "auto":
-        return requested
-    try:
-        import torch
-
-        if torch.backends.mps.is_available():
-            return "mps"
-        if torch.cuda.is_available():
-            return "cuda"
-    except Exception:
-        pass
-    return "cpu"
+    return resolve_device(requested)
 
 
 class BundleRetriever:
@@ -30,7 +29,6 @@ class BundleRetriever:
         self.index = engine._index
         self.settings = manifest.get("config", {})
         self.svd = None
-        self.encoder: Any = None
         self.model_id = manifest.get("embedding_model")
         self.mode = "sparse_only"
         if self.index.reference_embeddings is not None:
@@ -39,6 +37,13 @@ class BundleRetriever:
                 self.svd = joblib.load(run_dir / "dense_svd.joblib")
                 self.mode = "tfidf_svd"
             elif self.model_id:
+                configure_query_encoder(
+                    str(self.model_id),
+                    device=os.getenv("NAYOSE_DEVICE", "cpu"),
+                    batch_size=configured_batch_size(
+                        int(self.settings.get("neural_batch_size", 16))
+                    ),
+                )
                 self.mode = "neural"
             else:
                 raise RuntimeError("dense embeddings have no recorded query encoder")
@@ -55,22 +60,24 @@ class BundleRetriever:
             return "sparse_only"
         return self.mode
 
-    def encode(self, text: str) -> np.ndarray:
+    def encode_many(self, texts: list[str]) -> np.ndarray:
+        if self.index.reference_embeddings is None:
+            raise RuntimeError("dense query encoding is unavailable")
         if self.svd is not None:
-            result = normalize(self.svd.transform(self.index.vectorizer.transform([text])))
+            result = normalize(self.svd.transform(self.index.vectorizer.transform(texts)))
         else:
-            if self.encoder is None:
-                from sentence_transformers import SentenceTransformer
-
-                self.encoder = SentenceTransformer(
-                    self.model_id, device=_resolve_device(os.getenv("NAYOSE_DEVICE", "cpu"))
-                )
-            result = self.encoder.encode([text], normalize_embeddings=True)
-        result = np.asarray(result, dtype=np.float32)
+            result = encode_queries(texts)
+        values = np.asarray(result, dtype=np.float32)
         expected = self.index.reference_embeddings.shape[1]
-        if result.shape != (1, expected) or not np.isfinite(result).all():
+        if values.shape != (len(texts), expected) or not np.isfinite(values).all():
             raise ValueError("query embedding does not match reference dimensions")
-        return result
+        return values
+
+    def encode(self, text: str) -> np.ndarray:
+        return self.encode_many([text])
+
+    def close(self) -> None:
+        close_query_encoder()
 
     def retrieve(self, query: dict[str, str]) -> pd.DataFrame:
         mode = self.exact_mode
@@ -89,7 +96,7 @@ class BundleRetriever:
         if mode != "exact_only":
             self._sparse(query, states)
             if self.active_backend != "sparse_only" and self.index.dense_nn is not None:
-                self._dense(query, states)
+                self._dense_and_views(query, states)
         rows = []
         for idx, state in states.items():
             exact, sparse, dense = (
@@ -103,13 +110,21 @@ class BundleRetriever:
                     "dense_score": dense,
                     "channel_count": int(exact > 0) + int(sparse > 0) + int(dense > 0),
                     "retrieval_score": max(sparse, dense) + 0.08 * min(exact, 3),
+                    "retrieval_fusion_score": retrieval_fusion_score(state, query=query),
+                    "dense_view_count": len(state.get("dense_view_scores", {})),
+                    "dense_view_scores": state.get("dense_view_scores", {}),
+                    "dense_view_ranks": state.get("dense_view_ranks", {}),
+                    "retrieval_methods": retrieval_methods(state),
                     "exact_blocks": state.get("exact_blocks", []),
                 }
             )
         frame = pd.DataFrame(rows)
         cap = int(self.settings.get("candidate_cap_per_record", self.index.config.candidate_cap))
         return (
-            frame.sort_values(["retrieval_score", "candidate_index"], ascending=[False, True])
+            frame.sort_values(
+                ["retrieval_fusion_score", "retrieval_score", "candidate_index"],
+                ascending=[False, False, True],
+            )
             .head(cap)
             .reset_index(drop=True)
             if len(frame)
@@ -123,24 +138,48 @@ class BundleRetriever:
             len(self.index.reference),
         )
         distances, indices = self.index.sparse_nn.kneighbors(vector, n_neighbors=k)
-        for idx, score in zip(indices[0], 1 - distances[0], strict=True):
-            states.setdefault(int(idx), {})["sparse_score"] = max(0.0, float(score))
+        for rank, (idx, score) in enumerate(zip(indices[0], 1 - distances[0], strict=True), 1):
+            state = states.setdefault(int(idx), {})
+            state["sparse_score"] = max(0.0, float(score))
+            state["sparse_rank"] = rank
 
-    def _dense(self, query: dict[str, str], states: dict[int, dict[str, Any]]) -> None:
-        vector = self.encode(query.get("retrieval_text", ""))
+    def _dense_and_views(self, query: dict[str, str], states: dict[int, dict[str, Any]]) -> None:
         k = min(
             int(self.settings.get("dense_top_k", self.index.config.candidate_cap)),
             len(self.index.reference),
         )
-        nn = self.index.dense_nn
-        if hasattr(nn, "search"):
-            matches = nn.search(vector, k)
-            indices, distances = (
-                np.asarray(matches.keys).reshape(-1),
-                np.asarray(matches.distances).reshape(-1),
-            )
-        else:
-            distances, indices = nn.kneighbors(vector, n_neighbors=k)
-            indices, distances = indices.reshape(-1), distances.reshape(-1)
-        for idx, score in zip(indices, 1 - distances, strict=True):
-            states.setdefault(int(idx), {})["dense_score"] = max(0.0, float(score))
+        requests = [
+            (view, text)
+            for view in getattr(self.index, "dense_views", {})
+            for text in dense_view_queries(query, view)
+        ]
+        vectors = self.encode_many(
+            [query.get("retrieval_text", ""), *(text for _, text in requests)]
+        )
+        matches = self.index.dense_nn.search(vectors[0].reshape(1, -1), k)
+        indices = np.asarray(matches.keys, dtype=np.int32).reshape(-1)
+        distances = np.asarray(matches.distances, dtype=np.float32).reshape(-1)
+        for rank, (idx, distance) in enumerate(zip(indices, distances, strict=True), 1):
+            state = states.setdefault(int(idx), {})
+            state["dense_score"] = max(0.0, float(1.0 - distance))
+            state["dense_rank"] = rank
+
+        for vector, (view, _) in zip(vectors[1:], requests, strict=True):
+            artifact = self.index.dense_views[view]
+            view_matches = artifact.index.search(vector.reshape(1, -1), k)
+            view_indices = np.asarray(view_matches.keys, dtype=np.int32).reshape(-1)
+            view_distances = np.asarray(view_matches.distances, dtype=np.float32).reshape(-1)
+            for rank, (idx, distance) in enumerate(
+                zip(view_indices, view_distances, strict=True), 1
+            ):
+                candidate_index = (
+                    int(artifact.row_indices[int(idx)])
+                    if artifact.row_indices is not None
+                    else int(idx)
+                )
+                state = states.setdefault(candidate_index, {})
+                scores = state.setdefault("dense_view_scores", {})
+                score = max(0.0, float(1.0 - distance))
+                scores[view] = max(score, float(scores.get(view, 0.0)))
+                ranks = state.setdefault("dense_view_ranks", {})
+                ranks[view] = min(rank, int(ranks.get(view, rank)))

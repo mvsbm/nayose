@@ -1,11 +1,35 @@
-// Minimal observable store (Observer pattern) + Command/Undo for decisions.
+// Minimal observable store with reversible decision updates.
 // Views subscribe; mutations are the only writers of shared state.
 import { Storage } from "./port.js";
 import { Locale, translate } from "./i18n.js";
 import { MatchingState } from "./matching-state.js";
+import { readPreferences, writePreferences, type Preferences } from "./preferences.js";
 
 export type Theme = "light" | "dark" | "auto";
 export type Density = "comfortable" | "compact";
+export const NAVIGATION_WIDTH_MIN = 220;
+export const NAVIGATION_WIDTH_MAX = 420;
+export const NAVIGATION_WIDTH_DEFAULT = 256;
+
+const boundedNavigationWidth = (width: number): number => Math.min(NAVIGATION_WIDTH_MAX, Math.max(NAVIGATION_WIDTH_MIN, Math.round(width)));
+const storedNavigationWidth = (value: string | null): number => {
+  if (value === null || value.trim() === "") return NAVIGATION_WIDTH_DEFAULT;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? boundedNavigationWidth(parsed) : NAVIGATION_WIDTH_DEFAULT;
+};
+
+export interface StoreEvents {
+  run: void;
+  theme: void;
+  density: void;
+  navigationCollapsed: void;
+  navigationWidth: void;
+  checked: void;
+  locale: void;
+  matching: void;
+  entitySelection: void;
+  thresholdOverride: void;
+}
 
 type Listener = () => void;
 interface Command {
@@ -15,23 +39,26 @@ interface Command {
 }
 
 export class Store implements Storage {
+  private readonly preferences: Preferences = readPreferences(this);
   run = "";
-  theme: Theme = this.readTheme();
-  density: Density = this.read("nayose.density") === "compact" ? "compact" : "comfortable";
+  theme: Theme = this.preferences.theme;
+  density: Density = this.preferences.density;
+  navigationCollapsed = this.preferences.navigationCollapsed;
+  navigationWidth = storedNavigationWidth(String(this.preferences.navigationWidth));
   checked = new Set<string>();
   reviewer = "";
-  locale: Locale = this.read("nayose.locale") === "en" ? "en" : "ja";
+  locale: Locale = this.preferences.locale;
   matching = new MatchingState(() => this.emit("matching"));
   searchQuery = "";
   entitySelection: { id: string; records: string[] } = { id: "", records: [] };
   thresholdOverride: { auto: number; review: number } | null = null;
   runs: Array<{ id: string; current?: boolean; fingerprint?: string }> = [];
 
-  private listeners = new Map<keyof Store, Set<Listener>>();
+  private listeners = new Map<keyof StoreEvents, Set<Listener>>();
   private history: Command[] = [];
   private future: Command[] = [];
 
-  on<K extends keyof Store>(key: K, fn: Listener): () => void {
+  on<K extends keyof StoreEvents>(key: K, fn: Listener): () => void {
     (this.listeners.get(key) ?? this.listeners.set(key, new Set()).get(key)!).add(fn);
     return () => this.listeners.get(key)?.delete(fn);
   }
@@ -40,10 +67,11 @@ export class Store implements Storage {
   }
   setLocale(locale: Locale): void {
     this.locale = locale;
-    this.write("nayose.locale", locale);
+    this.preferences.locale = locale;
+    writePreferences(this, this.preferences);
     this.emit("locale");
   }
-  private emit<K extends keyof Store>(key: K): void {
+  private emit<K extends keyof StoreEvents>(key: K): void {
     this.listeners.get(key)?.forEach((fn) => fn());
   }
 
@@ -68,7 +96,8 @@ export class Store implements Storage {
   }
   setTheme(theme: Theme): void {
     this.theme = theme;
-    this.write("nayose.theme", theme);
+    this.preferences.theme = theme;
+    writePreferences(this, this.preferences);
     this.emit("theme");
   }
   toggleTheme(): void {
@@ -77,11 +106,29 @@ export class Store implements Storage {
   }
   setDensity(density: Density): void {
     this.density = density;
-    this.write("nayose.density", density);
+    this.preferences.density = density;
+    writePreferences(this, this.preferences);
     this.emit("density");
   }
   toggleDensity(): void {
     this.setDensity(this.density === "comfortable" ? "compact" : "comfortable");
+  }
+  setNavigationCollapsed(collapsed: boolean): void {
+    this.navigationCollapsed = collapsed;
+    this.preferences.navigationCollapsed = collapsed;
+    writePreferences(this, this.preferences);
+    this.emit("navigationCollapsed");
+  }
+  toggleNavigation(current = this.navigationCollapsed): void {
+    this.setNavigationCollapsed(!current);
+  }
+  setNavigationWidth(width: number): void {
+    const bounded = boundedNavigationWidth(width);
+    if (bounded === this.navigationWidth) return;
+    this.navigationWidth = bounded;
+    this.preferences.navigationWidth = bounded;
+    writePreferences(this, this.preferences);
+    this.emit("navigationWidth");
   }
 
   toggleCheckedKey(key: string): void {
@@ -116,12 +163,6 @@ export class Store implements Storage {
     this.history = [];
     this.future = [];
     this.emit("checked");
-  }
-
-  private readTheme(): Theme {
-    const stored = this.read("nayose.theme");
-    if (stored === "light" || stored === "dark" || stored === "auto") return stored;
-    return "auto";
   }
 
   read(key: string): string | null {

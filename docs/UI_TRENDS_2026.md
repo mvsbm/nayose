@@ -11,7 +11,7 @@ industry leadership, or production readiness.
 - **Failure is visible.** Loading, stale-request, unavailable-model, and
   incompatible-release states render as actionable messages rather than empty
   success states.
-- **State is reversible.** Review state uses a client Command/undo path and is
+- **State is reversible.** Review state uses a client undo path and is
   persisted by the server under the selected run.
 - **Attention is protected.** Reduced-motion CSS is supported, the search
   workspace stays mounted while results change, and detail panels are

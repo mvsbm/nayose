@@ -1,12 +1,19 @@
-// Feature views: each is a pure render function (port, store, container).
-// No fetch, no SQL, no storage — all through the QueryPort + Store.
-import { QueryPort, ReviewPage, ConfusionData, MetricsViewData, EntityHit } from "./port.js";
+// Feature views receive ports, state, and a container. They do not access
+// fetch, SQL, or storage directly.
+import { ComparePort, CompareRunsPort, ConfusionData, ConfusionPort, EntityExplorerPort, EntityDetailPort, MetricsPort, MetricsViewData, ReviewPage, ReviewPort, SearchPort } from "./port.js";
 import { mountMatchingSearch } from "./match-view.js";
+import { mountEntityExplorer } from "./entity-explorer.js";
 import { mountEntityDetail } from "./entity-view.js";
 import type { Store } from "./store.js";
 import { asNumber, checkedKey, clamp01, diffFields } from "./core.js";
 import { esc, str } from "./schema.js";
 import { createFlipAnimator } from "./shared.js";
+import { createViewScope, type ViewScope } from "./lifecycle.js";
+import { bindPanelSplit } from "./panel-layout.js";
+
+const COMPARE_SPLIT_DEFAULT = 440;
+const COMPARE_SPLIT_MIN = 280;
+const COMPARE_SPLIT_MAX = 720;
 
 const SKELETON = (k = 3): string =>
   `<div class="skel">${Array.from({ length: k }, () => '<div class="card" style="height:3.2rem"></div>').join("")}</div>`;
@@ -15,29 +22,37 @@ const crumb = (store: Store, ...links: string[]): string =>
 const bar = (v: number): string =>
   `<span class="meter"><i style="width:${clamp01(v) * 100}%"></i></span>`;
 
-// Template Method for view mounting: skeleton → load (through the port) →
-// render → bind, once, in one place. A view supplies the concrete steps;
-// mounting conventions (skeleton, paint, attach) live here, not 8 times over.
-// `skeleton` is optional: pass it on first mount, omit it on refreshes so the
-// previous content stays visible while async data comes back.
+// Shared view mounting lifecycle. A view supplies loading, rendering, and
+// event binding; the lifecycle keeps the loading shell and refresh behavior
+// consistent. `skeleton` is optional on refreshes so previous content remains
+// visible while async data returns.
 interface MountSpec<T> {
   skeleton?: string;
   load: () => Promise<T>;
   render: (data: T) => string;
-  bind?: (el: HTMLElement, data: T) => void;
+  bind?: (el: HTMLElement, data: T, scope: ViewScope) => void;
 }
+const mountVersions = new WeakMap<HTMLElement, number>();
+const mountScopes = new WeakMap<HTMLElement, ViewScope>();
+
 async function mountView<T>(el: HTMLElement, spec: MountSpec<T>): Promise<void> {
+  const version = (mountVersions.get(el) ?? 0) + 1;
+  mountVersions.set(el, version);
+  mountScopes.get(el)?.dispose();
+  const scope = createViewScope(el);
+  mountScopes.set(el, scope);
   if (spec.skeleton) el.innerHTML = spec.skeleton;
   const data = await spec.load();
+  if (scope.isDisposed || mountVersions.get(el) !== version) return;
   el.innerHTML = spec.render(data);
-  spec.bind?.(el, data);
+  spec.bind?.(el, data, scope);
 }
 
-export async function mountSearch(el: HTMLElement, port: QueryPort, store: Store): Promise<void> {
-  await mountMatchingSearch(el, port, store);
+export async function mountSearch(el: HTMLElement, port: SearchPort & EntityDetailPort, store: Store, scope: ViewScope): Promise<void> {
+  await mountMatchingSearch(el, port, store, scope);
 }
 
-export async function mountReview(el: HTMLElement, port: QueryPort, store: Store): Promise<void> {
+export async function mountReview(el: HTMLElement, port: ReviewPort, store: Store): Promise<void> {
   let offset = 0;
   let minP = 0;
   let pageSize = 200;
@@ -97,24 +112,36 @@ export async function mountReview(el: HTMLElement, port: QueryPort, store: Store
           <td>${(asNumber(r.pair_probability) * 100).toFixed(1)}%</td><td>${asNumber(r.exact_count)}</td></tr>`;
       }).join("") || `<tr><td colspan="5" class="members">${esc(store.t("none"))}</td></tr>`}</tbody></table></div></div>`,
       bind: (el, page) => {
+        const syncRow = (tr: HTMLElement): void => {
+          const left = tr.dataset.l ?? "";
+          const right = tr.dataset.r ?? "";
+          const isRecorded = store.checked.has(key(left, right));
+          const btn = tr.querySelector<HTMLButtonElement>("button.check");
+          tr.classList.toggle("checked", isRecorded);
+          if (!btn) return;
+          btn.classList.toggle("on", isRecorded);
+          btn.setAttribute("aria-pressed", String(isRecorded));
+          btn.setAttribute("aria-label", `${store.t(isRecorded ? "recorded" : "reviewed")}: ${left} / ${right}`);
+          btn.textContent = store.t(isRecorded ? "recorded" : "reviewed");
+        };
         el.querySelector("tbody")!.addEventListener("click", (e) => {
           const btn = (e.target as HTMLElement).closest<HTMLButtonElement>("button.check");
           const tr = (e.target as HTMLElement).closest<HTMLElement>("tr");
           if (!btn || !tr) return;
           store.toggleCheckedKey(key(tr.dataset.l ?? "", tr.dataset.r ?? ""));
-          tr.classList.toggle("checked", store.checked.has(key(tr.dataset.l ?? "", tr.dataset.r ?? "")));
-          const isRecorded = store.checked.has(key(tr.dataset.l ?? "", tr.dataset.r ?? ""));
-          btn.classList.toggle("on", isRecorded);
-          btn.setAttribute("aria-pressed", String(isRecorded));
-          btn.setAttribute("aria-label", `${store.t(isRecorded ? "recorded" : "reviewed")}: ${tr.dataset.l ?? ""} / ${tr.dataset.r ?? ""}`);
-          btn.textContent = store.t(isRecorded ? "recorded" : "reviewed");
+          syncRow(tr);
           el.querySelector("#count")!.textContent = store.t("reviewCount", { n: page.total, read: store.checked.size });
         });
         el.querySelector("#reviewer")?.addEventListener("input", (e) => {
           store.reviewer = (e.target as HTMLInputElement).value;
           store.write("nayose.reviewer", store.reviewer);
         });
-        el.querySelector("#undo")?.addEventListener("click", () => { store.undo(); void refresh(false); });
+        el.querySelector("#undo")?.addEventListener("click", () => {
+          if (!store.undo()) return;
+          el.querySelectorAll<HTMLElement>("tbody tr[data-l]").forEach(syncRow);
+          el.querySelector("#count")!.textContent = store.t("reviewCount", { n: page.total, read: store.checked.size });
+          void refresh(false);
+        });
         const minp = el.querySelector<HTMLInputElement>("#minp")!;
         const applyMinP = (): void => {
           minP = clamp01(Number(minp.value) / 100 || 0);
@@ -141,7 +168,7 @@ export async function mountReview(el: HTMLElement, port: QueryPort, store: Store
   await refresh(true);
 }
 
-export async function mountConfusion(el: HTMLElement, port: QueryPort, store: Store): Promise<void> {
+export async function mountConfusion(el: HTMLElement, port: ConfusionPort, store: Store): Promise<void> {
   await mountView<ConfusionData>(el, {
     skeleton: SKELETON(),
     load: () => port.confusion(),
@@ -183,7 +210,7 @@ export async function mountConfusion(el: HTMLElement, port: QueryPort, store: St
   });
 }
 
-export async function mountMetrics(el: HTMLElement, port: QueryPort, store: Store): Promise<void> {
+export async function mountMetrics(el: HTMLElement, port: MetricsPort, store: Store): Promise<void> {
   // F: metric unit toggle (% vs ratio) — display only
   let unit: "percent" | "ratio" = "percent";
   const flip = createFlipAnimator(".kpi .card .v");
@@ -214,47 +241,20 @@ export async function mountMetrics(el: HTMLElement, port: QueryPort, store: Stor
   });
 }
 
-export async function mountEntities(el: HTMLElement, port: QueryPort, store: Store): Promise<void> {
-  // F: display knobs — page size + sort (client-side on the fetched page)
-  let size = 50;
-  let sortMode: "records" | "name" = "records";
-  const apply = (hits: EntityHit[]): EntityHit[] =>
-    [...hits].sort((a, b) =>
-      sortMode === "records"
-        ? asNumber(b.record_count) - asNumber(a.record_count)
-        : String(a.name_kanji).localeCompare(String(b.name_kanji), "ja"),
-    );
-  const paint = async (): Promise<void> => {
-    await mountView<EntityHit[]>(el, {
-      skeleton: SKELETON(),
-      load: async () => (await port.entities("", size)).rows,
-      render: (hits) => `<div class="panel">${crumb(store, "#/entities", store.t("entities"))}
-    <div class="card"><div class="toolbar"><h3 style="margin:0">${esc(store.t("entityList", { n: hits.length }))}</h3>
-      <label class="members">${esc(store.t("pageSize"))}<select id="ent-size">${[25, 50, 100, 200].map(n => `<option ${n === size ? "selected" : ""}>${n}</option>`).join("")}</select></label>
-      <label class="members">${esc(store.t("sort"))}<select id="ent-sort"><option value="records" ${sortMode === "records" ? "selected" : ""}>${esc(store.t("sortRecords"))}</option><option value="name" ${sortMode === "name" ? "selected" : ""}>${esc(store.t("sortName"))}</option></select></label></div>
-      ${apply(hits).map((r) => `<div class="card" style="margin:.45rem 0"><h3><a href="#/entity/${esc(r.nayose_id)}">${esc(r.name_kanji)}</a>
-        <span class="muted">${esc(r.name_kana || "")}</span></h3><div class="members">${esc(store.t("record_count"))}: ${asNumber(r.record_count)}</div></div>`).join("") || `<div class="empty">${esc(store.t("none"))}</div>`}
-    </div></div>`,
-      bind: (view) => {
-        view.querySelector("#ent-size")?.addEventListener("change", (e) => {
-          size = Number((e.target as HTMLSelectElement).value) || 50;
-          void paint();
-        });
-        view.querySelector("#ent-sort")?.addEventListener("change", (e) => {
-          sortMode = (e.target as HTMLSelectElement).value as "records" | "name";
-          void paint();
-        });
-      },
-    });
-  };
-  await paint();
+export async function mountEntities(
+  el: HTMLElement,
+  port: EntityExplorerPort & EntityDetailPort,
+  store: Store,
+  scope: ViewScope,
+): Promise<void> {
+  await mountEntityExplorer(el, port, store, scope);
 }
 
-export async function mountEntity(el: HTMLElement, port: QueryPort, store: Store, id: string): Promise<void> {
-  await mountEntityDetail(el, port, store, id);
+export async function mountEntity(el: HTMLElement, port: EntityDetailPort, store: Store, id: string, scope: ViewScope): Promise<void> {
+  await mountEntityDetail(el, port, store, id, scope);
 }
 
-export async function mountCompare(el: HTMLElement, port: QueryPort, store: Store, l: string, r: string): Promise<void> {
+export async function mountCompare(el: HTMLElement, port: ComparePort, store: Store, l: string, r: string): Promise<void> {
   await mountView<Record<string, unknown>[]>(el, {
     skeleton: SKELETON(),
     load: () => port.compare(l, r),
@@ -268,15 +268,27 @@ export async function mountCompare(el: HTMLElement, port: QueryPort, store: Stor
       const side = (rec: Record<string, unknown>, other: Record<string, unknown>) =>
         `<table><tbody>${fields.map((f) => `<tr><th scope="row">${esc(f)}</th><td class="${str(rec[f]) !== str(other[f]) ? "diff-hi" : ""}">${esc(rec[f])}</td></tr>`).join("")}</tbody></table>`;
       return `<div class="panel">${crumb(store, "#/review", store.t("review"))}
-    <div class="diff">
+    <div class="diff" data-panel-split="compare">
       <div class="card"><h3>${esc(l)}</h3>${side(left, right)}</div>
+      <div class="panel-resizer" data-panel-resizer="compare" role="separator" aria-orientation="vertical" aria-label="${esc(store.t("resizePanel"))}" aria-valuemin="${COMPARE_SPLIT_MIN}" aria-valuemax="${COMPARE_SPLIT_MAX}" aria-valuenow="${COMPARE_SPLIT_DEFAULT}" tabindex="0"></div>
       <div class="card"><h3>${esc(r)}</h3>${side(right, left)}</div>
     </div><p class="members">${esc(store.t("diffHelp"))}</p></div>`;
+    },
+    bind: (view, _rows, scope) => {
+      scope.add(bindPanelSplit(view, store, {
+        id: "compare",
+        cssVariable: "--compare-left-width",
+        defaultWidth: COMPARE_SPLIT_DEFAULT,
+        minWidth: COMPARE_SPLIT_MIN,
+        maxWidth: COMPARE_SPLIT_MAX,
+        pointerSide: "left",
+        mobileQuery: "(max-width: 980px)",
+      }));
     },
   });
 }
 
-export async function mountCompareRuns(el: HTMLElement, port: QueryPort, store: Store): Promise<void> {
+export async function mountCompareRuns(el: HTMLElement, port: CompareRunsPort, store: Store): Promise<void> {
   const runs = store.runs.map((r) => r.id);
   const a = store.run;
   const b = runs.find((r) => r !== a) ?? a;

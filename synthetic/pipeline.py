@@ -1,7 +1,7 @@
 """Shared pipeline orchestration and the canonical save contract.
 
-One function each for "generate" and "save" so the notebook driver and the
-`scripts/generate_data.py` CLI can never drift apart (DRY). Outputs match the
+One function each for "generate" and "save" keeps the notebook driver and
+`scripts/generate_data.py` CLI on the same output contract. Outputs match the
 nayose.ipynb contract exactly.
 
 Storage layout (Decision A/B of the repo design):
@@ -24,6 +24,7 @@ import pandas as pd
 
 from .config import PROFILES, SyntheticConfig, default_data_dir, noise_for_config
 from .engine import (
+    apply_household_sharing,
     build_observations,
     generate_agencies,
     generate_parties,
@@ -42,6 +43,7 @@ from .truth import (
     build_field_lineage,
     build_households,
     build_party_truth,
+    build_policy_truth,
     build_query_tables,
     build_record_truth,
     build_relation_truth,
@@ -69,6 +71,10 @@ class PipelineResult:
             "parties": len(self.parties),
             "observations": len(self.observations),
             "queries": len(self.queries),
+            "policies": len(self.ground_truth.get("policy_truth", [])),
+            "policy_terms": len(self.ground_truth.get("policy_term_truth", [])),
+            "policy_events": len(self.ground_truth.get("policy_event_truth", [])),
+            "policy_party_roles": len(self.ground_truth.get("policy_party_truth", [])),
         }
 
 
@@ -80,7 +86,7 @@ def data_fingerprint(reference: pd.DataFrame) -> str:
 
 
 def generate(cfg: SyntheticConfig, rng: np.random.Generator | None = None) -> PipelineResult:
-    """Run the full pipeline: parties -> observations -> queries -> six truth tables."""
+    """Run the full pipeline: clean parties/policies -> sabotaged observations."""
     rng = rng or np.random.default_rng(cfg.seed)
     noise = noise_for_config(cfg)
     raw_dir = cfg.raw_dir or default_data_dir() / "raw"
@@ -102,6 +108,7 @@ def generate(cfg: SyntheticConfig, rng: np.random.Generator | None = None) -> Pi
     relation_members: dict[int, list[int]] = {}
     for party_idx, rel in relation_of.items():
         relation_members.setdefault(rel, []).append(party_idx)
+    parties = apply_household_sharing(parties, relation_members, rng)
     policies = build_policies(rng, parties, relation_of, relation_members)
     history = history_by_party(rng, parties, homophones, address, buildings)
     observations, party_of, record_lineage = build_observations(
@@ -136,6 +143,7 @@ def generate(cfg: SyntheticConfig, rng: np.random.Generator | None = None) -> Pi
         address,
         buildings,
         rng,
+        agencies=agencies,
     )
     query_truth, evaluation_truth, query_lineage_df = build_query_tables(
         queries, query_meta, parties, party_of, record_ids_by_truth, query_lineage
@@ -152,6 +160,7 @@ def generate(cfg: SyntheticConfig, rng: np.random.Generator | None = None) -> Pi
             "record_truth": record_truth,
             "party_truth": party_truth,
             "relation_truth": build_relation_truth(party_truth),
+            **build_policy_truth(policies),
             "query_truth": query_truth,
             "evaluation_truth": evaluation_truth,
             "field_lineage": field_lineage,

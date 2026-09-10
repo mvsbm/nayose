@@ -2,12 +2,14 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from synthetic.config import MAX_ENTITY_SEEDS
+
 
 class GenerationControlsIn(BaseModel):
     profile: str = Field(default="smoke", max_length=32)
     difficulty: str = Field(default="realistic", max_length=32)
     seed: int = Field(default=42, ge=0)
-    n_parties: int = Field(default=0, ge=0, le=2_000_000)
+    n_parties: int = Field(default=0, ge=0, le=MAX_ENTITY_SEEDS)
     mean_records: float | None = Field(default=None, ge=1.0, le=20.0)
     n_agencies: int = Field(default=18, ge=1, le=100)
     person_share: float = Field(default=0.90, ge=0.0, le=1.0)
@@ -27,6 +29,20 @@ class GenerationControlsIn(BaseModel):
 
 class GenerationPreviewIn(BaseModel):
     controls: GenerationControlsIn
+
+
+class DatasetRowsOut(BaseModel):
+    table: str
+    columns: list[str]
+    rows: list[dict[str, Any]]
+    total: int
+    total_exact: bool
+    has_more: bool
+    next_cursor: str | None = None
+    cursor_column: str
+    filters: dict[str, str]
+    offset: int
+    limit: int
 
 
 Stage = Literal[
@@ -59,6 +75,43 @@ class EntityDetail(BaseModel):
     limit: int
     comparisons: dict[str, dict[str, FieldComparison]]
     merge_evidence_available: bool
+
+
+class EntityExplorerPage(BaseModel):
+    rows: list[dict[str, Any]]
+    total: int
+    offset: int
+    limit: int
+    query: str
+    sort: Literal["relevance", "records", "name", "last_seen"]
+    filters: dict[str, Any] = Field(default_factory=dict)
+    query_plan: dict[str, Any] = Field(default_factory=dict)
+    search_mode: Literal["exact", "hybrid_fallback"] = "exact"
+    total_is_exact: bool = True
+    search_trace: dict[str, Any] = Field(default_factory=dict)
+
+
+class EntityGraphNode(BaseModel):
+    id: str
+    kind: Literal["entity", "record", "policy", "agency", "channel"]
+    label: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class EntityGraphEdge(BaseModel):
+    source: str
+    target: str
+    kind: Literal["observed", "potential"]
+    relation: str
+    evidence: dict[str, Any] = Field(default_factory=dict)
+
+
+class EntityGraph(BaseModel):
+    entity_id: str
+    nodes: list[EntityGraphNode]
+    edges: list[EntityGraphEdge]
+    truncated: bool = False
+    potential_matches_available: bool = False
 
 
 class SampleRecord(BaseModel):

@@ -1,7 +1,7 @@
-"""Streamed progress parsing (SRP): generator stdout ETA lines -> structured
-updates. Pure and deterministic (unit-testable); NEVER fabricates values —
-a line we cannot parse yields None and the UI falls back to an indeterminate
-state. The engine's own ETA printer is the ONLY source (no invented %).
+"""Parse generator stdout ETA lines into deterministic admin job updates.
+
+Unparseable lines yield None; the UI then uses an indeterminate state instead
+of presenting fabricated progress.
 """
 
 from __future__ import annotations

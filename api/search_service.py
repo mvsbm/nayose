@@ -1,8 +1,8 @@
 """Composable server-owned search orchestration.
 
-The service separates query interpretation, candidate retrieval, candidate merging,
-and response construction. Concrete data services are injected through small
-retriever strategies so new retrieval backends do not change the API facade.
+The service separates query interpretation, candidate retrieval, candidate
+merging, and response construction. Retrieval implementations share one
+candidate contract, so adding a backend does not change the API contract.
 """
 
 from __future__ import annotations
@@ -176,6 +176,17 @@ class QueryInterpreter:
         )
 
 
+@dataclass(frozen=True)
+class EntitySearchRequest:
+    run_id: str
+    query: str
+    offset: int = 0
+    limit: int = 50
+    sort: str = "relevance"
+    filters: SearchFilters = SearchFilters()
+    semantic: bool = True
+
+
 class ExactService(Protocol):
     def entities(
         self,
@@ -184,6 +195,18 @@ class ExactService(Protocol):
         limit: int,
         filters: SearchFilters,
     ) -> list[dict[str, Any]]: ...
+
+
+class PagedExactService(Protocol):
+    def entity_page(
+        self,
+        run_id: str,
+        query: str,
+        offset: int,
+        limit: int,
+        sort: str,
+        filters: SearchFilters,
+    ) -> dict[str, Any]: ...
 
 
 class FuzzyService(Protocol):
@@ -237,6 +260,27 @@ class ExactRetriever:
 
     def retrieve(self, run_id: str, plan: QueryPlan, limit: int) -> list[dict[str, Any]]:
         return self.service.entities(run_id, plan.raw_query, limit, plan.filters)
+
+
+class PageRetriever(Protocol):
+    def retrieve(self, request: EntitySearchRequest) -> dict[str, Any]: ...
+
+
+class ExactPageRetriever:
+    """Adapter for the count-aware exact strategy used by Explorer."""
+
+    def __init__(self, service: PagedExactService):
+        self.service = service
+
+    def retrieve(self, request: EntitySearchRequest) -> dict[str, Any]:
+        return self.service.entity_page(
+            request.run_id,
+            request.query,
+            request.offset,
+            request.limit,
+            request.sort,
+            request.filters,
+        )
 
 
 class FuzzyRetriever:
@@ -457,7 +501,7 @@ class ResponseBuilder(Protocol):
 
 
 class SearchService:
-    """Facade for the complete search pipeline."""
+    """Coordinate the complete search pipeline."""
 
     def __init__(
         self,
@@ -469,6 +513,7 @@ class SearchService:
         merger: CandidateCombiner | None = None,
         ranker: CandidateRanker | None = None,
         response_builder: ResponseBuilder | None = None,
+        paged_exact: PageRetriever | None = None,
     ):
         self.exact = exact
         self.fuzzy = fuzzy
@@ -480,6 +525,7 @@ class SearchService:
         self.response_builder = (
             response_builder if response_builder is not None else SearchResponseBuilder()
         )
+        self.paged_exact = paged_exact
 
     def search(
         self,
@@ -537,6 +583,48 @@ class SearchService:
             suggestion=suggestion,
             backend=backend,
         )
+
+    def explore(self, request: EntitySearchRequest) -> dict[str, Any]:
+        """Return an exhaustive exact page, with an honest hybrid fallback."""
+        paged_exact = self.paged_exact
+        if paged_exact is None:
+            raise RuntimeError("paged exact search is not configured")
+        plan = self.interpreter.interpret(request.query, request.filters)
+        telemetry = SearchTelemetry()
+        page = telemetry.measure("exact", lambda: paged_exact.retrieve(request))
+        if page["total"] > 0 or not plan.raw_query or request.sort != "relevance":
+            return {
+                **page,
+                "query_plan": plan.as_dict(),
+                "search_mode": "exact",
+                "total_is_exact": True,
+                "search_trace": {
+                    "latency_ms": telemetry.latency_ms,
+                    "candidate_counts": {"rows": len(page["rows"])},
+                },
+            }
+        window = min(200, max(8, request.offset + request.limit))
+        fallback = self.search(
+            request.run_id,
+            request.query,
+            window,
+            filters=request.filters,
+            semantic=request.semantic,
+        )
+        start = min(request.offset, len(fallback["rows"]))
+        return {
+            "rows": fallback["rows"][start : start + request.limit],
+            "total": len(fallback["rows"]),
+            "offset": request.offset,
+            "limit": request.limit,
+            "query": plan.raw_query,
+            "sort": request.sort,
+            "filters": request.filters.as_dict(),
+            "query_plan": plan.as_dict(),
+            "search_mode": "hybrid_fallback",
+            "total_is_exact": False,
+            "search_trace": fallback["search_trace"],
+        }
 
     @staticmethod
     def _apply_filters(hits: list[dict[str, Any]], filters: SearchFilters) -> list[dict[str, Any]]:

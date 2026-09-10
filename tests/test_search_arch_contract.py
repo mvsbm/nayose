@@ -40,18 +40,18 @@ def _class(tree: ast.AST, name: str) -> ast.ClassDef:
     raise AssertionError(f"class {name!r} not found")
 
 
-def test_search_pattern_registry_is_complete():
+def test_search_components_are_present():
     tree = ast.parse(SEARCH.read_text(encoding="utf-8"))
     classes = {node.name for node in ast.walk(tree) if isinstance(node, ast.ClassDef)}
     assert classes >= REQUIRED_SEARCH_COMPONENTS
 
 
-def test_search_facade_is_composed_from_ports():
+def test_search_service_is_composed_from_ports():
     source = SEARCH.read_text(encoding="utf-8")
-    facade = _class(ast.parse(source), "SearchService")
+    service = _class(ast.parse(source), "SearchService")
     init = next(
         node
-        for node in facade.body
+        for node in service.body
         if isinstance(node, ast.FunctionDef) and node.name == "__init__"
     )
     parameters = {arg.arg for arg in init.args.args}
@@ -93,7 +93,7 @@ def test_composition_root_has_a_search_factory():
     assert "SemanticRetriever" in source
 
 
-def test_api_search_endpoint_uses_facade_not_retrievers():
+def test_api_search_endpoint_uses_service_not_retrievers():
     tree = ast.parse(MAIN.read_text(encoding="utf-8"))
     endpoint = _top_level_function(tree, "entities")
     source = ast.unparse(endpoint)

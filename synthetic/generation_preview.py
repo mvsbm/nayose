@@ -13,7 +13,9 @@ from .config import (
     DEFAULT_STALE_RATE,
     DIFFICULTY,
     EVENT_NAMES,
+    MAX_ENTITY_SEEDS,
     NOISE_FIELDS,
+    POLICY_PARAMS,
     PROFILES,
     QUERY_MIX,
     STALE_EVENT_NAMES,
@@ -25,34 +27,38 @@ from .generation_sample import build_examples, build_samples
 
 PROFILE_INFO: dict[str, dict[str, str]] = {
     "preflight": {
-        "label_ja": "事前確認",
-        "label_en": "Preflight",
-        "description_ja": "最小構成。設定確認と短い反復に向きます。",
-        "description_en": "Smallest run for checking settings and quick iterations.",
+        "label_ja": "約340 エンティティ",
+        "label_en": "~340 entities",
+        "description_ja": "基準エンティティ300件から約340件。設定確認と短い反復向けです。",
+        "description_en": "About 340 canonical entities from 300 seeds for quick validation.",
     },
     "smoke": {
-        "label_ja": "スモーク",
-        "label_en": "Smoke",
-        "description_ja": "UI とモデルの動作確認に適した小規模データです。",
-        "description_en": "Small dataset for UI and model checks.",
+        "label_ja": "約800 エンティティ",
+        "label_en": "~800 entities",
+        "description_ja": "基準エンティティ700件から約800件。UIとモデルの動作確認向けです。",
+        "description_en": "About 800 canonical entities from 700 seeds for UI and model checks.",
     },
     "mac": {
-        "label_ja": "Mac 標準",
-        "label_en": "Mac standard",
-        "description_ja": "ローカル Mac での実験向けです。",
-        "description_en": "For local experiments on a Mac.",
+        "label_ja": "約6,800 エンティティ",
+        "label_en": "~6,800 entities",
+        "description_ja": "基準エンティティ6,000件から約6,800件。ローカル実験向けです。",
+        "description_en": "About 6,800 canonical entities from 6,000 seeds for local experiments.",
     },
     "large_mac": {
-        "label_ja": "Mac 大規模",
-        "label_en": "Mac large",
-        "description_ja": "より多くのレコードで評価します。時間と容量に注意してください。",
-        "description_en": "Larger evaluation run; check time and storage first.",
+        "label_ja": "約22,700 エンティティ",
+        "label_en": "~22,700 entities",
+        "description_ja": "基準エンティティ20,000件から約22,700件。時間と容量に注意してください。",
+        "description_en": (
+            "About 22,700 canonical entities from 20,000 seeds; check time and storage."
+        ),
     },
     "generate_only": {
-        "label_ja": "生成専用",
-        "label_en": "Generate only",
-        "description_ja": "大規模データ生成向けです。プレビューを必ず確認してください。",
-        "description_en": "Large generation profile; review the preview before running.",
+        "label_ja": "約113,500 エンティティ",
+        "label_en": "~113,500 entities",
+        "description_ja": "基準エンティティ100,000件から約113,500件。生成専用の大規模データです。",
+        "description_en": (
+            "About 113,500 canonical entities from 100,000 seeds for large generation."
+        ),
     },
 }
 
@@ -74,6 +80,12 @@ DIFFICULTY_INFO: dict[str, dict[str, str]] = {
         "label_en": "Severe",
         "description_ja": "難しい照合ケースを多く含めます。",
         "description_en": "More difficult resolution cases.",
+    },
+    "challenge": {
+        "label_ja": "挑戦用",
+        "label_en": "Challenge",
+        "description_ja": "多項目の整合した破損、旧情報、同一世帯・同名候補を重点的に含めます。",
+        "description_en": "Coherent multi-field damage, stale history, household, and twin cases.",
     },
 }
 
@@ -451,6 +463,9 @@ def catalog() -> dict[str, Any]:
                 **PROFILE_INFO[name],
                 "n_parties": int(values["n_parties"]),
                 "mean_records": float(values["mean_records"]),
+                "estimated_entities": round(
+                    int(values["n_parties"]) * (1.0 + cfg.person_share * cfg.twin_rate)
+                ),
             }
             for name, values in PROFILES.items()
         ],
@@ -486,7 +501,7 @@ def catalog() -> dict[str, Any]:
         ],
         "defaults": controls_from_config(cfg),
         "bounds": {
-            "n_parties": {"min": 0, "max": 2_000_000},
+            "n_parties": {"min": 0, "max": MAX_ENTITY_SEEDS},
             "mean_records": {"min": 1.0, "max": 20.0},
             "n_agencies": {"min": 1, "max": 100},
             "rate": {"min": 0.0, "max": 1.0},
@@ -498,8 +513,10 @@ def catalog() -> dict[str, Any]:
 def preview(raw: Mapping[str, Any]) -> dict[str, Any]:
     cfg = config_from_controls(raw)
     noise = noise_for_config(cfg)
-    records = max(cfg.n_parties, round(cfg.n_parties * cfg.mean_records))
-    queries = int(cfg.n_parties * cfg.query_share)
+    entities = round(cfg.n_parties * (1.0 + cfg.person_share * cfg.twin_rate))
+    records = max(entities, round(entities * cfg.mean_records))
+    queries = int(entities * cfg.query_share)
+    policies = round(entities * float(POLICY_PARAMS["mean_policies"]))
     quality = {
         "average": 1.0 - cfg.poor,
         "poor": cfg.poor - cfg.catastrophic,
@@ -558,8 +575,10 @@ def preview(raw: Mapping[str, Any]) -> dict[str, Any]:
         "dataset_impact": dataset_impact,
         "counts": {
             "parties": cfg.n_parties,
+            "entities": entities,
             "records": records,
             "queries": queries,
+            "policies": policies,
             "agencies": cfg.n_agencies,
         },
         "quality": quality,

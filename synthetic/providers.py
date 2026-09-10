@@ -1,4 +1,4 @@
-"""Real-data providers behind small interfaces (DIP).
+"""Real-data providers behind small source interfaces.
 
 - PersonaSource: NVIDIA Nemotron-Personas-Japan (1M rows). Real family/given
   name frequencies, sex, age, prefecture, occupation, etc. Kana/romaji are
@@ -17,6 +17,7 @@ import re
 import ssl
 import urllib.request
 import zipfile
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -47,6 +48,34 @@ class Person:
     marital_status: str
 
 
+class PersonaCatalog:
+    """Compact indexed view over persona columns; materializes only samples."""
+
+    def __init__(self, frame: pd.DataFrame):
+        self._columns = tuple(frame[column].to_numpy(copy=False) for column in frame.columns)
+
+    def __len__(self) -> int:
+        return len(self._columns[0]) if self._columns else 0
+
+    def __getitem__(self, index: int) -> Person:
+        values = [column[index] for column in self._columns]
+        return Person(
+            str(values[0]),
+            str(values[1]),
+            str(values[2]),
+            str(values[3]),
+            int(values[4]),
+            str(values[5]),
+            str(values[6]),
+            str(values[7]),
+            str(values[8]),
+            str(values[9]),
+        )
+
+    def __iter__(self) -> Iterator[Person]:
+        return (self[index] for index in range(len(self)))
+
+
 class PersonaSource:
     """Real Japanese identities sampled from the Nemotron personas corpus.
 
@@ -64,11 +93,13 @@ class PersonaSource:
         # extraction artifact, never a customer identity. (Python re, not the
         # pyarrow regex engine: \u escapes are invalid there.)
         han_start = re.compile(r"^[\u4e00-\u9fff々〆〇]")
-        self.persons: tuple[Person, ...] = tuple(
-            Person(*row)
-            for row in frame.itertuples(index=False, name=None)
-            if han_start.match(str(row[0]))
+        valid: np.ndarray = np.fromiter(
+            (bool(han_start.match(str(value))) for value in frame["name_kanji"].to_numpy()),
+            dtype=bool,
+            count=len(frame),
         )
+        frame = frame.loc[valid].reset_index(drop=True)
+        self.persons = PersonaCatalog(frame)
         self.prefectures: tuple[str, ...] = tuple(np.unique(frame["prefecture"].to_numpy()))
         print(
             f"Persona source: {len(self.persons):,} identities "
@@ -188,7 +219,7 @@ class CompanySource:
 
             ds = load_dataset(sources.edinet_dataset, split=sources.edinet_split)
             return list(dict.fromkeys(row["company"] for row in ds if row.get("company")))
-        except Exception:
+        except (ImportError, KeyError, OSError, RuntimeError, ValueError):
             return []
 
     def sample(self, rng: np.random.Generator) -> Company:
@@ -245,7 +276,7 @@ class AddressSource:
                 import certifi
 
                 context = ssl.create_default_context(cafile=certifi.where())
-            except Exception:
+            except (ImportError, OSError, ValueError):
                 context = None
             with urllib.request.urlopen(request, timeout=120, context=context) as response:
                 zip_path.write_bytes(response.read())

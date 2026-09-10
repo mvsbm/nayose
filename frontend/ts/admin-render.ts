@@ -45,6 +45,7 @@ function range(attrs: string, value: number, max: number, step = 1): string {
 function renderGenerationControls(model: AdminRenderModel, store: Store): string {
   const { catalog, controls: c } = model;
   const t = (key: string) => esc(store.t(key));
+  const entityMax = catalog.bounds.n_parties?.max ?? 0;
   const bundleLabel = (ids: string[]): string => ids.map(id => {
     const event = catalog.events.find(item => item.id === id);
     return event ? localized(store, event, "label") : id;
@@ -58,7 +59,7 @@ function renderGenerationControls(model: AdminRenderModel, store: Store): string
         <label>${t("profile")} <select id="gen-profile">${optionList(store, catalog.profiles, c.profile)}</select><span id="gen-profile-info" class="members"></span></label>
         <label>${t("difficulty")} <select id="gen-diff">${optionList(store, catalog.difficulties, c.difficulty)}</select><span class="members">${esc(localized(store, catalog.difficulties.find(d => d.id === c.difficulty) ?? catalog.difficulties[0]!, "description"))}</span></label>
         <label>${t("seed")} <input id="gen-seed" type="number" min="0" value="${c.seed}"></label>
-        <label>${t("nParties")} <input id="gen-n" type="number" min="0" max="2000000" value="${c.n_parties}"></label>
+        <label>${t("nParties")} <input id="gen-n" type="number" min="0" max="${entityMax}" value="${c.n_parties}"></label>
         <label>${t("meanRecords")} <input id="gen-mean" type="number" min="1" max="20" step=".1" value="${c.mean_records ?? ""}"></label>
         <label>${t("nAgencies")} <input id="gen-agencies" type="number" min="1" max="100" value="${c.n_agencies}"></label>
         <label>${t("personShare")} ${range("id=gen-person-share", Math.round(c.person_share * 100), 100)}<output data-control-output="person_share"></output></label>

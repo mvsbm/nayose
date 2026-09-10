@@ -1,6 +1,7 @@
-// Ports (hexagonal): the frontend depends on these interfaces, never on
-// fetch/SQL/localStorage directly. Swap WASM vs API by providing a different
-// QueryPort at the composition root.
+// Frontend capability interfaces. Views do not access fetch, SQL, or
+// localStorage directly; the composition root supplies the implementation.
+import type { EntityExplorerPage, EntityGraph } from "./entity-explorer-port.js";
+export type { EntityExplorerPage, EntityGraph, EntityGraphEdge, EntityGraphNode } from "./entity-explorer-port.js";
 
 export interface EntityHit {
   kind?: "exact" | "semantic" | "nearest";
@@ -20,6 +21,7 @@ export interface EntityHit {
   email?: string;
   phone?: string;
   postal_code?: string;
+  last_seen?: string;
   record_count?: number;
   score?: number;
   retrieval_sources?: string[];
@@ -106,6 +108,8 @@ export interface SearchFilters {
   min_record_count?: number;
 }
 
+export type EntitySort = "relevance" | "records" | "name" | "last_seen";
+
 export interface SearchResult {
   rows: EntityHit[];
   exact?: EntityHit[];
@@ -186,6 +190,10 @@ export interface DatasetGeneration {
   current: boolean;
   created_at: string;
   fingerprint: string;
+  label_en?: string;
+  label_ja?: string;
+  description_en?: string;
+  description_ja?: string;
   snapshot_date: string;
   query_date: string;
   counts: Record<string, number>;
@@ -198,7 +206,7 @@ export interface DatasetSummary {
   fingerprint: string;
   config: Record<string, unknown>;
   counts: Record<string, number>;
-  tables: Array<{ id: string; label: string; rows: number; columns: string[] }>;
+  tables: Array<{ id: string; label: string; description?: string; rows: number; columns: string[]; cursor_column?: string }>;
 }
 
 export interface DatasetRows {
@@ -206,6 +214,11 @@ export interface DatasetRows {
   columns: string[];
   rows: Array<Record<string, unknown>>;
   total: number;
+  total_exact?: boolean;
+  has_more?: boolean;
+  next_cursor?: string | null;
+  cursor_column?: string;
+  filters?: Record<string, string>;
   offset: number;
   limit: number;
 }
@@ -252,7 +265,7 @@ export interface GenerationCatalogItem {
 }
 
 export interface GenerationCatalog {
-  profiles: Array<GenerationCatalogItem & { n_parties: number; mean_records: number }>;
+  profiles: Array<GenerationCatalogItem & { n_parties: number; mean_records: number; estimated_entities?: number }>;
   difficulties: Array<GenerationCatalogItem & { poor: number; catastrophic: number; quality_share: Record<string, number> }>;
   events: Array<GenerationCatalogItem & { group: string; fields: string[]; example_ja: string; example_en: string; default_rate: number }>;
   channels: Array<{ id: string; availability: Record<string, number>; bundle: string[] }>;
@@ -298,7 +311,7 @@ export interface GenerationPreview {
   controls: GenerationControls;
   time_window: { snapshot_date: string; query_date: string; gap_days: number };
   dataset_impact: GenerationDatasetImpact;
-  counts: { parties: number; records: number; queries: number; agencies: number };
+  counts: { parties: number; entities?: number; records: number; policies?: number; queries: number; agencies: number };
   quality: Record<string, number>;
   weighted_band_scale: number;
   events: Array<GenerationCatalogItem & { group: string; fields: string[]; example_ja: string; example_en: string; rate: number; effective_rate: number; estimated_records: number }>;
@@ -336,47 +349,92 @@ export interface ManualList {
   rows: Array<Record<string, unknown>>;
 }
 
-export interface QueryPort {
-  run(id: string): void;
-  runs(): Promise<RunInfo[]>;
-  adminCapability(): Promise<AdminCapability>;
-  adminState(): Promise<AdminState>;
-  adminGenerationConfig(): Promise<GenerationCatalog>;
-  adminGenerationPreview(controls: GenerationControls): Promise<GenerationPreview>;
-  adminGenerations(): Promise<DatasetGeneration[]>;
-  adminDatasetSummary(generationId: string): Promise<DatasetSummary>;
-  adminDatasetRows(generationId: string, table: string, query: string, offset: number, limit: number): Promise<DatasetRows>;
-  adminStart(action: string, params: object): Promise<MatchJob>;
-  adminJob(id: string): Promise<MatchJob>;
-  adminAction(action: string, params: Record<string, string | number>): Promise<Record<string, unknown>>;
+export interface SearchPort {
+  entities(q: string, limit?: number, filters?: SearchFilters): Promise<SearchResult>;
+  normalizePreview(text: string): Promise<Record<string, string>>;
+}
+
+export interface EntityDetailPort {
+  entity(id: string, offset?: number, limit?: number): Promise<EntityDetail>;
+}
+
+export interface ReviewPort {
+  review(minP: number, offset: number, limit: number, nayose?: string): Promise<ReviewPage>;
+}
+
+export interface MetricsPort {
+  metrics(): Promise<MetricsViewData>;
+}
+
+export interface ConfusionPort {
+  confusion(): Promise<ConfusionData>;
+}
+
+export interface EntityExplorerPort {
+  entityExplorer(q: string, offset: number, limit: number, sort: EntitySort, filters?: SearchFilters): Promise<EntityExplorerPage>;
+  entityGraph(id: string, includePotential?: boolean): Promise<EntityGraph>;
+}
+
+export interface ComparePort {
+  compare(l: string, r: string): Promise<Record<string, unknown>[]>;
+}
+
+export interface CompareRunsPort {
+  metricsFor(run: string): Promise<MetricsViewData>;
+}
+
+export interface MatchingPort {
+  matchSample(): Promise<{ record: Record<string, string> }>;
+  startRecommendation(record: Record<string, string>, thresholds?: { auto: number; review: number }): Promise<MatchJob>;
+  recommendation(id: string): Promise<MatchJob>;
+}
+
+export interface DataEntryPort extends MatchingPort {
   manualList(): Promise<ManualList>;
   manualRegister(record: Record<string, string>): Promise<{ ok: boolean; record_id: string }>;
   manualImport(rows: Array<Record<string, string>>, dryRun: boolean): Promise<Record<string, unknown>>;
   manualUndo(recordIds: string[]): Promise<{ ok: boolean; removed: number }>;
-  entities(q: string, limit?: number, filters?: SearchFilters): Promise<SearchResult>;
-  normalizePreview(text: string): Promise<Record<string, string>>;
-  entity(id: string, offset?: number, limit?: number): Promise<EntityDetail>;
+}
+
+export interface DatasetPort {
+  adminGenerations(): Promise<DatasetGeneration[]>;
+  adminDatasetSummary(generationId: string): Promise<DatasetSummary>;
+  adminDatasetRows(generationId: string, table: string, query: string, offset: number, limit: number, filters?: Record<string, string>, includeTotal?: boolean, after?: string, signal?: AbortSignal): Promise<DatasetRows>;
+}
+
+export interface AdminPort extends DatasetPort {
+  adminState(): Promise<AdminState>;
+  adminGenerationConfig(): Promise<GenerationCatalog>;
+  adminGenerationPreview(controls: GenerationControls): Promise<GenerationPreview>;
+  adminStart(action: string, params: object): Promise<MatchJob>;
+  adminJob(id: string): Promise<MatchJob>;
+  adminAction(action: string, params: Record<string, string | number>): Promise<Record<string, unknown>>;
+}
+
+export interface RunPort {
+  run(id: string): void;
+  runs(): Promise<RunInfo[]>;
+}
+
+export interface SystemPort {
+  adminCapability(): Promise<AdminCapability>;
   health(): Promise<HealthInfo>;
-  matchSample(): Promise<{ record: Record<string, string> }>;
-  startRecommendation(record: Record<string, string>, thresholds?: { auto: number; review: number }): Promise<MatchJob>;
-  recommendation(id: string): Promise<MatchJob>;
-  review(minP: number, offset: number, limit: number, nayose?: string): Promise<ReviewPage>;
-  metrics(): Promise<MetricsViewData>;
-  metricsFor(run: string): Promise<MetricsViewData>;
-  confusion(): Promise<ConfusionData>;
-  compare(l: string, r: string): Promise<Record<string, unknown>[]>;
-  recommend(record: Record<string, string>): Promise<RecommendResult>;
+}
+
+export interface DecisionPort {
   loadDecisions(): Promise<Array<{ left: string; right: string }>>;
   saveDecisions(items: Array<{ left: string; right: string; ts: string; reviewer?: string }>): Promise<void>;
 }
 
+export interface RecommendationPort {
+  recommend(record: Record<string, string>): Promise<RecommendResult>;
+}
+
+export interface WorkbenchPort extends SearchPort, EntityDetailPort, ReviewPort, MetricsPort, ConfusionPort,
+  EntityExplorerPort, ComparePort, CompareRunsPort, MatchingPort, DataEntryPort, AdminPort,
+  RunPort, SystemPort, DecisionPort, RecommendationPort {}
+
 export interface Storage {
   read(key: string): string | null;
   write(key: string, value: string): void;
-}
-
-export interface StoreEvents {
-  onRun(fn: () => void): void;
-  onTheme(fn: () => void): void;
-  onChecked(fn: () => void): void;
 }

@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
 
 env:
-  UV_SYNC_EXTRA: matcher,dev
+  UV_SYNC_EXTRA: matcher,performance,dev
 
 jobs:
   ## The one authoritative quality gate: scripts/audit_repo.py
@@ -22,7 +22,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v4
       - name: Install
-        run: uv sync --frozen --extra matcher --extra train --extra serve --extra dev
+        run: uv sync --frozen --extra matcher --extra performance --extra train --extra serve --extra dev
       - name: Format check
         run: uv run ruff format --check .
       - name: Frontend deps
@@ -41,7 +41,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v4
       - name: Install
-        run: uv sync --frozen --extra matcher --extra train --extra serve
+        run: uv sync --frozen --extra matcher --extra performance --extra train --extra serve
       - name: Generate smoke data
         run: uv run python scripts/generate_data.py --profile smoke --seed 7 --data-dir /tmp/smoke
       - name: Train headless + verify bundle

@@ -1,4 +1,4 @@
-// Functional tests: boot the app with a MOCK QueryPort (no network, no SQL) —
+// Functional tests: boot the app with a mock WorkbenchPort (no network, no SQL) —
 // views are exercised through their public behavior in a real DOM (jsdom).
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
@@ -51,6 +51,21 @@ const mockPort = {
       return Promise.resolve({ rows: [], exact: [], semantic_results: [], nearest: [{ ...ENTITIES[0], kind: "nearest", score: 0.76, match_method: "fuzzy_nearest", match_field: "name_kanji", signals: ["name_kanji"] }], semantic: false, mode: "exact_plus_fuzzy", suggestion: { term: "佐藤 太郎", score: 0.8, method: "fuzzy_nearest", field: "name_kanji" } });
     }
     return Promise.resolve({ rows: filtered.slice(0, limit ?? filtered.length), semantic: true, suggestion: null });
+  },
+  entityExplorer(q, offset, limit, sort, filters) {
+    let rows = q ? ENTITIES.filter((e) => JSON.stringify(e).includes(q)) : ENTITIES;
+    if (filters?.party_type) rows = rows.filter((e) => e.party_type === filters.party_type);
+    if (filters?.min_record_count) rows = rows.filter((e) => e.record_count >= filters.min_record_count);
+    if (sort === "name") rows = [...rows].sort((a, b) => a.name_kanji.localeCompare(b.name_kanji));
+    if (sort === "records") rows = [...rows].sort((a, b) => b.record_count - a.record_count);
+    return Promise.resolve({ rows: rows.slice(offset, offset + limit), total: rows.length, offset, limit, query: q, sort, filters: filters ?? {}, query_plan: {}, search_mode: "exact", total_is_exact: true, search_trace: {} });
+  },
+  entityGraph(id, includePotential) {
+    const entity = ENTITIES.find((e) => e.nayose_id === id);
+    const entityNode = { id: `entity:${id}`, kind: "entity", label: entity?.name_kanji ?? id, metadata: { nayose_id: id } };
+    const recordNode = { id: "record:R0", kind: "record", label: "R0", metadata: {} };
+    const edges = [{ source: entityNode.id, target: recordNode.id, kind: "observed", relation: "member_record", evidence: { source: "reference_records", record_id: "R0" } }];
+    return Promise.resolve({ entity_id: id, nodes: [entityNode, recordNode], edges, truncated: false, potential_matches_available: Boolean(includePotential) });
   },
   normalizePreview(text) {
     const t = text.replace(/\s/g, "");
@@ -203,6 +218,77 @@ test("default route = search (task-first), run selector populated", async () => 
   assert.match(document.querySelector("#run-fp").textContent, /abc/);
 });
 
+test("navigation shell separates activity workspaces and persists the sidebar state", async () => {
+  await boot();
+  const shell = document.querySelector(".shell");
+  const toggle = document.querySelector("#nav-toggle");
+  const nav = document.querySelector("#primary-navigation");
+  const resizer = document.querySelector("#nav-resizer");
+  assert.equal(document.querySelector(".app-bar-title #nav-toggle"), null, "desktop collapse control remains in the top-left title");
+  assert.ok(document.querySelector(".app-bar-actions #nav-toggle"), "mobile navigation control is missing");
+  assert.equal(document.querySelector("#status-strip").hidden, false, "status bar starts present");
+  assert.equal(toggle.getAttribute("aria-expanded"), "true");
+  assert.equal(toggle.dataset.navCollapsed, "false");
+  assert.equal(resizer.hidden, false);
+  assert.equal(resizer.getAttribute("aria-valuenow"), "256");
+  resizer.dispatchEvent(new window.KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+  assert.equal(resizer.getAttribute("aria-valuenow"), "272");
+  assert.equal(localStorage.getItem("nayose.navigationWidth"), "272");
+  resizer.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Home", bubbles: true }));
+  assert.equal(resizer.getAttribute("aria-valuenow"), "220");
+  resizer.dispatchEvent(new window.KeyboardEvent("keydown", { key: "End", bubbles: true }));
+  assert.equal(resizer.getAttribute("aria-valuenow"), "420");
+  assert.equal(nav.hasAttribute("inert"), false);
+  assert.equal(document.querySelector('.activity-bar a[aria-current="page"]').dataset.activity, "match");
+
+  toggle.click();
+  assert.equal(shell.dataset.navCollapsed, "true");
+  assert.equal(toggle.getAttribute("aria-expanded"), "false");
+  assert.equal(toggle.dataset.navCollapsed, "true");
+  assert.equal(nav.hasAttribute("inert"), true);
+  assert.equal(localStorage.getItem("nayose.navigationCollapsed"), "true");
+
+  document.querySelector('.activity-bar a[data-activity="review"]').click();
+  await wait(30);
+  assert.equal(window.location.hash, "#/review");
+  assert.equal(shell.dataset.navCollapsed, "false", "activity selection reopens the primary sidebar");
+  assert.equal(document.querySelector('.activity-bar a[aria-current="page"]').dataset.activity, "review");
+
+  document.dispatchEvent(new window.KeyboardEvent("keydown", { key: "b", ctrlKey: true, bubbles: true }));
+  assert.equal(shell.dataset.navCollapsed, "true", "Ctrl+B did not collapse the primary sidebar");
+
+  const reviewActivity = document.querySelector('.activity-bar a[data-activity="review"]');
+  reviewActivity.click();
+  assert.equal(shell.dataset.navCollapsed, "false", "active workspace icon did not expand the sidebar");
+  reviewActivity.click();
+  assert.equal(shell.dataset.navCollapsed, "true", "active workspace icon did not collapse the sidebar");
+});
+
+test("navigation drawer is keyboard-safe on mobile and restores toggle focus", async () => {
+  window.matchMedia = (query) => ({
+    matches: query === "(max-width: 820px)",
+    addEventListener() {},
+    removeEventListener() {},
+  });
+  await boot();
+  const toggle = document.querySelector("#nav-toggle");
+  const nav = document.querySelector("#primary-navigation");
+  const scrim = document.querySelector("#nav-scrim");
+  const resizer = document.querySelector("#nav-resizer");
+  assert.equal(toggle.getAttribute("aria-expanded"), "false");
+  assert.equal(resizer.hidden, true);
+  assert.equal(nav.hasAttribute("inert"), true);
+  assert.equal(scrim.hidden, true);
+
+  toggle.click();
+  assert.equal(toggle.getAttribute("aria-expanded"), "true");
+  assert.equal(scrim.hidden, false);
+  document.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  assert.equal(toggle.getAttribute("aria-expanded"), "false");
+  assert.equal(document.activeElement, toggle);
+  assert.equal(nav.hasAttribute("inert"), true);
+});
+
 test("appearance: auto resolves system theme and density persists through the Store", async () => {
   localStorage.removeItem("nayose.theme");
   localStorage.removeItem("nayose.density");
@@ -217,6 +303,26 @@ test("appearance: auto resolves system theme and density persists through the St
   assert.equal(store.density, "compact");
   assert.equal(localStorage.getItem("nayose.density"), "compact");
   assert.equal(document.documentElement.dataset.density, "compact");
+});
+
+test("content panel sashes resize and persist while chrome stays independent", async () => {
+  await boot();
+  const searchSash = document.querySelector('[data-panel-resizer="search-workspace"]');
+  assert.ok(searchSash, "search content sash is missing");
+  assert.equal(searchSash.getAttribute("aria-valuenow"), "440");
+  searchSash.dispatchEvent(new window.KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+  assert.equal(searchSash.getAttribute("aria-valuenow"), "456");
+  assert.equal(JSON.parse(localStorage.getItem("nayose.layout.search-workspace")).width, 456);
+  assert.equal(document.querySelector(".app-bar").querySelector("[data-panel-resizer]"), null, "top bar must not be resizable");
+  assert.equal(document.querySelector("#status-strip").querySelector("[data-panel-resizer]"), null, "status bar must not be resizable");
+
+  window.location.hash = "#/entities";
+  await wait(100);
+  const explorerSash = document.querySelector('[data-panel-resizer="entity-explorer"]');
+  assert.ok(explorerSash, "entity explorer content sash is missing");
+  explorerSash.dispatchEvent(new window.KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+  assert.equal(explorerSash.getAttribute("aria-valuenow"), "536");
+  assert.equal(JSON.parse(localStorage.getItem("nayose.layout.entity-explorer")).width, 536);
 });
 
 test("search: typing renders live cards and selection loads detail in place", async () => {
@@ -287,9 +393,17 @@ test("palette: dialog semantics, focus trap/restore, and action vocabulary", asy
   assert.equal(document.documentElement.dataset.density, "compact");
   assert.equal(palette.hidden, true);
   assert.equal(document.activeElement.id, "cmd");
+  cmd.click();
+  input.value = "ナビゲーション";
+  input.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+  await wait(40);
+  const navigationAction = [...document.querySelectorAll("#palette-results li")].find(li => li.textContent.includes("ナビゲーション"));
+  assert.ok(navigationAction, "navigation action was not discoverable in the palette");
+  navigationAction.click();
+  assert.equal(document.querySelector(".shell").dataset.navCollapsed, "true");
 });
 
-test("review: rows render, 既読 toggles store + localStorage, 取り消し undoes (Command)", async () => {
+test("review: rows render, 既読 toggles store + localStorage, 取り消し undoes", async () => {
   await boot();
   window.location.hash = "#/review";
   await wait(100);
@@ -306,6 +420,7 @@ test("review: rows render, 既読 toggles store + localStorage, 取り消し und
   const stored = JSON.parse(localStorage.getItem("nayose.checked") ?? "[]");
   assert.equal(stored.length, 1);
   document.querySelector("#undo").click();
+  assert.match(rows[0].querySelector("button.check").textContent, /既読|Reviewed/);
   await wait(20);
   const after = JSON.parse(localStorage.getItem("nayose.checked") ?? "[]");
   assert.equal(after.length, 0, "undo restored");
@@ -404,6 +519,27 @@ test("language toggle persists, translates navigation and keeps customer input",
   assert.match(document.querySelector("#view").textContent, /Search existing customers/);
 });
 
+test("entity explorer uses URL state, compact footprint, and progressive evidence", async () => {
+  await boot();
+  window.location.hash = "#/entities";
+  await wait(120);
+  assert.ok(document.querySelector("#entity-explorer-query"));
+  assert.ok(document.querySelector("#entity-explorer-footprint"));
+  assert.ok(document.querySelector("#entity-explorer-observed"));
+  assert.equal(document.querySelector("#entity-explorer-observed").open, false);
+  assert.equal(document.querySelector(".entity-explorer-map"), null);
+  assert.match(document.querySelector("[data-footprint-kind='record']").textContent, /1/);
+  assert.match(document.querySelector("#view").textContent, /佐藤 太郎/);
+  document.querySelector("#entity-explorer-observed summary").click();
+  assert.match(document.querySelector("#entity-explorer-observed").textContent, /Source record|元レコード/);
+  assert.doesNotMatch(document.querySelector("#view").textContent, /reference_records/);
+  document.querySelector("#entity-explorer-query").value = "鈴木";
+  document.querySelector("#entity-explorer-form").dispatchEvent(new dom.window.Event("submit", { bubbles: true, cancelable: true }));
+  await wait(120);
+  assert.match(window.location.hash, /q=%E9%88%B4%E6%9C%A8/);
+  assert.match(document.querySelector("#view").textContent, /鈴木 花子/);
+});
+
 test("entity members paginate, expose provenance and offer record comparison", async () => {
   await boot();
   window.location.hash = "#/entity/N000000001";
@@ -411,6 +547,10 @@ test("entity members paginate, expose provenance and offer record comparison", a
   assert.equal(document.querySelectorAll("[data-member]").length, 25);
   assert.match(document.querySelector("#member-count").textContent, /30/);
   assert.match(document.querySelector("#view").textContent, /paper_ocr/);
+  document.querySelectorAll("[data-member]")[0].click();
+  document.querySelectorAll("[data-member]")[1].click();
+  assert.equal(document.querySelector("#member-compare").disabled, false, "member row selection did not enable compare");
+  document.querySelector("#member-clear").click();
   document.querySelector("#member-next").click();
   await wait(100);
   assert.equal(document.querySelectorAll("[data-member]").length, 5);
@@ -440,7 +580,7 @@ test("language preference restores on boot and translates every route", async ()
   localStorage.setItem("nayose.locale", "en");
   await boot();
   assert.equal(document.documentElement.lang, "en");
-  for (const [route, expected] of [["review", /Record pairs awaiting review/], ["entities", /Entities/], ["metrics", /Metrics/], ["confusion", /Pair classifier/], ["compare-runs", /Compare key metrics/]]) {
+  for (const [route, expected] of [["review", /Record pairs awaiting review/], ["entities", /Entity footprint and provenance/], ["metrics", /Metrics/], ["confusion", /Pair classifier/], ["compare-runs", /Compare key metrics/]]) {
     window.location.hash = `#/${route}`;
     await wait(100);
     assert.match(document.querySelector("#view").textContent, expected);
@@ -580,6 +720,54 @@ test("admin workspace: open nav, presets, settings apply + audit rows render", a
   assert.equal(document.querySelector("#dz-prune").disabled, true, "destructive buttons locked until confirmed");
 });
 
+test("dataset viewer selects datasets, filters columns, and locks columns", async () => {
+  const originalGenerations = mockPort.adminGenerations;
+  const originalSummary = mockPort.adminDatasetSummary;
+  const originalRows = mockPort.adminDatasetRows;
+  const calls = [];
+  mockPort.adminGenerations = () => Promise.resolve([
+    { id: "gen_fake", label_en: "Demo · 2 entities · 3 observations", label_ja: "デモ · 2 エンティティ · 3 観測", description_en: "Demo dataset", description_ja: "デモデータ", current: true, created_at: "2026-01-01", fingerprint: "abc123", snapshot_date: "2025-12-31", query_date: "2026-08-25", counts: { parties: 2, observations: 3, queries: 1 } },
+    { id: "gen_two", label_en: "Archive · 4 entities · 8 observations", label_ja: "保存 · 4 エンティティ · 8 観測", description_en: "Archived dataset", description_ja: "保存データ", current: false, created_at: "2025-01-01", fingerprint: "def456", snapshot_date: "2024-12-31", query_date: "2025-08-25", counts: { parties: 4, observations: 8, queries: 2 } },
+  ]);
+  mockPort.adminDatasetSummary = (id) => Promise.resolve({ id, current: id === "gen_fake", label_en: id, label_ja: id, description_en: "dataset", description_ja: "データ", created_at: "2026-01-01", fingerprint: "abc123", config: {}, counts: { parties: 2, observations: 3, queries: 1 }, tables: [{ id: "reference", label: "Customer observations", description: "observed", rows: 3, columns: ["record_id", "name_kanji", "phone"] }, { id: "queries", label: "Matching cases", rows: 1, columns: ["query_id", "name_kanji"] }, { id: "agencies", label: "Source offices", rows: 1, columns: ["agency_id"] }] });
+  mockPort.adminDatasetRows = (id, table, query, offset, limit, filters, includeTotal, after) => {
+    calls.push({ id, table, query, offset, limit, filters, after });
+    const nextPage = Boolean(after);
+    return Promise.resolve({ table, columns: table === "reference" ? ["record_id", "name_kanji", "phone"] : ["query_id", "name_kanji"], rows: [{ record_id: nextPage ? "R1" : "R0", name_kanji: "佐藤 太郎", phone: "090-1" }], total: -1, total_exact: false, has_more: !nextPage, next_cursor: nextPage ? null : "R0", offset, limit });
+  };
+  try {
+    await boot();
+    window.location.hash = "#/admin";
+    await wait(180);
+    assert.equal(document.querySelectorAll("[data-dataset-select]").length, 2);
+    const second = document.querySelector('[data-dataset-select="gen_two"]');
+    second.click();
+    assert.equal(document.querySelectorAll("[data-dataset-tab]").length, 2);
+    document.querySelector('[data-dataset-tab="gen_two"]').click();
+    await wait(80);
+    assert.equal(calls.at(-1).id, "gen_two");
+    document.querySelector("#dataset-next").click();
+    await wait(80);
+    assert.equal(calls.at(-1).after, "R0", "next page did not use the keyset cursor");
+    document.querySelector("#dataset-prev").click();
+    await wait(80);
+    assert.equal(calls.at(-1).after, undefined, "previous page did not restore the cursor history");
+    const lock = document.querySelector('[data-column-lock="name_kanji"]');
+    lock.click();
+    await wait(20);
+    assert.ok(document.querySelector('[data-column="name_kanji"].dataset-grid-column-locked'));
+    const filter = document.querySelector('[data-column-filter="name_kanji"]');
+    filter.value = "佐藤";
+    document.querySelector("#dataset-filter-apply").click();
+    await wait(80);
+    assert.equal(calls.at(-1).filters.name_kanji, "佐藤");
+  } finally {
+    mockPort.adminGenerations = originalGenerations;
+    mockPort.adminDatasetSummary = originalSummary;
+    mockPort.adminDatasetRows = originalRows;
+  }
+});
+
 test("admin generator: all sabotage controls are visible, preview is tunable, and generate uses the previewed controls", async () => {
   await boot();
   window.location.hash = "#/admin";
@@ -683,13 +871,13 @@ test("F knobs: entity list size+sort, metrics unit toggle", async () => {
   await boot();
   window.location.hash = "#/entities";
   await wait(120);
-  assert.ok(document.querySelector("#ent-size"), "page-size knob present");
-  assert.ok(document.querySelector("#ent-sort"), "sort knob present");
-  const size = document.querySelector("#ent-size");
+  assert.ok(document.querySelector("#entity-explorer-size"), "page-size knob present");
+  assert.ok(document.querySelector("#entity-explorer-sort"), "sort knob present");
+  const size = document.querySelector("#entity-explorer-size");
   size.value = "100";
   size.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
   await wait(120);
-  const sort = document.querySelector("#ent-sort");
+  const sort = document.querySelector("#entity-explorer-sort");
   sort.value = "name";
   sort.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
   await wait(120);
@@ -703,7 +891,7 @@ test("F knobs: entity list size+sort, metrics unit toggle", async () => {
   assert.match(document.querySelector("#view").textContent, /0\.9900/);
 });
 
-test("ApiAdapter is the sole transport and attaches the bearer token (Facade/auth)", async () => {
+test("ApiAdapter is the sole transport and attaches the bearer token", async () => {
   const { ApiAdapter } = await import(join(ROOT, "js/infra.js") + "?a=" + Date.now());
   const realFetch = globalThis.fetch;
   const calls = [];
@@ -732,6 +920,35 @@ test("ApiAdapter rejects a legacy generation preview contract clearly", async ()
   globalThis.fetch = async () => ({ ok: true, json: async () => ({ counts: {} }) });
   try {
     await assert.rejects(() => new ApiAdapter().adminGenerationPreview(GENERATION_CATALOG.defaults), /preview_schema_mismatch/);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("ApiAdapter rejects malformed Explorer page and graph payloads", async () => {
+  const { ApiAdapter } = await import(join(ROOT, "js/infra.js") + "?explorer-schema=" + Date.now());
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => ({ ok: true, json: async () => String(url).includes("/graph") ? { entity_id: "N1", nodes: [], edges: [] } : { rows: [], total: 0, offset: 0, limit: 25, query: "", sort: "records", filters: {}, query_plan: {}, search_mode: "exact", total_is_exact: true, search_trace: {} } });
+  try {
+    await assert.rejects(() => new ApiAdapter().entityGraph("N1"), /entity_graph_schema_mismatch/);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+
+  globalThis.fetch = async () => ({ ok: true, json: async () => ({ rows: [], total: 0, offset: 0, limit: 25, query: "", sort: "invalid", filters: {}, query_plan: {}, search_mode: "exact", total_is_exact: true, search_trace: {} }) });
+  try {
+    await assert.rejects(() => new ApiAdapter().entityExplorer("", 0, 25, "records"), /entity_explorer_schema_mismatch/);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("ApiAdapter rejects malformed dataset pages", async () => {
+  const { ApiAdapter } = await import(join(ROOT, "js/infra.js") + "?dataset-schema=" + Date.now());
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: true, json: async () => ({ table: "reference", columns: [], rows: [], total: 0, offset: 0, limit: 100, next_cursor: 42 }) });
+  try {
+    await assert.rejects(() => new ApiAdapter().adminDatasetRows("gen", "reference", "", 0, 100), /dataset_rows_schema_mismatch/);
   } finally {
     globalThis.fetch = realFetch;
   }

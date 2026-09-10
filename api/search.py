@@ -1,11 +1,7 @@
-"""Entity search over the trained embeddings — semantic ranking on top of the
-exact LIKE search (api/main.py merges both). SRP: this module knows how to turn
-the engine's per-record embeddings into entity centroids and rank them; it does
-NOT talk to the network, the DB, or the frontend.
+"""Entity search over immutable record and alias retrieval artifacts.
 
-Honest scope: the embeddings come from TF-IDF over retrieval_text (encoded via
-the bundle's SVD transform), so this tolerates typos/substrings/partial names
-but does NOT cross-map kanji<->kana (different character tokens).
+The module maps retrieved records back to entities without averaging conflicting
+observations. It does NOT talk to the network, the DB, or the frontend.
 """
 
 from __future__ import annotations
@@ -14,11 +10,17 @@ from typing import Any
 
 import numpy as np
 
+from api.dense_views import dense_view_queries
+from api.normalize import normalize_record
+from api.retrieval_fusion import DEFAULT_RETRIEVAL_FUSION_POLICY
+
 
 class EntitySearch:
     def __init__(self, matcher: Any):
         self.matcher = matcher
-        self._centroids: np.ndarray | None = None
+        self._record_embeddings: np.ndarray | None = None
+        self._record_entity_ids: np.ndarray | None = None
+        self._dense_views: dict[str, Any] = {}
         self._entity_ids: np.ndarray | None = None
         self._canon_lookup: dict[str, dict[str, Any]] | None = None
         self._sparse_norm: Any = None  # sklearn normalize of entity TF-IDF centroid matrix
@@ -31,8 +33,14 @@ class EntitySearch:
     def _build(self) -> None:
         engine = self.matcher.engine
         embeddings = engine._index.reference_embeddings
-        if embeddings is not None:
-            self._build_dense(engine, embeddings)
+        self._record_embeddings = embeddings
+        self._dense_views = getattr(engine._index, "dense_views", {})
+        record_ids = engine._reference["record_id"].astype(str).to_numpy()
+        self._record_entity_ids = np.array(
+            [engine._record_to_nayose.get(record_id, "") for record_id in record_ids],
+            dtype=object,
+        )
+        self._entity_ids = np.unique(self._record_entity_ids)
         self._build_sparse(engine)
         self._canon_lookup = {}
         twin_counts: dict[str, int] = {}
@@ -57,21 +65,6 @@ class EntitySearch:
             if kana:
                 twin_counts[kana] = twin_counts.get(kana, 0) + 1
         self._twin_counts = twin_counts
-
-    def _build_dense(self, engine: Any, embeddings: np.ndarray) -> None:
-        record_ids = engine._reference["record_id"].astype(str).to_numpy()
-        entity_ids = np.array(
-            [engine._record_to_nayose.get(rid, "") for rid in record_ids], dtype=object
-        )
-        unique, inverse = np.unique(entity_ids, return_inverse=True)
-        sums = np.zeros((len(unique), embeddings.shape[1]), dtype=np.float64)
-        np.add.at(sums, inverse, embeddings.astype(np.float64, copy=False))
-        counts = np.bincount(inverse)
-        centroids = sums / np.maximum(counts[:, None], 1)
-        norms = np.linalg.norm(centroids, axis=1, keepdims=True)
-        norms[norms == 0] = 1.0
-        self._centroids = (centroids / norms).astype(np.float32)
-        self._entity_ids = unique
 
     def _build_sparse(self, engine: Any) -> None:
         """Step 5: entity-level TF-IDF centroids for sparse term similarity.
@@ -109,7 +102,7 @@ class EntitySearch:
         self.prepare()
         if self._canon_lookup is None:
             return None
-        scores = self._fused_scores(text)
+        scores = self._fused_scores(text, self._query_record(text))
         if scores is None:
             return None
         similarity, ids = scores
@@ -133,33 +126,143 @@ class EntitySearch:
             )
         return rows
 
-    def _fused_scores(self, text: str) -> tuple[np.ndarray, np.ndarray] | None:
-        dense = (
-            self._centroids @ self.matcher.retriever.encode(text).reshape(-1)
-            if self._centroids is not None
-            else None
+    def _query_record(self, text: str) -> dict[str, str]:
+        raw = text.strip()
+        digits = "".join(character for character in raw if character.isdigit())
+        address_like = any(
+            token in raw.casefold()
+            for token in (
+                "都",
+                "道",
+                "府",
+                "県",
+                "市",
+                "区",
+                "町",
+                "丁目",
+                "番地",
+                "号",
+                "street",
+                "avenue",
+            )
         )
+        values: dict[str, str] = {"party_type": ""}
+        if "@" in raw:
+            values["email"] = raw
+        elif address_like:
+            values["address"] = raw
+            if len(digits) == 7:
+                values["postal_code"] = raw
+        elif digits and len(digits) == 7:
+            values["postal_code"] = raw
+        elif digits and len(digits) == 8:
+            values["date_birth"] = raw
+        elif digits:
+            values["phone"] = raw
+        else:
+            values.update({"name_kanji": raw, "name_kana": raw, "name_romaji": raw})
+        return normalize_record(values)
+
+    def _fused_scores(
+        self, text: str, query_record: dict[str, str]
+    ) -> tuple[np.ndarray, np.ndarray] | None:
+        dense_by_entity = self._dense_entity_scores(query_record)
         sparse = None
-        if self._sparse_norm is not None and self.matcher.retriever.svd is not None:
-            q_sparse = self.matcher.retriever.index.vectorizer.transform([text])
-            sparse = np.asarray(
+        if self._sparse_norm is not None and hasattr(self.matcher.retriever.index, "vectorizer"):
+            q_sparse = self.matcher.retriever.index.vectorizer.transform(
+                [query_record["retrieval_text"]]
+            )
+            sparse_values = np.asarray(
                 self._sparse_norm @ q_sparse.toarray().reshape(-1), dtype=np.float64
             )
-        if dense is None and sparse is None:
+            sparse = (
+                dict(zip(self._sparse_entity_ids, sparse_values, strict=True))
+                if self._sparse_entity_ids is not None
+                else {}
+            )
+        ids = self._entity_ids if dense_by_entity is not None else self._sparse_entity_ids
+        if ids is None or (dense_by_entity is None and sparse is None):
             return None
+        dense = (
+            np.array(
+                [dense_by_entity.get(str(entity_id), 0.0) for entity_id in ids],
+                dtype=np.float64,
+            )
+            if dense_by_entity is not None
+            else None
+        )
+        sparse_array = (
+            np.array([sparse.get(entity_id, 0.0) for entity_id in ids], dtype=np.float64)
+            if sparse is not None
+            else None
+        )
         if dense is None:
-            ids = self._sparse_entity_ids
-            assert sparse is not None and ids is not None
-            return sparse, ids
-        if sparse is None:
-            ids = self._entity_ids
-            assert ids is not None
+            assert sparse_array is not None
+            return sparse_array, ids
+        if sparse_array is None:
             return dense, ids
-        # fuse: dense drives ranking, sparse term overlap breaks near-ties
-        ids = self._entity_ids
-        assert ids is not None
-        fused = dense + 0.35 * np.clip(sparse, 0, 1)
-        return fused, ids
+        return dense + 0.35 * np.clip(sparse_array, 0, 1), ids
+
+    def _dense_entity_scores(self, query_record: dict[str, str]) -> dict[str, float] | None:
+        if self._record_entity_ids is None:
+            return None
+        requests: list[tuple[str, str, Any | None]] = [
+            ("record", query_record["retrieval_text"], None)
+        ]
+        address_like = bool(query_record.get("n_address"))
+        for view, artifact in self._dense_views.items():
+            if view == "address" and not address_like:
+                continue
+            requests.extend(
+                (view, text, artifact) for text in dense_view_queries(query_record, view)
+            )
+        vectors = self._encode_many([text for _, text, _ in requests])
+        scores: dict[str, float] = {}
+        dense_nn = getattr(self.matcher.engine._index, "dense_nn", None)
+        if dense_nn is not None and hasattr(dense_nn, "search"):
+            matches = dense_nn.search(
+                vectors[0].reshape(1, -1), min(256, len(self._record_entity_ids))
+            )
+            indices = np.asarray(matches.keys, dtype=np.int32).reshape(-1)
+            values = 1.0 - np.asarray(matches.distances, dtype=np.float32).reshape(-1)
+            for index, value in zip(indices, values, strict=True):
+                entity_id = str(self._record_entity_ids[int(index)])
+                scores[entity_id] = max(float(value), scores.get(entity_id, 0.0))
+        elif self._record_embeddings is not None:
+            values = self._record_embeddings @ vectors[0].reshape(-1)
+            for record_index in np.argsort(-values):
+                entity_id = str(self._record_entity_ids[int(record_index)])
+                scores[entity_id] = max(
+                    float(values[int(record_index)]), scores.get(entity_id, 0.0)
+                )
+        else:
+            return None
+
+        for vector, (view, _, artifact) in zip(vectors[1:], requests[1:], strict=True):
+            assert artifact is not None
+            matches = artifact.index.search(
+                vector.reshape(1, -1), min(256, len(artifact.embeddings))
+            )
+            indices = np.asarray(matches.keys, dtype=np.int32).reshape(-1)
+            values = 1.0 - np.asarray(matches.distances, dtype=np.float32).reshape(-1)
+            weight = DEFAULT_RETRIEVAL_FUSION_POLICY.view_weight(view, query_record)
+            for index, value in zip(indices, values, strict=True):
+                record_index = (
+                    int(artifact.row_indices[int(index)])
+                    if artifact.row_indices is not None
+                    else int(index)
+                )
+                entity_id = str(self._record_entity_ids[record_index])
+                scores[entity_id] = max(float(value) * weight, scores.get(entity_id, 0.0))
+        return scores
+
+    def _encode_many(self, texts: list[str]) -> np.ndarray:
+        encoder = getattr(self.matcher.retriever, "encode_many", None)
+        if callable(encoder):
+            return np.asarray(encoder(texts), dtype=np.float32)
+        return np.vstack([self.matcher.retriever.encode(text) for text in texts]).astype(
+            np.float32, copy=False
+        )
 
 
 def _num(value: Any) -> float:

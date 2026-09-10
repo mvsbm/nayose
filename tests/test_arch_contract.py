@@ -1,26 +1,26 @@
-"""Architecture contract (design-pattern enforcement, Rust-style: drift fails
-the tests, never fails in a browser). Pure file-parse — no toolchain needed.
+"""Static contracts for frontend boundaries and CSS behavior.
 
-Guards the patterns this repo depends on:
-  DIP  — views may import only the port/core/schema layers, never infra/fetch.
-  ISP  — every QueryPort method must be implemented by ApiAdapter AND MockPort
-         (an interface method without a mock is a silently-broken test).
-  SRP  — CSS layout/stacking (position/z-index/transform/filter) must live on
-         component classes, not bare element selectors; table cells must never
-         be sticky (breaks when `table{overflow:hidden}` makes the table a
-         scroll container — the historical overlap bug).
-  DRY  — classes used in view templates must exist in styles.css (no orphan
-         styles, no template/style drift).
+The checks fail before runtime when views bypass the transport seam, adapter
+and mock operations drift apart, layout leaks onto bare elements, or template
+classes are missing from the stylesheet.
 """
 
 import re
 from pathlib import Path
 
+from scripts.audit_structure import violations
+
 REPO = Path(__file__).resolve().parents[1]
 CSS = REPO / "frontend" / "styles.css"
 FEATURES = [
     REPO / "frontend" / "ts" / name
-    for name in ("features.ts", "entity-view.ts", "match-view.ts", "evidence-view.ts")
+    for name in (
+        "features.ts",
+        "entity-view.ts",
+        "entity-explorer.ts",
+        "match-view.ts",
+        "evidence-view.ts",
+    )
 ]
 VIEWS = [*FEATURES, REPO / "frontend" / "ts" / "app.ts"]
 INDEX = REPO / "frontend" / "index.html"
@@ -77,6 +77,10 @@ def _selectors(head: str) -> list[str]:
     return [s.strip() for s in head.split(",")]
 
 
+def test_source_structure_budgets():
+    assert not violations()
+
+
 def test_bare_element_selectors_carry_no_layout():
     css = CSS.read_text(encoding="utf-8")
     violations: list[str] = []
@@ -125,7 +129,7 @@ def _used_classes() -> set[str]:
 
 
 def test_class_dictionary_sync():
-    """SRP guard: every class referenced by views must exist in styles.css."""
+    """Every class referenced by views must exist in styles.css."""
     defined = _css_classes(CSS.read_text(encoding="utf-8"))
     used = _used_classes()
     missing = sorted(used - defined)
@@ -170,23 +174,51 @@ def test_component_registry_covers_all_css_classes():
 
 
 def _method_names(src: str, block_open: str, block_close: str = r"\n\}") -> set[str]:
-    m = re.search(re.escape(block_open) + r"(.*?)" + block_close, src, re.S)
+    if block_open.startswith("interface "):
+        name = block_open.split()[1]
+        opening = rf"interface {re.escape(name)}(?:\s+extends[^{{]+)?\s*{{"
+    else:
+        opening = re.escape(block_open)
+    m = re.search(opening + r"(.*?)" + block_close, src, re.S)
     assert m, f"block {block_open!r} not found"
     return set(re.findall(r"^\s{2}(?:async\s+)?(\w+)\(", m.group(1), re.M))
 
 
-def test_queryport_complete_across_adapter_and_mock():
-    """ISP: an interface method missing from ApiAdapter or MockPort is drift."""
-    port = _method_names(PORT_TS.read_text(encoding="utf-8"), "interface QueryPort {", "\n}")
-    adapter_head = "class ApiAdapter implements QueryPort {"
+def test_ports_complete_across_adapter_and_mock():
+    """Every focused port operation must exist on both adapter and mock."""
+    port_src = PORT_TS.read_text(encoding="utf-8")
+    interfaces = (
+        "SearchPort",
+        "EntityDetailPort",
+        "ReviewPort",
+        "MetricsPort",
+        "ConfusionPort",
+        "EntityExplorerPort",
+        "ComparePort",
+        "CompareRunsPort",
+        "MatchingPort",
+        "DataEntryPort",
+        "DatasetPort",
+        "AdminPort",
+        "RunPort",
+        "SystemPort",
+        "DecisionPort",
+        "RecommendationPort",
+    )
+    port = set().union(
+        *(_method_names(port_src, f"interface {name} {{", "\n}") for name in interfaces)
+    )
+    adapter_head = "class ApiAdapter implements WorkbenchPort {"
     adapter = _method_names(INFRA_TS.read_text(encoding="utf-8"), adapter_head, "\n}")
     mock = _method_names(VIEW_TEST.read_text(encoding="utf-8"), "const mockPort = {", r"\n\};")
-    assert port <= adapter, f"QueryPort methods missing from ApiAdapter: {sorted(port - adapter)}"
-    assert port <= mock, f"QueryPort methods missing from MockPort: {sorted(port - mock)}"
+    assert port <= adapter, (
+        f"WorkbenchPort methods missing from ApiAdapter: {sorted(port - adapter)}"
+    )
+    assert port <= mock, f"WorkbenchPort methods missing from MockPort: {sorted(port - mock)}"
 
 
 def test_views_depend_only_on_ports():
-    """DIP: views reach the world through QueryPort/Store only."""
+    """Views reach the world through ports and Store only."""
     allowed = {
         "./port.js",
         "./store.js",
@@ -195,23 +227,27 @@ def test_views_depend_only_on_ports():
         "./shared.js",
         "./match-view.js",
         "./entity-view.js",
+        "./entity-explorer.js",
         "./evidence-view.js",
         "./search-workspace.js",
+        "./lifecycle.js",
+        "./panel-layout.js",
     }
     for path in FEATURES:
         src = path.read_text(encoding="utf-8")
         imports = re.findall(r'from "(\./[^"]+)"', src)
         forbidden = [i for i in imports if i not in allowed]
-        assert not forbidden, f"{path.name} must not import {forbidden} (DIP)"
+        assert not forbidden, f"{path.name} must not import {forbidden} (port boundary)"
         for needle in ("fetch(", "localStorage", "new ApiAdapter"):
-            assert needle not in src, f"{path.name} must not call {needle!r} directly (DIP)"
+            assert needle not in src, (
+                f"{path.name} must not call {needle!r} directly (port boundary)"
+            )
 
 
 def test_single_transport_seam():
-    """Facade/SRP: exactly one fetch-bearing module exists in frontend/ts
-    (infra.ts). A second transport path (e.g. listRuns fetching /api/runs)
-    silently doubles the auth/timeout sharp edges — the historical cause of
-    the 'api works but the GUI 401s' class of bugs.
+    """Exactly one fetch-bearing module exists in frontend/ts: infra.ts.
+
+    A second transport path would duplicate authentication and timeout logic.
     """
     carriers = []
     for path in sorted((REPO / "frontend" / "ts").glob("*.ts")):
@@ -224,11 +260,10 @@ def test_single_transport_seam():
 
 
 def test_no_root_legacy_modules_in_api():
-    """DIP/DRY: the repo-root legacy engine was retired into api/engine.py and
-    the obsolete CLI (nayose_cli.py) deleted. api/ modules must not re-import
-    or recreate root-level legacy modules — shared primitives live in
-    api/normalize.py, api/features.py, api/retrieval.py; the engine facade is
-    api/engine.py.load_engine.
+    """The retired root-level engine and obsolete CLI must stay deleted.
+
+    API modules use the shared primitives and api/engine.py loader instead of
+    recreating legacy implementations.
     """
     assert not (REPO / "nayose_inference.py").exists(), "legacy root engine must stay retired"
     assert not (REPO / "nayose_cli.py").exists(), "obsolete CLI must stay deleted"
@@ -251,7 +286,7 @@ def _i18n_entries() -> dict[str, tuple[str, str]]:
 
 
 def test_i18n_dictionary_is_complete_and_bilingual():
-    """DRY: every label used in views exists in i18n.ts, with BOTH locales."""
+    """Every label used in views exists in i18n.ts with both locales."""
     entries = _i18n_entries()
     for path in (*FEATURES, REPO / "frontend" / "ts" / "app.ts"):
         src = path.read_text(encoding="utf-8")
@@ -273,11 +308,8 @@ E2E = REPO / "frontend" / "test" / "e2e.test.mjs"
 
 
 def test_e2e_journeys_use_harness_primitives_only():
-    """Facade/SRP: raw Playwright waits, reloads and context creation are
-    harness-owned (e2e-util.mjs). Their APIs have bitten us: waitForFunction
-    treats a 2nd-arg object as the fn argument (timeouts silently defaulted),
-    reload() can resolve from the memory cache (~10ms, stale DOM), and shared
-    contexts leak locale/DOM state across journeys.
+    """Raw Playwright waits, reloads, and context creation belong to the
+    shared e2e harness, keeping browser journeys isolated and deterministic.
     """
     src = E2E.read_text(encoding="utf-8")
     banned = [
@@ -297,9 +329,8 @@ def test_e2e_journeys_use_harness_primitives_only():
 
 
 def test_e2e_selectors_are_semantic_hooks():
-    """DIP at the DOM seam: journeys select by ids and semantic data-* hooks,
-    never structural paths under #view (e.g. "#view h2") — the original break
-    happened exactly there when the search view gained a legit h2 of its own.
+    """Journeys select by ids and semantic data-* hooks, never structural paths
+    under #view. This keeps selectors stable as view markup changes.
     """
     src = E2E.read_text(encoding="utf-8")
     for match in re.findall(r'"([^"]*#view\s+[a-z][a-z0-9]*[^"]*)"', src):

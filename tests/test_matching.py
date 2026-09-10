@@ -28,8 +28,18 @@ def fake_engine(broken=False):
 
     rows = pd.DataFrame(
         [
-            {"record_id": "R1", "name_kanji": "佐藤 太郎", "phone": "090-1234-5678"},
-            {"record_id": "R2", "name_kanji": "佐藤 次郎", "phone": "090-1234-5678"},
+            {
+                "record_id": "R1",
+                "name_kanji": "佐藤 太郎",
+                "phone": "090-1234-5678",
+                "date_birth": "2000-01-01",
+            },
+            {
+                "record_id": "R2",
+                "name_kanji": "佐藤 次郎",
+                "phone": "090-1234-5678",
+                "date_birth": "1990-01-01",
+            },
         ]
     )
     return SimpleNamespace(
@@ -57,12 +67,25 @@ def fake_engine(broken=False):
     )
 
 
+def test_safe_identity_anchor_requires_name_and_stable_exact_field():
+    from api.features import has_safe_identity_anchor
+
+    assert has_safe_identity_anchor({"name_loose_exact": 1, "dob_exact": 1})
+    assert not has_safe_identity_anchor({"name_loose_exact": 1, "phone_exact": 1})
+    assert not has_safe_identity_anchor({"name_loose_exact": 0, "email_exact": 1})
+
+
 def test_matching_returns_actual_support_and_threshold_reason():
     from api.matching import ExplainedMatcher
 
     stages: list[str] = []
     result = ExplainedMatcher(fake_engine()).recommend(
-        {"name_kanji": "佐藤 太郎", "phone": "09012345678"}, stages.append
+        {
+            "name_kanji": "佐藤 太郎",
+            "phone": "09012345678",
+            "date_birth": "2000-01-01",
+        },
+        stages.append,
     )
     assert result["action"] == "AUTO_LINK"
     assert result["reason"] == "above_auto_threshold"
@@ -123,6 +146,105 @@ def test_engine_refuses_bundles_without_fingerprint_guard(tmp_path):
         NayoseEngine._guard_generation_match(config, reference)
 
 
+def test_query_embedding_encoder_batches_and_reuses_model():
+    from api.embedding_runtime import QueryEmbeddingEncoder
+
+    calls: list[list[str]] = []
+
+    class FakeModel:
+        def encode(self, texts, **kwargs):
+            calls.append(list(texts))
+            return np.ones((len(texts), 2), dtype=np.float32)
+
+    encoder = QueryEmbeddingEncoder(
+        "fake/model",
+        device="cpu",
+        batch_size=8,
+        model_factory=lambda model_id, device: FakeModel(),
+    )
+    first = encoder.encode(["record", "name", "alias"])
+    second = encoder.encode(["address"])
+    assert first.shape == (3, 2) and second.shape == (1, 2)
+    assert calls == [["record", "name", "alias"], ["address"]]
+
+
+def test_process_wide_query_encoder_is_reused_and_rebound(monkeypatch):
+    import api.embedding_runtime as runtime
+
+    created = []
+    closed = []
+
+    class FakeEncoder:
+        def __init__(self, model_id, *, device, batch_size):
+            created.append((model_id, device, batch_size))
+
+        def encode(self, texts, expected_dimensions=None):
+            return np.ones((len(texts), 2), dtype=np.float32)
+
+        def close(self):
+            closed.append(True)
+
+    monkeypatch.setattr(runtime, "QueryEmbeddingEncoder", FakeEncoder)
+    runtime.close_query_encoder()
+    runtime.configure_query_encoder("model-a", device="cpu", batch_size=4)
+    runtime.encode_queries(["one"])
+    runtime.encode_queries(["two"])
+    runtime.configure_query_encoder("model-b", device="cpu", batch_size=4)
+    runtime.encode_queries(["three"])
+    assert created == [("model-a", "cpu", 4), ("model-b", "cpu", 4)]
+    assert len(closed) == 1
+    runtime.close_query_encoder()
+
+
+def test_degraded_dense_index_uses_saved_svd_for_queries(monkeypatch):
+    from sklearn.decomposition import TruncatedSVD
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.preprocessing import normalize
+
+    from api.engine import CandidateIndex, InferenceConfig
+
+    texts = ["alpha beta", "beta gamma", "gamma delta"]
+    vectorizer = TfidfVectorizer().fit(texts)
+    sparse = vectorizer.transform(texts)
+    svd = TruncatedSVD(n_components=2, random_state=7).fit(sparse)
+    embeddings = normalize(svd.transform(sparse)).astype(np.float32)
+
+    class DenseIndex:
+        def search(self, query, limit):
+            return SimpleNamespace(
+                keys=np.asarray([[0, 1]], dtype=np.int32),
+                distances=np.asarray([[0.1, 0.2]], dtype=np.float32),
+            )
+
+    monkeypatch.setenv("NAYOSE_USE_DENSE", "1")
+    monkeypatch.setattr(
+        "api.engine.encode_query", lambda _: (_ for _ in ()).throw(AssertionError())
+    )
+    index = CandidateIndex(
+        pd.DataFrame({"record_id": ["R1", "R2", "R3"]}),
+        sparse,
+        vectorizer,
+        {},
+        InferenceConfig(),
+        embeddings,
+        DenseIndex(),
+        svd,
+    )
+
+    result = index.retrieve({"retrieval_text": "alpha beta"})
+    assert result.iloc[0].candidate_index == 0
+
+
+def test_dense_serving_refuses_missing_ann_artifact(tmp_path):
+    from api.engine import InferenceConfig, _load_dense_artifacts
+
+    np.save(tmp_path / "reference_embeddings.npy", np.ones((2, 3), dtype=np.float32))
+    reference = pd.DataFrame({"record_id": ["R1", "R2"]})
+
+    with pytest.raises(RuntimeError, match="requires"):
+        _load_dense_artifacts(InferenceConfig(model_dir=tmp_path), reference)
+
+
 def test_svd_bundle_uses_saved_transform_not_neural_encoder(tmp_path, monkeypatch):
     import joblib
     from sklearn.decomposition import TruncatedSVD
@@ -157,7 +279,7 @@ def test_svd_bundle_uses_saved_transform_not_neural_encoder(tmp_path, monkeypatc
 
 
 def test_normalization_and_pair_features_are_shared_with_engine():
-    """The engine facade re-exports api/* primitives — identity, not a copy."""
+    """The engine re-exports api/* primitives — identity, not a copy."""
     import api.engine as engine
     import api.features as features
     import api.normalize as normalize
@@ -167,6 +289,28 @@ def test_normalization_and_pair_features_are_shared_with_engine():
     assert engine.PAIR_FEATURE_COLS == features.PAIR_FEATURE_COLS
     assert engine.logit_clip is features.logit_clip
     assert engine._resolve_device is not None
+
+
+def test_normalize_record_retrieval_text_is_labeled_and_model_compatible():
+    from api.normalize import normalize_record
+
+    normalized = normalize_record(
+        {
+            "name_kanji": "佐藤 太郎",
+            "name_kana": "サトウ タロウ",
+            "name_romaji": "Taro Sato",
+            "date_birth": "1980-05-05",
+            "postal_code": "100-0001",
+            "address": "東京都千代田区1-2-3",
+            "phone": "090-1234-5678",
+            "email": "taro@example.com",
+        }
+    )
+    assert normalized["retrieval_text"] == (
+        "type=person name=佐藤太郎 kana=サトウタロウ romaji=tarosato "
+        "dob=1980-05-05 postal=1000001 address=東京都千代田区123 "
+        "phone=09012345678 email=taro@examplecom"
+    )
 
 
 def test_normalize_record_field_invariants():
@@ -297,15 +441,56 @@ def test_entity_search_ranks_by_embedding_similarity():
     assert search.search("") == []
 
 
+def test_entity_auto_link_rejects_name_only_identity_evidence():
+    from api.matching import ExplainedMatcher
+
+    engine = fake_engine()
+    engine.config.entity_margin_threshold = 0.0
+    engine.config.minimum_evidence_families = 1
+    result = ExplainedMatcher(engine).recommend({"name_kanji": "佐藤 太郎"}, lambda _: None)
+    assert result["action"] == "REVIEW"
+    assert result["reason"] == "evidence_safety_check"
+    assert result["diagnostics"]["auto_eligibility"]["identity_anchor"] is False
+
+
+def test_entity_auto_link_requires_margin_and_evidence_safety():
+    from api.matching import ExplainedMatcher
+
+    engine = fake_engine()
+    engine.config.entity_margin_threshold = 0.06
+    engine.config.minimum_evidence_families = 2
+    result = ExplainedMatcher(engine).recommend(
+        {
+            "name_kanji": "佐藤 太郎",
+            "phone": "09012345678",
+            "date_birth": "2000-01-01",
+        },
+        lambda _: None,
+    )
+    assert result["action"] == "REVIEW"
+    assert result["reason"] == "evidence_safety_check"
+
+
 def test_threshold_overrides_move_only_the_decision_layer():
     from api.matching import ExplainedMatcher
 
     matcher = ExplainedMatcher(fake_engine())
-    base = matcher.recommend({"name_kanji": "佐藤 太郎", "phone": "09012345678"}, lambda _: None)
+    base = matcher.recommend(
+        {
+            "name_kanji": "佐藤 太郎",
+            "phone": "09012345678",
+            "date_birth": "2000-01-01",
+        },
+        lambda _: None,
+    )
     assert base["threshold_source"] == "manifest"
     # lower auto threshold -> the same score becomes AUTO_LINK
     tuned = matcher.recommend(
-        {"name_kanji": "佐藤 太郎", "phone": "09012345678"},
+        {
+            "name_kanji": "佐藤 太郎",
+            "phone": "09012345678",
+            "date_birth": "2000-01-01",
+        },
         lambda _: None,
         overrides={"auto": 0.7, "review": 0.2},
     )
@@ -314,7 +499,11 @@ def test_threshold_overrides_move_only_the_decision_layer():
     assert tuned["top_probability"] == base["top_probability"], "scores never change"
     # invalid override (auto < review) silently falls back to the manifest
     invalid = matcher.recommend(
-        {"name_kanji": "佐藤 太郎", "phone": "09012345678"},
+        {
+            "name_kanji": "佐藤 太郎",
+            "phone": "09012345678",
+            "date_birth": "2000-01-01",
+        },
         lambda _: None,
         overrides={"auto": 0.1, "review": 0.5},
     )
@@ -375,7 +564,7 @@ def test_async_jobs_report_real_loading_and_reuse_engine(tmp_path):
         service.wait(job["id"], timeout=5)
         done = service.status(job["id"])
         assert done["stage"] == "complete"
-        assert done["result"]["action"] == "AUTO_LINK"
+        assert done["result"]["action"] == "REVIEW"
         loading = [s for s in done["timeline"] if s["stage"] == "loading"]
         assert len(loading) == 1, "loading stamped once with its real duration"
         assert loading[0]["elapsed_ms"] >= 0

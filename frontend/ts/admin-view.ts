@@ -1,12 +1,13 @@
 // Admin workspace composition root: transport, view state, renderers, and commands.
 import type {
+  AdminPort,
   AdminState,
   GenerationCatalog,
   GenerationControls,
   MatchJob,
-  QueryPort,
 } from "./port.js";
 import type { Store } from "./store.js";
+import type { Disposable, ViewScope } from "./lifecycle.js";
 import { esc } from "./schema.js";
 import { pollJob } from "./core.js";
 import { bindGenerationControls, cloneGenerationControls, resetGenerationControls, syncControlOutputs } from "./admin-controls.js";
@@ -34,18 +35,21 @@ function unavailableCard(store: Store): HTMLElement {
   return wrapper;
 }
 
-export async function mountAdmin(el: HTMLElement, port: QueryPort, store: Store): Promise<void> {
+export async function mountAdmin(el: HTMLElement, port: AdminPort, store: Store, scope: ViewScope): Promise<void> {
+  const lifetime = scope;
   let state: AdminState;
   let catalog: GenerationCatalog;
   try {
     [state, catalog] = await Promise.all([port.adminState(), port.adminGenerationConfig()]);
+    if (lifetime?.isDisposed) return;
   } catch {
     el.replaceChildren(unavailableCard(store));
     return;
   }
-  let generations: Awaited<ReturnType<QueryPort["adminGenerations"]>> = [];
+  let generations: Awaited<ReturnType<AdminPort["adminGenerations"]>> = [];
   try {
     generations = await port.adminGenerations();
+    if (lifetime?.isDisposed) return;
   } catch {
     generations = [];
   }
@@ -60,10 +64,14 @@ export async function mountAdmin(el: HTMLElement, port: QueryPort, store: Store)
     jobStatus: {},
     dataset: createDatasetExplorerState(generations),
   };
-  let previewTimer: ReturnType<typeof setTimeout> | undefined;
+  let previewTimer: number | undefined;
   let previewRequest = 0;
+  let panelLayout: ReturnType<typeof bindPanelLayout> | undefined;
+  let datasetBinding: Disposable | undefined;
+  lifetime.add({ dispose: () => datasetBinding?.dispose() });
 
   const updatePreviewDom = (): void => {
+    if (lifetime?.isDisposed) return;
     const output = el.querySelector<HTMLElement>("#gen-preview");
     if (output) {
       output.setAttribute("aria-busy", String(ui.preview.pending));
@@ -91,30 +99,33 @@ export async function mountAdmin(el: HTMLElement, port: QueryPort, store: Store)
   };
 
   const requestPreview = (immediate = false): void => {
+    if (lifetime?.isDisposed) return;
     ui.preview.pending = true;
     ui.preview.error = "";
     updatePreviewDom();
     if (previewTimer) clearTimeout(previewTimer);
     const run = (): void => {
+      if (lifetime?.isDisposed) return;
       const request = ++previewRequest;
       const controls = cloneGenerationControls(ui.controls);
       void port.adminGenerationPreview(controls).then(result => {
-        if (request !== previewRequest) return;
+        if (lifetime?.isDisposed || request !== previewRequest) return;
         ui.preview.preview = result;
         ui.preview.pending = false;
         updatePreviewDom();
       }).catch(error => {
-        if (request !== previewRequest) return;
+        if (lifetime?.isDisposed || request !== previewRequest) return;
         ui.preview.pending = false;
         ui.preview.error = previewError(error);
         updatePreviewDom();
       });
     };
     if (immediate) run();
-    else previewTimer = setTimeout(run, 220);
+    else previewTimer = lifetime.addTimeout(run, 220);
   };
 
   const note = (text: string): void => {
+    if (lifetime?.isDisposed) return;
     ui.note = text;
     void paint();
   };
@@ -132,15 +143,17 @@ export async function mountAdmin(el: HTMLElement, port: QueryPort, store: Store)
   };
 
   const runJob = (action: string, params: object, outSelector: string): void => {
-    if (ui.busy) return;
+    if (lifetime?.isDisposed || ui.busy) return;
     ui.busy = true;
     updatePreviewDom();
     const out = el.querySelector<HTMLElement>(outSelector);
     if (out) out.textContent = store.t("jobStarted");
     delete ui.jobStatus[outSelector];
     port.adminStart(action, params).then(job => pollJob(() => port.adminJob(job.id), job, 600, current => {
+      if (lifetime?.isDisposed) return;
       if (out) renderJob(out, current, outSelector);
-    }).then(async done => {
+    }, lifetime.signal).then(async done => {
+      if (lifetime?.isDisposed) return;
       ui.busy = false;
       if (done.stage === "complete") {
         const result = (done.result as Record<string, unknown> | null) ?? {};
@@ -159,6 +172,7 @@ export async function mountAdmin(el: HTMLElement, port: QueryPort, store: Store)
       }
       await paint();
     })).catch(error => {
+      if (lifetime?.isDisposed) return;
       ui.busy = false;
       note(`${store.t(String((error as Error).message ?? error))} ${store.t("errorNextStep")}`);
     });
@@ -172,6 +186,7 @@ export async function mountAdmin(el: HTMLElement, port: QueryPort, store: Store)
   };
 
   const paint = async (): Promise<void> => {
+    if (lifetime?.isDisposed) return;
     const previousDetails = new Set([...el.querySelectorAll<HTMLDetailsElement>("details[id]")].filter(details => details.open).map(details => details.id));
     const preserveDetails = el.querySelector("details[id]") !== null;
     el.innerHTML = renderAdminPage({ state: ui.state, catalog: ui.catalog, controls: ui.controls, preview: ui.preview, busy: ui.busy, note: ui.note, jobStatus: ui.jobStatus, dataset: ui.dataset }, store);
@@ -184,9 +199,12 @@ export async function mountAdmin(el: HTMLElement, port: QueryPort, store: Store)
     }
     bindGenerationControls(el, ui.catalog, ui.controls, store, () => requestPreview());
     el.querySelector<HTMLButtonElement>("#gen-reset")?.addEventListener("click", () => resetGenerationControls(el, ui.catalog, ui.controls, ui.catalog.defaults, store, () => requestPreview(true)));
-    bindPanelLayout(el, store);
+    panelLayout?.dispose();
+    panelLayout = lifetime.add(bindPanelLayout(el, store));
+    datasetBinding?.dispose();
+    datasetBinding = undefined;
     const datasetHost = el.querySelector<HTMLElement>("#dataset-explorer-host");
-    if (datasetHost) bindDatasetExplorer(datasetHost, ui.dataset, port, store);
+    if (datasetHost) datasetBinding = bindDatasetExplorer(datasetHost, ui.dataset, port, store);
     syncControlOutputs(el, ui.catalog, ui.controls, store);
     el.querySelector<HTMLButtonElement>("#gen-go")?.addEventListener("click", () => runJob("generate", cloneGenerationControls(ui.controls), "#gen-job"));
     el.querySelector<HTMLButtonElement>("#gen-preview-go")?.addEventListener("click", () => requestPreview(true));

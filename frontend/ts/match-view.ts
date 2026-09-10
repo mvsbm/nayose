@@ -1,11 +1,26 @@
-import type { EntityHit, QueryPort, SearchFilters, SearchResult } from "./port.js";
+import type { EntityDetailPort, EntityHit, SearchFilters, SearchPort, SearchResult } from "./port.js";
 import type { Store } from "./store.js";
+import type { ViewScope } from "./lifecycle.js";
+import { bindPanelSplit } from "./panel-layout.js";
+
+const SEARCH_SPLIT_DEFAULT = 440;
+const SEARCH_SPLIT_MIN = 280;
+const SEARCH_SPLIT_MAX = 720;
 import { esc } from "./schema.js";
 import { bindSearchDetail, clearSearchDetail, createSearchDetailState, loadSearchDetail, renderSearchDetail } from "./search-workspace.js";
 
-export async function mountMatchingSearch(el: HTMLElement, port: QueryPort, store: Store): Promise<void> {
+export async function mountMatchingSearch(el: HTMLElement, port: SearchPort & EntityDetailPort, store: Store, viewScope: ViewScope): Promise<void> {
   const t = (key: string) => esc(store.t(key));
-  el.innerHTML = `<div class="panel"><section class="card search-workspace-bar"><div class="search-workspace-bar-input"><span class="search-workspace-icon" aria-hidden="true">⌕</span><label class="search-workspace-visually-hidden" for="q">${t("searchTitle")}</label><input id="q" type="search" autocomplete="off" aria-controls="results" placeholder="${t("searchPlaceholder")}"><span class="search-workspace-shortcut" aria-hidden="true">⌘K</span></div><div class="search-workspace-meta is-empty"><p id="search-correction" class="search-workspace-correction" aria-live="polite"></p><div id="search-filters" class="search-workspace-filters" role="group" aria-label="${t("searchFilters")}"></div><div class="search-workspace-status"><p id="norm-line" class="members" aria-live="polite"></p><p id="stat" role="status" aria-live="polite"></p></div></div></section><div class="search-workspace"><section class="card search-workspace-results"><div id="results"></div></section><aside id="search-detail" class="card search-workspace-detail" aria-live="polite"></aside></div></div>`;
+  el.innerHTML = `<div class="panel"><section class="card search-workspace-bar"><div class="search-workspace-bar-input"><span class="search-workspace-icon" aria-hidden="true">⌕</span><label class="search-workspace-visually-hidden" for="q">${t("searchTitle")}</label><input id="q" type="search" autocomplete="off" aria-controls="results" placeholder="${t("searchPlaceholder")}"><span class="search-workspace-shortcut" aria-hidden="true">⌘K</span></div><div class="search-workspace-meta is-empty"><p id="search-correction" class="search-workspace-correction" aria-live="polite"></p><div id="search-filters" class="search-workspace-filters" role="group" aria-label="${t("searchFilters")}"></div><div class="search-workspace-status"><p id="norm-line" class="members" aria-live="polite"></p><p id="stat" role="status" aria-live="polite"></p></div></div></section><div class="search-workspace" data-panel-split="search-workspace"><section class="card search-workspace-results"><div id="results"></div></section><div class="panel-resizer" data-panel-resizer="search-workspace" role="separator" aria-orientation="vertical" aria-label="${t("resizePanel")}" aria-valuemin="280" aria-valuemax="720" aria-valuenow="440" tabindex="0"></div><aside id="search-detail" class="card search-workspace-detail" aria-live="polite"></aside></div></div>`;
+  viewScope.add(bindPanelSplit(el, store, {
+    id: "search-workspace",
+    cssVariable: "--search-results-width",
+    defaultWidth: SEARCH_SPLIT_DEFAULT,
+    minWidth: SEARCH_SPLIT_MIN,
+    maxWidth: SEARCH_SPLIT_MAX,
+    pointerSide: "left",
+    mobileQuery: "(max-width: 980px)",
+  }));
   const query = el.querySelector<HTMLInputElement>("#q")!;
   query.value = store.searchQuery;
   const searchBar = el.querySelector<HTMLElement>(".search-workspace-bar")!;
@@ -16,8 +31,7 @@ export async function mountMatchingSearch(el: HTMLElement, port: QueryPort, stor
     else if (scrollY >= lastScrollY) searchBar.classList.add("is-compact");
     lastScrollY = scrollY;
   };
-  window.addEventListener("scroll", syncSearchBar, { passive: true });
-  el.addEventListener("unmount", () => window.removeEventListener("scroll", syncSearchBar), { once: true });
+  viewScope.addEventListener(window, "scroll", syncSearchBar, { passive: true });
   syncSearchBar();
   const detailHost = el.querySelector<HTMLElement>("#search-detail")!;
   const detailState = createSearchDetailState();
@@ -39,8 +53,8 @@ export async function mountMatchingSearch(el: HTMLElement, port: QueryPort, stor
   };
   paintDetail();
 
-  let timer: ReturnType<typeof setTimeout>;
-  let normTimer: ReturnType<typeof setTimeout>;
+  let timer = 0;
+  let normTimer = 0;
   let sequence = 0;
   const facetType: string[] = [];
   let facetMulti = false;
@@ -50,17 +64,17 @@ export async function mountMatchingSearch(el: HTMLElement, port: QueryPort, stor
     min_record_count: facetMulti ? 2 : undefined,
   });
   const searchNow = (value: string, request: number, delay: number): void => {
-    clearTimeout(timer);
-    timer = setTimeout(async () => {
+    window.clearTimeout(timer);
+    timer = viewScope.addTimeout(async () => {
       const stat = el.querySelector("#stat")!;
       stat.textContent = store.t("searching");
       try {
         const res = await port.entities(value, 50, activeFilters());
-        if (request !== sequence || !el.isConnected || !el.contains(query)) return;
+        if (viewScope.isDisposed || request !== sequence || !el.isConnected || !el.contains(query)) return;
         lastRes = res;
         renderResults();
       } catch (err) {
-        if (request === sequence) stat.textContent = `${store.t("error")}: ${store.t(String((err as Error).message ?? err))}`;
+        if (!viewScope.isDisposed && request === sequence) stat.textContent = `${store.t("error")}: ${store.t(String((err as Error).message ?? err))}`;
       }
     }, delay);
   };
@@ -119,8 +133,8 @@ export async function mountMatchingSearch(el: HTMLElement, port: QueryPort, stor
   });
   query.addEventListener("input", () => {
     store.searchQuery = query.value;
-    clearTimeout(timer);
-    clearTimeout(normTimer);
+    window.clearTimeout(timer);
+    window.clearTimeout(normTimer);
     const request = ++sequence;
     const value = query.value;
     clearDetailForNewQuery();
@@ -135,10 +149,10 @@ export async function mountMatchingSearch(el: HTMLElement, port: QueryPort, stor
       lastRes = { rows: [], semantic: false, suggestion: null };
       return;
     }
-    normTimer = setTimeout(async () => {
+    normTimer = viewScope.addTimeout(async () => {
       try {
         const norm = await port.normalizePreview(value.trim());
-        if (request !== sequence || !el.isConnected) return;
+        if (viewScope.isDisposed || request !== sequence || !el.isConnected) return;
         const tokens = Object.entries(norm).filter(([k, v]) => v && v !== value.trim() && ["name_kanji", "name_kana", "phone", "postal_code"].includes(k));
         const line = el.querySelector("#norm-line");
         if (line) line.textContent = tokens.length ? `${store.t("normHint")}: ${tokens.map(([k, v]) => `${store.t(k)}→${v}`).join(" · ")}` : "";

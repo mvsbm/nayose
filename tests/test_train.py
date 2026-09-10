@@ -1,7 +1,14 @@
 import json
 from argparse import Namespace
 from pathlib import Path
+from typing import Any
 
+from api.embedding_config import (
+    F2LLM_330M_MODEL_ID,
+    embedding_model_id,
+    notebook_model_family,
+)
+from api.model_gate import evaluate_f2llm_candidate
 from scripts.train import REQUIRED_BUNDLE_TABLES, promote_bundle, verify_bundle
 
 
@@ -11,6 +18,67 @@ def _args(data_root: Path, models_root: Path) -> Namespace:
         models_dir=str(models_root),
         prune_aborted=True,
     )
+
+
+def test_f2llm_330m_performance_gate_requires_material_gain():
+    baseline = {
+        "data_fingerprint": "same",
+        "config": {"model_family": "off"},
+        "query_metrics": {
+            "candidate_recall_at_1_existing": 0.80,
+            "candidate_recall_at_5_existing": 0.90,
+            "auto_link_precision_pure": 0.98,
+            "false_auto_link_rate_new_or_related": 0.0,
+        },
+    }
+    candidate: dict[str, Any] = {
+        "data_fingerprint": "same",
+        "config": {"model_family": "f2llm"},
+        "query_metrics": {
+            "candidate_recall_at_1_existing": 0.82,
+            "candidate_recall_at_5_existing": 0.92,
+            "auto_link_precision_pure": 0.981,
+            "false_auto_link_rate_new_or_related": 0.0,
+        },
+    }
+
+    def results(hard_errors: int) -> list[dict[str, object]]:
+        rows: list[dict[str, object]] = []
+        for index in range(100):
+            hard = index < 50
+            correct = not hard or index >= hard_errors
+            rows.append(
+                {
+                    "scenario": "existing_changed" if hard else "existing_stable",
+                    "identity_top1_correct": correct,
+                    "correct_entity_rank": 1 if correct else 6,
+                    "action": "AUTO_LINK" if correct else "REVIEW",
+                    "pure_top1_correct": correct,
+                }
+            )
+        return rows
+
+    decision = evaluate_f2llm_candidate(
+        candidate,
+        baseline,
+        candidate_results=results(0),
+        baseline_results=results(2),
+    )
+    assert decision.passed and decision.status == "PASSED"
+
+    candidate["query_metrics"]["candidate_recall_at_1_existing"] = 0.805
+    assert not evaluate_f2llm_candidate(
+        candidate,
+        baseline,
+        candidate_results=results(0),
+        baseline_results=results(2),
+    ).passed
+
+
+def test_f2llm_330m_is_an_explicit_notebook_compatible_profile():
+    assert embedding_model_id("f2llm_330m") == F2LLM_330M_MODEL_ID
+    assert notebook_model_family("f2llm_330m") == "f2llm"
+    assert embedding_model_id("f2llm", "custom/model") == "custom/model"
 
 
 def test_verify_ignores_aborted_newer_run_and_promotes_verified_bundle(tmp_path):
@@ -41,6 +109,7 @@ def test_verify_ignores_aborted_newer_run_and_promotes_verified_bundle(tmp_path)
     )
     for table in REQUIRED_BUNDLE_TABLES:
         (run / f"{table}.parquet").touch()
+    (run / "block_indexes.npz").touch()
     aborted = models_root / "runs" / "run_aborted"
     aborted.mkdir(parents=True)
 

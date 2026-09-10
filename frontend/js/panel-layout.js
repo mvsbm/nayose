@@ -1,3 +1,5 @@
+import { DisposableStore } from "./lifecycle.js";
+import { ResizableRegion } from "./resizable-region.js";
 const DEFAULT_STATE = { previewWidth: 420, previewCollapsed: false };
 const MIN_PREVIEW_WIDTH = 352;
 const MAX_PREVIEW_WIDTH = 640;
@@ -21,68 +23,93 @@ function readState(storage) {
     }
 }
 function writeState(storage, state) {
-    storage.write(STORAGE_KEY, JSON.stringify(state));
+    storage.write(STORAGE_KEY, JSON.stringify({ version: 1, ...state }));
 }
 export function bindPanelLayout(root, storage) {
+    const lifetime = new DisposableStore();
     const workbench = root.querySelector("[data-panel-layout='admin-workbench']");
     const handle = root.querySelector("[data-panel-resizer='preview']");
     const toggle = root.querySelector("#gen-preview-toggle");
     const body = root.querySelector("#gen-preview-body");
     if (!workbench || !handle || !toggle || !body)
-        return;
+        return lifetime;
     const state = readState(storage);
+    const renderWidth = (width) => {
+        state.previewWidth = width;
+        workbench.style.setProperty("--preview-width", `${width}px`);
+        handle.setAttribute("aria-valuetext", `${width}px`);
+    };
     const updateWidth = (width) => {
-        state.previewWidth = clampWidth(width);
-        workbench.style.setProperty("--preview-width", `${state.previewWidth}px`);
-        handle.setAttribute("aria-valuenow", String(state.previewWidth));
-        handle.setAttribute("aria-valuetext", `${state.previewWidth}px`);
+        renderWidth(width);
         writeState(storage, state);
     };
-    const updateCollapse = (collapsed) => {
+    const renderCollapse = (collapsed) => {
         state.previewCollapsed = collapsed;
         body.hidden = collapsed;
         toggle.setAttribute("aria-expanded", String(!collapsed));
         toggle.textContent = collapsed ? (toggle.dataset.expandLabel ?? "Expand") : (toggle.dataset.collapseLabel ?? "Collapse");
+    };
+    const updateCollapse = (collapsed) => {
+        renderCollapse(collapsed);
         writeState(storage, state);
     };
-    const resizeFromPointer = (clientX) => {
-        const bounds = workbench.getBoundingClientRect();
-        updateWidth(bounds.right - clientX);
+    renderWidth(state.previewWidth);
+    renderCollapse(state.previewCollapsed);
+    const resizable = new ResizableRegion({
+        handle,
+        initialWidth: state.previewWidth,
+        minWidth: MIN_PREVIEW_WIDTH,
+        maxWidth: MAX_PREVIEW_WIDTH,
+        defaultWidth: DEFAULT_STATE.previewWidth,
+        arrowGrowth: "backward",
+        pointerWidth: (_startWidth, _startClientX, clientX) => workbench.getBoundingClientRect().right - clientX,
+        onWidthChange: updateWidth,
+    });
+    lifetime.add(resizable);
+    const onToggle = () => updateCollapse(!state.previewCollapsed);
+    toggle.addEventListener("click", onToggle);
+    lifetime.add({ dispose: () => toggle.removeEventListener("click", onToggle) });
+    return lifetime;
+}
+export function bindPanelSplit(root, storage, options) {
+    const lifetime = new DisposableStore();
+    const split = root.querySelector(`[data-panel-split="${options.id}"]`);
+    const handle = split?.querySelector("[data-panel-resizer]");
+    if (!split || !handle)
+        return lifetime;
+    const storageKey = `nayose.layout.${options.id}`;
+    let initialWidth = options.defaultWidth;
+    try {
+        const parsed = JSON.parse(storage.read(storageKey) ?? "null");
+        const storedWidth = parsed?.version === 1 || parsed?.version === undefined ? Number(parsed?.width) : Number.NaN;
+        if (Number.isFinite(storedWidth))
+            initialWidth = storedWidth;
+    }
+    catch {
+        initialWidth = options.defaultWidth;
+    }
+    const media = options.mobileQuery ? window.matchMedia?.(options.mobileQuery) : null;
+    const renderWidth = (width) => split.style.setProperty(options.cssVariable, `${width}px`);
+    const persistWidth = (width) => {
+        renderWidth(width);
+        storage.write(storageKey, JSON.stringify({ version: 1, width }));
     };
-    updateWidth(state.previewWidth);
-    updateCollapse(state.previewCollapsed);
-    toggle.addEventListener("click", () => updateCollapse(!state.previewCollapsed));
-    handle.addEventListener("pointerdown", event => {
-        if (event.button !== 0)
-            return;
-        handle.setPointerCapture(event.pointerId);
-        handle.classList.add("is-dragging");
-        const move = (moveEvent) => resizeFromPointer(moveEvent.clientX);
-        const finish = () => {
-            handle.classList.remove("is-dragging");
-            handle.removeEventListener("pointermove", move);
-            handle.removeEventListener("pointerup", finish);
-            handle.removeEventListener("pointercancel", finish);
-        };
-        handle.addEventListener("pointermove", move);
-        handle.addEventListener("pointerup", finish);
-        handle.addEventListener("pointercancel", finish);
+    renderWidth(Math.min(options.maxWidth, Math.max(options.minWidth, Math.round(initialWidth))));
+    const resizable = new ResizableRegion({
+        handle,
+        initialWidth,
+        minWidth: options.minWidth,
+        maxWidth: options.maxWidth,
+        defaultWidth: options.defaultWidth,
+        arrowGrowth: options.pointerSide === "left" ? "forward" : "backward",
+        isDisabled: () => media?.matches ?? false,
+        pointerWidth: (startWidth, startClientX, clientX) => options.pointerSide === "left"
+            ? startWidth + clientX - startClientX
+            : startWidth + startClientX - clientX,
+        onWidthChange: persistWidth,
     });
-    handle.addEventListener("keydown", event => {
-        if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
-            event.preventDefault();
-            updateWidth(state.previewWidth + (event.key === "ArrowLeft" ? 16 : -16));
-        }
-        else if (event.key === "Home") {
-            event.preventDefault();
-            updateWidth(MIN_PREVIEW_WIDTH);
-        }
-        else if (event.key === "End") {
-            event.preventDefault();
-            updateWidth(MAX_PREVIEW_WIDTH);
-        }
-    });
-    handle.addEventListener("dblclick", () => updateWidth(DEFAULT_STATE.previewWidth));
+    lifetime.add(resizable);
+    return lifetime;
 }
 export const panelLayoutBounds = {
     minPreviewWidth: MIN_PREVIEW_WIDTH,

@@ -26,6 +26,8 @@ def default_data_dir() -> Path:
 # --------------------------------------------------------------------------
 # Size / difficulty presets (data, not code)
 # --------------------------------------------------------------------------
+MAX_ENTITY_SEEDS = 2_000_000
+
 PROFILES: dict[str, dict[str, float]] = {
     "preflight": {"n_parties": 300, "mean_records": 2.4},
     "smoke": {"n_parties": 700, "mean_records": 2.5},
@@ -36,37 +38,69 @@ PROFILES: dict[str, dict[str, float]] = {
 
 DIFFICULTY: dict[str, dict[str, float]] = {
     "debug": {"poor": 0.10, "catastrophic": 0.005, "copy": 0.02, "stale": 0.12},
-    "realistic": {"poor": 0.33, "catastrophic": 0.04, "copy": 0.09, "stale": 0.34},
-    "severe": {"poor": 0.43, "catastrophic": 0.07, "copy": 0.12, "stale": 0.40},
+    "realistic": {"poor": 0.42, "catastrophic": 0.10, "copy": 0.14, "stale": 0.46},
+    "severe": {"poor": 0.58, "catastrophic": 0.20, "copy": 0.20, "stale": 0.65},
+    "challenge": {"poor": 0.68, "catastrophic": 0.32, "copy": 0.28, "stale": 0.82},
+}
+
+QUERY_DIFFICULTY: dict[str, dict[str, float]] = {
+    "debug": {
+        "changed_blocks": 1,
+        "changed_minimum": 1,
+        "damaged_blocks": 2,
+        "damaged_minimum": 3,
+        "stale_snapshot_rate": 0.05,
+    },
+    "realistic": {
+        "changed_blocks": 2,
+        "changed_minimum": 3,
+        "damaged_blocks": 4,
+        "damaged_minimum": 6,
+        "stale_snapshot_rate": 0.15,
+    },
+    "severe": {
+        "changed_blocks": 3,
+        "changed_minimum": 5,
+        "damaged_blocks": 4,
+        "damaged_minimum": 7,
+        "stale_snapshot_rate": 0.30,
+    },
+    "challenge": {
+        "changed_blocks": 4,
+        "changed_minimum": 6,
+        "damaged_blocks": 4,
+        "damaged_minimum": 8,
+        "stale_snapshot_rate": 0.45,
+    },
 }
 
 QUERY_MIX: dict[str, float] = {
-    "existing_stable": 0.20,
-    "existing_changed": 0.25,
-    "existing_damaged": 0.20,
-    "new_customer": 0.15,
+    "existing_stable": 0.10,
+    "existing_changed": 0.30,
+    "existing_damaged": 0.30,
+    "new_customer": 0.10,
     "related_only": 0.15,
     "insufficient": 0.05,
 }
 
 DEFAULT_EVENT_RATES: dict[str, float] = {
-    "rename_stale": 0.06,
-    "move_stale": 0.06,
-    "contact_change": 0.05,
-    "full_snapshot": 0.05,
-    "contact_omission": 0.04,
-    "paper_ocr": 0.10,
-    "legacy_format": 0.08,
-    "doc_damage": 0.04,
-    "wrong_party_type": 0.03,
-    "alpha_in_kana": 0.04,
-    "combined_kana": 0.03,
-    "kana_in_romaji": 0.03,
-    "homophone_kanji": 0.12,
-    "kana_form": 0.08,
-    "digit_transpose": 0.06,
-    "email_typo": 0.05,
-    "shared_contact": 0.15,
+    "rename_stale": 0.12,
+    "move_stale": 0.12,
+    "contact_change": 0.12,
+    "full_snapshot": 0.10,
+    "contact_omission": 0.10,
+    "paper_ocr": 0.18,
+    "legacy_format": 0.12,
+    "doc_damage": 0.08,
+    "wrong_party_type": 0.05,
+    "alpha_in_kana": 0.08,
+    "combined_kana": 0.07,
+    "kana_in_romaji": 0.07,
+    "homophone_kanji": 0.18,
+    "kana_form": 0.14,
+    "digit_transpose": 0.12,
+    "email_typo": 0.10,
+    "shared_contact": 0.22,
 }
 EVENT_NAMES: tuple[str, ...] = tuple(DEFAULT_EVENT_RATES)
 STALE_EVENT_NAMES: frozenset[str] = frozenset(
@@ -102,16 +136,76 @@ EMAIL_DOMAINS: dict[str, tuple[str, ...]] = {
 
 DEFAULT_LANDLINE_SHARE = 0.12  # party-level phone style mix (mobile vs fixed line)
 
-# Policy lifecycle data (G1): a customer holds 1..n policies, each an event
-# timeline (issued -> renewals -> claim/cancel). Observations attach to events.
+# Policy lifecycle data (G1): clean portfolios are generated before records are
+# sabotaged. Product profiles keep auto and property/casualty behavior extensible.
+PRODUCT_PROFILES: dict[str, dict[str, Any]] = {
+    "auto": {
+        "weight": 0.62,
+        "renew_p": 0.78,
+        "claim_rate": 0.20,
+        "cancel_rate": 0.16,
+        "lapse_rate": 0.07,
+        "reinstatement_rate": 0.45,
+        "term_years": 1,
+        "risk_kind": "vehicle",
+        "risk_fields": ("vehicle_id", "garaging_address", "driver_truth_ids"),
+        "property_types": ("house", "condominium", "commercial"),
+        "occupancies": ("owner", "tenant", "mixed_use"),
+        "family_role": "additional_driver",
+        "family_rate": 0.42,
+    },
+    "property_casualty": {
+        "weight": 0.28,
+        "renew_p": 0.64,
+        "claim_rate": 0.24,
+        "cancel_rate": 0.11,
+        "lapse_rate": 0.04,
+        "reinstatement_rate": 0.30,
+        "term_years": 1,
+        "risk_kind": "property",
+        "risk_fields": ("risk_address", "property_type", "occupancy"),
+        "property_types": ("house", "condominium", "commercial"),
+        "occupancies": ("owner", "tenant", "mixed_use"),
+        "family_role": "additional_insured",
+        "family_rate": 0.28,
+    },
+    "personal_liability": {
+        "weight": 0.10,
+        "renew_p": 0.58,
+        "claim_rate": 0.08,
+        "cancel_rate": 0.09,
+        "lapse_rate": 0.03,
+        "reinstatement_rate": 0.25,
+        "term_years": 1,
+        "risk_kind": "household",
+        "risk_fields": ("household_address", "liability_scope"),
+        "property_types": ("house", "condominium", "commercial"),
+        "occupancies": ("owner", "tenant", "mixed_use"),
+        "family_role": "additional_insured",
+        "family_rate": 0.35,
+    },
+}
+
 POLICY_PARAMS: dict[str, Any] = {
-    "mean_policies": 1.3,
-    "renew_p": 0.55,
-    "claim_rate": 0.18,
-    "cancel_rate": 0.12,
-    "coverage_rate": 0.45,  # family plan: a second household member on the policy
+    "mean_policies": 1.45,
+    "product_mix": tuple(PRODUCT_PROFILES),
     "start_range": (1985, 2022),
+    "household_size_probs": (0.72, 0.22, 0.06),
+    "household_sharing": {
+        "postal_address": 0.85,
+        "phone": 0.55,
+        "email": 0.18,
+    },
     "history_rate": 0.60,  # share of parties with a truth change over time (G4)
+    "claim_close_years": (1, 4),
+    "cancellation_reasons": (
+        "customer_request",
+        "nonpayment",
+        "vehicle_sold",
+        "risk_change",
+        "replacement_policy",
+    ),
+    "lapse_reasons": ("nonpayment", "administrative_lapse"),
 }
 
 CHANNEL_CONTACT_PROFILE: dict[str, dict[str, float]] = {
@@ -182,8 +276,8 @@ class SyntheticConfig:
             raise ValueError(
                 f"Unknown difficulty {self.difficulty!r}; choose from {list(DIFFICULTY)}"
             )
-        if not 0 <= self.n_parties_override <= 2_000_000:
-            raise ValueError("n_parties_override must be between 0 and 2,000,000")
+        if not 0 <= self.n_parties_override <= MAX_ENTITY_SEEDS:
+            raise ValueError(f"n_parties_override must be between 0 and {MAX_ENTITY_SEEDS:,}")
         if self.mean_records_override is not None and not 1.0 <= self.mean_records_override <= 20.0:
             raise ValueError("mean_records_override must be between 1 and 20")
         try:
@@ -295,16 +389,16 @@ class NoiseConfig:
     # per-band severity multipliers  (light / medium / heavy)
     band_scale: dict[str, float] = field(
         default_factory=lambda: {
-            "average": 0.35,
-            "poor": 0.75,
-            "catastrophic": 1.6,
+            "average": 0.55,
+            "poor": 1.05,
+            "catastrophic": 1.80,
         }
     )
     missing_rates: dict[str, float] = field(
         default_factory=lambda: {
-            "average": 0.05,
-            "poor": 0.18,
-            "catastrophic": 0.50,
+            "average": 0.10,
+            "poor": 0.30,
+            "catastrophic": 0.65,
         }
     )
     # channel → dominant corruption family (vintage / width / ocr)
@@ -326,11 +420,21 @@ class NoiseConfig:
         }
     )
     stale_rate: float = DEFAULT_STALE_RATE  # baseline multiplier for stale-history events
+    query_profile: dict[str, float] = field(
+        default_factory=lambda: dict(QUERY_DIFFICULTY["realistic"])
+    )
 
 
 def noise_for_config(cfg: SyntheticConfig) -> NoiseConfig:
     """Build the effective noise strategy from validated user overrides."""
     base = NoiseConfig()
+    realistic_stale = DIFFICULTY["realistic"]["stale"]
+    query_profile = dict(QUERY_DIFFICULTY[cfg.difficulty])
+    stale_rate = (
+        cfg.noise_stale_rate
+        if cfg.noise_stale_rate is not None
+        else min(1.0, DEFAULT_STALE_RATE * cfg.stale / realistic_stale)
+    )
     return NoiseConfig(
         event_rates={**base.event_rates, **cfg.noise_event_rates},
         field_availability={
@@ -345,7 +449,8 @@ def noise_for_config(cfg: SyntheticConfig) -> NoiseConfig:
         missing_rates={**base.missing_rates, **cfg.noise_missing_rates},
         channel_family=base.channel_family,
         vintage=base.vintage,
-        stale_rate=cfg.noise_stale_rate if cfg.noise_stale_rate is not None else base.stale_rate,
+        stale_rate=stale_rate,
+        query_profile=query_profile,
     )
 
 

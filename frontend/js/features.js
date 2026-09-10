@@ -1,20 +1,35 @@
 import { mountMatchingSearch } from "./match-view.js";
+import { mountEntityExplorer } from "./entity-explorer.js";
 import { mountEntityDetail } from "./entity-view.js";
 import { asNumber, checkedKey, clamp01, diffFields } from "./core.js";
 import { esc, str } from "./schema.js";
 import { createFlipAnimator } from "./shared.js";
+import { createViewScope } from "./lifecycle.js";
+import { bindPanelSplit } from "./panel-layout.js";
+const COMPARE_SPLIT_DEFAULT = 440;
+const COMPARE_SPLIT_MIN = 280;
+const COMPARE_SPLIT_MAX = 720;
 const SKELETON = (k = 3) => `<div class="skel">${Array.from({ length: k }, () => '<div class="card" style="height:3.2rem"></div>').join("")}</div>`;
 const crumb = (store, ...links) => `<nav class="crumbs" aria-label="${esc(store.t("crumbs"))}">${links.map((l, i) => (i % 2 ? `<a href="${esc(links[i - 1])}">${esc(l)}</a>` : l)).join(" / ")}</nav>`;
 const bar = (v) => `<span class="meter"><i style="width:${clamp01(v) * 100}%"></i></span>`;
+const mountVersions = new WeakMap();
+const mountScopes = new WeakMap();
 async function mountView(el, spec) {
+    const version = (mountVersions.get(el) ?? 0) + 1;
+    mountVersions.set(el, version);
+    mountScopes.get(el)?.dispose();
+    const scope = createViewScope(el);
+    mountScopes.set(el, scope);
     if (spec.skeleton)
         el.innerHTML = spec.skeleton;
     const data = await spec.load();
+    if (scope.isDisposed || mountVersions.get(el) !== version)
+        return;
     el.innerHTML = spec.render(data);
-    spec.bind?.(el, data);
+    spec.bind?.(el, data, scope);
 }
-export async function mountSearch(el, port, store) {
-    await mountMatchingSearch(el, port, store);
+export async function mountSearch(el, port, store, scope) {
+    await mountMatchingSearch(el, port, store, scope);
 }
 export async function mountReview(el, port, store) {
     let offset = 0;
@@ -68,25 +83,39 @@ export async function mountReview(el, port, store) {
           <td>${(asNumber(r.pair_probability) * 100).toFixed(1)}%</td><td>${asNumber(r.exact_count)}</td></tr>`;
         }).join("") || `<tr><td colspan="5" class="members">${esc(store.t("none"))}</td></tr>`}</tbody></table></div></div>`,
         bind: (el, page) => {
+            const syncRow = (tr) => {
+                const left = tr.dataset.l ?? "";
+                const right = tr.dataset.r ?? "";
+                const isRecorded = store.checked.has(key(left, right));
+                const btn = tr.querySelector("button.check");
+                tr.classList.toggle("checked", isRecorded);
+                if (!btn)
+                    return;
+                btn.classList.toggle("on", isRecorded);
+                btn.setAttribute("aria-pressed", String(isRecorded));
+                btn.setAttribute("aria-label", `${store.t(isRecorded ? "recorded" : "reviewed")}: ${left} / ${right}`);
+                btn.textContent = store.t(isRecorded ? "recorded" : "reviewed");
+            };
             el.querySelector("tbody").addEventListener("click", (e) => {
                 const btn = e.target.closest("button.check");
                 const tr = e.target.closest("tr");
                 if (!btn || !tr)
                     return;
                 store.toggleCheckedKey(key(tr.dataset.l ?? "", tr.dataset.r ?? ""));
-                tr.classList.toggle("checked", store.checked.has(key(tr.dataset.l ?? "", tr.dataset.r ?? "")));
-                const isRecorded = store.checked.has(key(tr.dataset.l ?? "", tr.dataset.r ?? ""));
-                btn.classList.toggle("on", isRecorded);
-                btn.setAttribute("aria-pressed", String(isRecorded));
-                btn.setAttribute("aria-label", `${store.t(isRecorded ? "recorded" : "reviewed")}: ${tr.dataset.l ?? ""} / ${tr.dataset.r ?? ""}`);
-                btn.textContent = store.t(isRecorded ? "recorded" : "reviewed");
+                syncRow(tr);
                 el.querySelector("#count").textContent = store.t("reviewCount", { n: page.total, read: store.checked.size });
             });
             el.querySelector("#reviewer")?.addEventListener("input", (e) => {
                 store.reviewer = e.target.value;
                 store.write("nayose.reviewer", store.reviewer);
             });
-            el.querySelector("#undo")?.addEventListener("click", () => { store.undo(); void refresh(false); });
+            el.querySelector("#undo")?.addEventListener("click", () => {
+                if (!store.undo())
+                    return;
+                el.querySelectorAll("tbody tr[data-l]").forEach(syncRow);
+                el.querySelector("#count").textContent = store.t("reviewCount", { n: page.total, read: store.checked.size });
+                void refresh(false);
+            });
             const minp = el.querySelector("#minp");
             const applyMinP = () => {
                 minP = clamp01(Number(minp.value) / 100 || 0);
@@ -187,40 +216,11 @@ export async function mountMetrics(el, port, store) {
         },
     });
 }
-export async function mountEntities(el, port, store) {
-    // F: display knobs — page size + sort (client-side on the fetched page)
-    let size = 50;
-    let sortMode = "records";
-    const apply = (hits) => [...hits].sort((a, b) => sortMode === "records"
-        ? asNumber(b.record_count) - asNumber(a.record_count)
-        : String(a.name_kanji).localeCompare(String(b.name_kanji), "ja"));
-    const paint = async () => {
-        await mountView(el, {
-            skeleton: SKELETON(),
-            load: async () => (await port.entities("", size)).rows,
-            render: (hits) => `<div class="panel">${crumb(store, "#/entities", store.t("entities"))}
-    <div class="card"><div class="toolbar"><h3 style="margin:0">${esc(store.t("entityList", { n: hits.length }))}</h3>
-      <label class="members">${esc(store.t("pageSize"))}<select id="ent-size">${[25, 50, 100, 200].map(n => `<option ${n === size ? "selected" : ""}>${n}</option>`).join("")}</select></label>
-      <label class="members">${esc(store.t("sort"))}<select id="ent-sort"><option value="records" ${sortMode === "records" ? "selected" : ""}>${esc(store.t("sortRecords"))}</option><option value="name" ${sortMode === "name" ? "selected" : ""}>${esc(store.t("sortName"))}</option></select></label></div>
-      ${apply(hits).map((r) => `<div class="card" style="margin:.45rem 0"><h3><a href="#/entity/${esc(r.nayose_id)}">${esc(r.name_kanji)}</a>
-        <span class="muted">${esc(r.name_kana || "")}</span></h3><div class="members">${esc(store.t("record_count"))}: ${asNumber(r.record_count)}</div></div>`).join("") || `<div class="empty">${esc(store.t("none"))}</div>`}
-    </div></div>`,
-            bind: (view) => {
-                view.querySelector("#ent-size")?.addEventListener("change", (e) => {
-                    size = Number(e.target.value) || 50;
-                    void paint();
-                });
-                view.querySelector("#ent-sort")?.addEventListener("change", (e) => {
-                    sortMode = e.target.value;
-                    void paint();
-                });
-            },
-        });
-    };
-    await paint();
+export async function mountEntities(el, port, store, scope) {
+    await mountEntityExplorer(el, port, store, scope);
 }
-export async function mountEntity(el, port, store, id) {
-    await mountEntityDetail(el, port, store, id);
+export async function mountEntity(el, port, store, id, scope) {
+    await mountEntityDetail(el, port, store, id, scope);
 }
 export async function mountCompare(el, port, store, l, r) {
     await mountView(el, {
@@ -235,10 +235,22 @@ export async function mountCompare(el, port, store, l, r) {
             const fields = diffFields(left);
             const side = (rec, other) => `<table><tbody>${fields.map((f) => `<tr><th scope="row">${esc(f)}</th><td class="${str(rec[f]) !== str(other[f]) ? "diff-hi" : ""}">${esc(rec[f])}</td></tr>`).join("")}</tbody></table>`;
             return `<div class="panel">${crumb(store, "#/review", store.t("review"))}
-    <div class="diff">
+    <div class="diff" data-panel-split="compare">
       <div class="card"><h3>${esc(l)}</h3>${side(left, right)}</div>
+      <div class="panel-resizer" data-panel-resizer="compare" role="separator" aria-orientation="vertical" aria-label="${esc(store.t("resizePanel"))}" aria-valuemin="${COMPARE_SPLIT_MIN}" aria-valuemax="${COMPARE_SPLIT_MAX}" aria-valuenow="${COMPARE_SPLIT_DEFAULT}" tabindex="0"></div>
       <div class="card"><h3>${esc(r)}</h3>${side(right, left)}</div>
     </div><p class="members">${esc(store.t("diffHelp"))}</p></div>`;
+        },
+        bind: (view, _rows, scope) => {
+            scope.add(bindPanelSplit(view, store, {
+                id: "compare",
+                cssVariable: "--compare-left-width",
+                defaultWidth: COMPARE_SPLIT_DEFAULT,
+                minWidth: COMPARE_SPLIT_MIN,
+                maxWidth: COMPARE_SPLIT_MAX,
+                pointerSide: "left",
+                mobileQuery: "(max-width: 980px)",
+            }));
         },
     });
 }

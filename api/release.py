@@ -43,7 +43,7 @@ def safe_run_id(run_id: str) -> str:
     return value
 
 
-def _manifest_fingerprint(path: Path) -> str | None:
+def manifest_fingerprint(path: Path) -> str | None:
     manifest = path / "generation_manifest.json"
     if not manifest.exists():
         manifest = path / "run_manifest.json"
@@ -62,8 +62,8 @@ def release_status(data_root: Path, models_root: Path) -> ReleaseStatus:
     data_target = data_link.resolve() if data_link.exists() else None
     model_target = model_link.resolve() if model_link.exists() else None
     return ReleaseStatus(
-        data_fingerprint=_manifest_fingerprint(data_target) if data_target else None,
-        model_fingerprint=_manifest_fingerprint(model_target) if model_target else None,
+        data_fingerprint=manifest_fingerprint(data_target) if data_target else None,
+        model_fingerprint=manifest_fingerprint(model_target) if model_target else None,
         data_target=data_target.name if data_target else None,
         model_target=model_target.name if model_target else None,
     )
@@ -80,6 +80,12 @@ def atomic_directory_alias(target: Path, alias: Path) -> None:
 
 def data_generation_for_fingerprint(data_root: Path, fingerprint: str) -> Path | None:
     configured_root = Path(data_root)
+    if (
+        configured_root.name != "current"
+        and (configured_root / "generation_manifest.json").is_file()
+    ):
+        direct = configured_root.resolve()
+        return direct if manifest_fingerprint(direct) == fingerprint else None
     root = (
         configured_root.parent.resolve()
         if configured_root.name == "current"
@@ -93,23 +99,25 @@ def data_generation_for_fingerprint(data_root: Path, fingerprint: str) -> Path |
     if generations.is_dir():
         candidates.extend(path for path in generations.iterdir() if path.is_dir())
     for candidate in candidates:
-        if _manifest_fingerprint(candidate) == fingerprint:
+        if manifest_fingerprint(candidate) == fingerprint:
             return candidate
     return None
 
 
 def validate_model_for_data(run_dir: Path, data_root: Path) -> str:
-    model_fingerprint = _manifest_fingerprint(run_dir)
+    model_fingerprint = manifest_fingerprint(run_dir)
     configured_root = Path(data_root)
     data_link = configured_root / "current"
     data_target = (
         configured_root.resolve()
+        if (configured_root / "generation_manifest.json").is_file()
+        else configured_root.resolve()
         if configured_root.name == "current"
         else data_link.resolve()
         if data_link.exists()
         else None
     )
-    data_fingerprint = _manifest_fingerprint(data_target) if data_target else None
+    data_fingerprint = manifest_fingerprint(data_target) if data_target else None
     if not model_fingerprint:
         raise ValueError("model manifest has no data fingerprint")
     if not data_fingerprint:

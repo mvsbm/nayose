@@ -23,7 +23,7 @@ The current bundle does not export historical merge paths. Entity detail states 
   (entity centroids over per-record vectors); typed-search hybrid — exact LIKE
   hits are always preserved, semantic similarity scores/order added once the
   engine is loaded (`NAYOSE_WARM_EMBED=1` or after a match request).
-- `api/matching.py`: scoring orchestration and bounded background request lifecycle, using the engine facade `api/engine.py.load_engine` (which still performs the corpus fingerprint guard).
+- `api/matching.py`: scoring orchestration and bounded background request lifecycle, using `api/engine.py.load_engine` (which performs the corpus fingerprint guard).
 - `api/contracts.py`: response schemas.
 - `frontend/ts/port.ts` / `infra.ts`: typed ports and transport; views contain no SQL or network calls.
 - `frontend/ts/matching-state.ts`: matching lifecycle, polling and stale-run protection.

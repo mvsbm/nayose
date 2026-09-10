@@ -1,4 +1,4 @@
-"""Ground-truth builders: the six hidden tables nayose.ipynb consumes.
+"""Ground-truth builders for party, relationship, policy, and query tables.
 
 Schemas are the authoritative v2 contract (record_truth / evaluation_truth /
 query_truth / party_truth / relation_truth / field_lineage) plus the visible
@@ -13,7 +13,9 @@ import json
 
 import pandas as pd
 
+from .config import POLICY_PARAMS
 from .noise import CUSTOMER_FIELDS
+from .policy import Policy, unique_policies
 
 FIELDS = ["party_type", *CUSTOMER_FIELDS]
 VISIBLE_FIELDS = list(CUSTOMER_FIELDS)
@@ -37,8 +39,8 @@ def build_households(n_parties: int, rng) -> dict[int, int]:
     counter = 0
     i = 0
     while i < n_parties:
-        size = rng.choice([1, 2, 3], p=[0.88, 0.09, 0.03])
-        size = min(size, n_parties - i)
+        size = rng.choice([1, 2, 3], p=POLICY_PARAMS["household_size_probs"])
+        size = min(int(size), n_parties - i)
         for j in range(size):
             relation_of[i + j] = counter
         counter += 1
@@ -85,19 +87,97 @@ def build_relation_truth(party_truth: pd.DataFrame) -> pd.DataFrame:
     return party_truth[["truth_id", "relation_id", "party_type", "hard_case"]].copy()
 
 
+def build_policy_truth(portfolios: list[list[Policy]]) -> dict[str, pd.DataFrame]:
+    """Materialize clean policy lifecycle and role truth tables."""
+    policies = unique_policies(portfolios)
+    policy_rows, term_rows, event_rows, role_rows, risk_rows = [], [], [], [], []
+    for policy in policies:
+        policy_rows.append(
+            {
+                "policy_id": policy.policy_id,
+                "holder_truth_id": f"T{policy.holder:010d}",
+                "product_type": policy.product_type,
+                "risk_id": policy.risk_id,
+                "risk_kind": policy.risk_kind,
+                "status": policy.status,
+                "covered_truth_ids": json.dumps(
+                    [f"T{member:010d}" for member in policy.covered], ensure_ascii=False
+                ),
+            }
+        )
+        risk_rows.append(
+            {
+                "risk_id": policy.risk_id,
+                "policy_id": policy.policy_id,
+                "truth_id": f"T{policy.holder:010d}",
+                "product_type": policy.product_type,
+                "risk_kind": policy.risk_kind,
+                "attributes": json.dumps(dict(policy.risk_attributes), ensure_ascii=False),
+            }
+        )
+        for term in policy.terms:
+            term_rows.append(
+                {
+                    "policy_id": term.policy_id,
+                    "term_id": term.term_id,
+                    "version": term.version,
+                    "product_type": term.product_type,
+                    "start_year": term.start_year,
+                    "end_year": term.end_year,
+                    "status": term.status,
+                }
+            )
+        for event in policy.events:
+            event_rows.append(
+                {
+                    "policy_id": policy.policy_id,
+                    "term_id": event.term_id,
+                    "event_year": event.year,
+                    "event_type": event.kind,
+                    "reason": event.reason,
+                }
+            )
+        for role in policy.roles:
+            role_rows.append(
+                {
+                    "policy_id": role.policy_id,
+                    "term_id": role.term_id,
+                    "truth_id": f"T{role.party_idx:010d}",
+                    "role": role.role,
+                }
+            )
+    return {
+        "policy_truth": pd.DataFrame(policy_rows),
+        "policy_term_truth": pd.DataFrame(term_rows),
+        "policy_event_truth": pd.DataFrame(event_rows),
+        "policy_party_truth": pd.DataFrame(role_rows),
+        "policy_risk_truth": pd.DataFrame(risk_rows),
+    }
+
+
 def build_record_truth(
     observations: pd.DataFrame, party_of: pd.Series, party_truth: pd.DataFrame
 ) -> pd.DataFrame:
     truth = party_truth.set_index("truth_id")
-    quality_by_id = observations.set_index("record_id")["record_quality"]
+    observations_idx = observations.set_index("record_id")
+    quality_by_id = observations_idx["record_quality"]
     rows = []
     for record_id, party_idx in party_of.items():
         t = truth.loc[f"T{party_idx:010d}"]
+        rec = observations_idx.loc[record_id]
         rows.append(
             {
                 "record_id": record_id,
                 "truth_id": f"T{party_idx:010d}",
                 "relation_id": t["relation_id"],
+                "policy_id": str(rec.get("policy_id", "")),
+                "policy_term_id": str(rec.get("policy_term_id", "")),
+                "policy_product": str(rec.get("policy_product", "")),
+                "policy_risk_id": str(rec.get("policy_risk_id", "")),
+                "policy_risk_kind": str(rec.get("policy_risk_kind", "")),
+                "policy_role": str(rec.get("policy_role", "")),
+                "policy_event": str(rec.get("policy_event", "")),
+                "policy_status": str(rec.get("policy_status", "")),
                 "split": t["split"],
                 "hard_case": t["hard_case"],
                 "record_quality": quality_by_id.loc[record_id],

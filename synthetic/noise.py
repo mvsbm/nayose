@@ -95,6 +95,8 @@ class RecordCorruptor:
 
     # -- event implementations: each mutates values in place, appends labels --
     def _e_rename_stale(self, values, party, rng) -> None:
+        if "name_kanji" in self.protected:
+            return
         old = party.get("old_name_kanji", "")
         if old and old != values["name_kanji"]:
             values["name_kanji"] = str(party["old_name_kanji"])
@@ -110,6 +112,8 @@ class RecordCorruptor:
                 self.lineage.append(("name_kanji", label))
 
     def _e_move_stale(self, values, party, rng) -> None:
+        if "address" in self.protected or "postal_code" in self.protected:
+            return
         old_addr = party.get("old_address", "")
         if old_addr and old_addr != values["address"]:
             values["address"] = str(party["old_address"])
@@ -120,6 +124,8 @@ class RecordCorruptor:
             self.protected.add("postal_code")
 
     def _e_contact_change(self, values, party, rng) -> None:
+        if "phone" in self.protected or "email" in self.protected:
+            return
         old_phone = party.get("old_phone", "")
         if old_phone and old_phone != values["phone"]:
             values["phone"] = old_phone
@@ -225,7 +231,7 @@ class RecordCorruptor:
 
     def _e_kana_form(self, values, party, rng) -> None:
         """Same reading, different kana script: hiragana or half-width katakana."""
-        if not values["name_kana"]:
+        if "name_kana" in self.protected or not values["name_kana"]:
             return
         if rng.random() < 0.5:
             values["name_kana"] = jaconv.kata2hira(values["name_kana"])
@@ -267,7 +273,7 @@ class RecordCorruptor:
         """Kana rendered partly in Latin letters (legacy-system look). The
         intent is NAME_KANA only — never name_kanji (a Latin letter inside
         kanji was a generator bug that leaked artifacts into observed names)."""
-        if not values["name_kana"]:
+        if "name_kana" in self.protected or not values["name_kana"]:
             return
         pos = int(rng.integers(len(values["name_kana"])))
         values["name_kana"] = (
@@ -298,11 +304,15 @@ class RecordCorruptor:
                 self.protected.add("email")
 
     def _e_combined_kana(self, values, party, rng) -> None:
+        if "name_kana" in self.protected:
+            return
         if " " in values["name_kana"]:
             values["name_kana"] = values["name_kana"].replace(" ", "")
             self.lineage.append(("name_kana", "combined_kana"))
 
     def _e_kana_in_romaji(self, values, party, rng) -> None:
+        if "name_romaji" in self.protected:
+            return
         values["name_romaji"] = values["name_kana"]
         self.lineage.append(("name_romaji", "kana_in_romaji"))
 
@@ -416,10 +426,203 @@ class RecordCorruptor:
 
 
 class QueryCorruptor:
-    """Scenario-driven corruption for benchmark queries (same lineage path)."""
+    """Scenario-driven corruption for benchmark queries."""
+
+    BLOCKS: tuple[tuple[str, ...], ...] = (
+        ("name_kanji", "name_kana", "name_romaji"),
+        ("date_birth",),
+        ("postal_code", "address"),
+        ("phone", "email"),
+    )
 
     def __init__(self, noise: NoiseConfig):
         self.noise = noise
+
+    @staticmethod
+    def _text(value: object) -> str:
+        return "" if value is None or pd.isna(value) else str(value)
+
+    @staticmethod
+    def _hard_text_variant(value: str, rng: np.random.Generator) -> tuple[str, str]:
+        if not value:
+            return value, "unchanged"
+        for _ in range(4):
+            mutated, label = ocr_mutate(value, 1.0, rng)
+            if mutated != value:
+                return mutated, label
+        chars = list(value)
+        if len(chars) == 1:
+            return "", "delete"
+        if rng.random() < 0.5:
+            index = int(rng.integers(len(chars) - 1))
+            chars[index], chars[index + 1] = chars[index + 1], chars[index]
+            return "".join(chars), "transpose"
+        index = int(rng.integers(len(chars)))
+        chars.pop(index)
+        return "".join(chars), "delete"
+
+    @staticmethod
+    def _digit_variant(value: str, rng: np.random.Generator) -> tuple[str, str]:
+        positions = [index for index, char in enumerate(value) if char.isdigit()]
+        if not positions:
+            return value, "unchanged"
+        chars = list(value)
+        operation = str(rng.choice(("replace", "delete", "transpose")))
+        if operation == "replace":
+            index = positions[int(rng.integers(len(positions)))]
+            original = int(chars[index])
+            chars[index] = str((original + int(rng.integers(1, 10))) % 10)
+            return "".join(chars), "digit_substitute"
+        if operation == "delete" and len(positions) > 4:
+            chars.pop(positions[int(rng.integers(len(positions)))])
+            return "".join(chars), "digit_delete"
+        if len(positions) > 1:
+            index = int(rng.integers(len(positions) - 1))
+            left, right = positions[index : index + 2]
+            if chars[left] != chars[right]:
+                chars[left], chars[right] = chars[right], chars[left]
+                return "".join(chars), "digit_transpose"
+        index = positions[0]
+        chars[index] = str((int(chars[index]) + 1) % 10)
+        return "".join(chars), "digit_substitute"
+
+    @staticmethod
+    def _date_variant(value: str, rng: np.random.Generator) -> tuple[str, str]:
+        parts = value.split("-")
+        if len(parts) == 3 and all(part.isdigit() for part in parts):
+            day = int(parts[2])
+            replacement = 1 if day != 1 else 2
+            return f"{parts[0]}-{parts[1]}-{replacement:02d}", "date_typo"
+        return QueryCorruptor._hard_text_variant(value, rng)
+
+    @staticmethod
+    def _email_variant(value: str, rng: np.random.Generator) -> tuple[str, str]:
+        local, separator, domain = value.partition("@")
+        if not separator or not local:
+            return QueryCorruptor._hard_text_variant(value, rng)
+        mutated, label = QueryCorruptor._hard_text_variant(local, rng)
+        return f"{mutated}@{domain}", f"email_{label}"
+
+    @staticmethod
+    def _romaji_variant(value: str, rng: np.random.Generator) -> tuple[str, str]:
+        parts = value.split()
+        if len(parts) >= 2:
+            return " ".join(reversed(parts)), "romaji_order"
+        return QueryCorruptor._hard_text_variant(value, rng)
+
+    def _mutate_field(
+        self,
+        values: dict[str, str],
+        field: str,
+        rng: np.random.Generator,
+        prefix: str,
+    ) -> bool:
+        value = values[field]
+        if not value:
+            return False
+        if field in {"phone", "postal_code"}:
+            mutated, label = self._digit_variant(value, rng)
+        elif field == "date_birth":
+            mutated, label = self._date_variant(value, rng)
+        elif field == "email":
+            mutated, label = self._email_variant(value, rng)
+        elif field == "name_romaji":
+            mutated, label = self._romaji_variant(value, rng)
+        else:
+            mutated, label = self._hard_text_variant(value, rng)
+        if mutated == value:
+            return False
+        values[field] = mutated
+        self._lineage.append((field, f"{prefix}_{label}"))
+        return True
+
+    def _apply_availability(
+        self, values: dict[str, str], channel: str | None, rng: np.random.Generator
+    ) -> None:
+        for field, keep in self.noise.field_availability.get(channel or "", {}).items():
+            if values[field] and (keep == 0.0 or rng.random() > keep):
+                values[field] = ""
+                self._lineage.append((field, "missing"))
+
+    def _apply_channel_format(
+        self, values: dict[str, str], channel: str | None, rng: np.random.Generator
+    ) -> None:
+        if channel == "legacy_migration":
+            if values["date_birth"]:
+                year, month, day = (int(part) for part in values["date_birth"].split("-"))
+                values["date_birth"] = date_to_era(year, month, day)
+                self._lineage.append(("date_birth", "legacy_date"))
+            if values["name_kana"]:
+                values["name_kana"] = mixed_width(values["name_kana"])
+                self._lineage.append(("name_kana", "legacy_width"))
+            if values["phone"]:
+                values["phone"] = phone_variant(values["phone"], rng)
+                self._lineage.append(("phone", "legacy_phone"))
+
+    def _apply_stale_snapshot(
+        self, values: dict[str, str], party: pd.Series, rng: np.random.Generator
+    ) -> None:
+        profile = self.noise.query_profile
+        if rng.random() >= float(profile.get("stale_snapshot_rate", 0.0)):
+            return
+        groups = {
+            "name": {
+                "name_kanji": "old_name_kanji",
+                "name_kana": "old_name_kana",
+                "name_romaji": "old_name_romaji",
+            },
+            "location": {"postal_code": "old_postal_code", "address": "old_address"},
+            "contact": {"phone": "old_phone", "email": "old_email"},
+        }
+        available = [
+            group
+            for group, fields in groups.items()
+            if any(self._text(party.get(old_field, "")) for old_field in fields.values())
+        ]
+        if not available:
+            return
+        group = str(rng.choice(available))
+        for field, old_field in groups[group].items():
+            old_value = self._text(party.get(old_field, ""))
+            if old_value and old_value != values[field]:
+                values[field] = old_value
+                self._lineage.append((field, "stale_snapshot"))
+
+    def _apply_blocks(
+        self,
+        values: dict[str, str],
+        party: pd.Series,
+        rng: np.random.Generator,
+        block_count: int,
+        minimum_changed: int,
+        prefix: str,
+    ) -> None:
+        selected = rng.choice(len(self.BLOCKS), size=block_count, replace=False)
+        for block_index in np.asarray(selected).reshape(-1):
+            block = self.BLOCKS[int(block_index)]
+            if prefix == "damaged" and rng.random() < 0.35:
+                for field in block:
+                    if values[field]:
+                        values[field] = ""
+                        self._lineage.append((field, "missing"))
+                continue
+            for field in block:
+                if values[field] and rng.random() < 0.82:
+                    self._mutate_field(values, field, rng, prefix)
+
+        changed = sum(
+            values[field] != self._text(party.get(field, "")) for field in CUSTOMER_FIELDS
+        )
+        if changed < minimum_changed:
+            for field in CUSTOMER_FIELDS:
+                if changed >= minimum_changed:
+                    break
+                if values[field] != self._text(party.get(field, "")):
+                    continue
+                for _ in range(8):
+                    if self._mutate_field(values, field, rng, prefix):
+                        changed += 1
+                        break
 
     def corrupt(
         self,
@@ -427,54 +630,53 @@ class QueryCorruptor:
         party: pd.Series,
         rng: np.random.Generator,
         related_party: pd.Series | None = None,
+        channel: str | None = None,
     ) -> CorruptionResult:
         base = {
-            "party_type": str(party["party_type"]),
-            "name_kanji": str(party["name_kanji"]),
-            "name_kana": str(party["name_kana"]),
-            "name_romaji": str(party["name_romaji"]),
-            "date_birth": str(party["date_birth"]),
-            "postal_code": str(party["postal_code"]),
-            "address": str(party["address"]),
-            "phone": str(party["phone"]),
-            "email": str(party["email"]),
+            field: self._text(party.get(field, "")) for field in ("party_type", *CUSTOMER_FIELDS)
         }
-        lineage: list[tuple[str, str]] = []
+        self._lineage: list[tuple[str, str]] = []
 
         if scenario == "existing_stable":
-            pass
-        elif scenario == "existing_changed":
-            for field in CUSTOMER_FIELDS:
-                if base[field] and rng.random() < 0.30:
-                    base[field], label = ocr_mutate(base[field], 0.2, rng)
-                    if label != "unchanged":
-                        lineage.append((field, f"changed_{label}"))
-        elif scenario == "existing_damaged":
-            for field in CUSTOMER_FIELDS:
-                if base[field] and rng.random() < 0.5:
-                    base[field], label = ocr_mutate(base[field], 0.5, rng)
-                    if label != "unchanged":
-                        lineage.append((field, label))
-                    elif rng.random() < 0.4:
-                        base[field] = ""
-                        lineage.append((field, "missing"))
-        elif scenario == "new_customer":
-            for field in CUSTOMER_FIELDS:
-                if base[field] and rng.random() < 0.6:
-                    base[field], label = ocr_mutate(base[field], 0.35, rng)
-                    if label != "unchanged":
-                        lineage.append((field, label))
-            base["postal_code"] = (
-                postal_variant(base["postal_code"], rng) if base["postal_code"] else ""
+            self._apply_availability(base, channel, rng)
+            self._apply_channel_format(base, channel, rng)
+            return CorruptionResult(values=base, lineage=self._lineage)
+        if scenario in {"existing_changed", "existing_damaged", "new_customer"}:
+            self._apply_availability(base, channel, rng)
+            if scenario != "new_customer":
+                self._apply_stale_snapshot(base, party, rng)
+            profile = self.noise.query_profile
+            self._apply_blocks(
+                base,
+                party,
+                rng,
+                block_count=int(
+                    profile["damaged_blocks"]
+                    if scenario == "existing_damaged"
+                    else profile["changed_blocks"]
+                ),
+                minimum_changed=int(
+                    profile["damaged_minimum"]
+                    if scenario == "existing_damaged"
+                    else profile["changed_minimum"]
+                ),
+                prefix={
+                    "existing_changed": "changed",
+                    "existing_damaged": "damaged",
+                    "new_customer": "new",
+                }[scenario],
             )
+            self._apply_channel_format(base, channel, rng)
         elif scenario == "related_only" and related_party is not None:
             for field in CUSTOMER_FIELDS[1:]:
-                base[field] = str(related_party.get(field, ""))
-                lineage.append((field, "related"))
+                base[field] = self._text(related_party.get(field, ""))
+                self._lineage.append((field, "related"))
+            self._apply_availability(base, channel, rng)
+            self._apply_channel_format(base, channel, rng)
         elif scenario == "insufficient":
             for field in CUSTOMER_FIELDS:
                 if rng.random() < 0.7:
                     base[field] = ""
-                    lineage.append((field, "missing"))
+                    self._lineage.append((field, "missing"))
 
-        return CorruptionResult(values=base, lineage=lineage)
+        return CorruptionResult(values=base, lineage=self._lineage)

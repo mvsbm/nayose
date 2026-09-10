@@ -6,15 +6,23 @@ Pure-ish functions taking an injected ``rng``; deterministic per seed.
 from __future__ import annotations
 
 import time
+from collections.abc import Callable, Iterator
 
 import numpy as np
 import pandas as pd
 
-from .config import NoiseConfig, SyntheticConfig
+from .config import POLICY_PARAMS, NoiseConfig, SyntheticConfig
 from .noise import QueryCorruptor, RecordCorruptor
-from .policy import HistoryState, Policy, pick_policy_event, snapshot_at
+from .policy import (
+    HistoryState,
+    Policy,
+    pick_policy_event,
+    policy_role,
+    policy_status_at,
+    snapshot_at,
+)
 from .providers import AddressSource, BuildingComposer, CompanySource, PersonaSource
-from .realism import (  # DIP: realistic contacts through one interface
+from .realism import (
     channel_family,
     channel_landline_share,
     default_phone,
@@ -42,6 +50,95 @@ def _dob(person_age: int, rng: np.random.Generator, cfg: SyntheticConfig) -> str
     return f"{year}-{int(rng.integers(1, 13)):02d}-{int(rng.integers(1, 29)):02d}"
 
 
+def iter_clean_party_rows(
+    cfg: SyntheticConfig,
+    rng: np.random.Generator,
+    persona: PersonaSource,
+    companies: CompanySource,
+    address: AddressSource,
+    buildings: BuildingComposer,
+    target_rows: int | None = None,
+    progress: Callable[[int, int], None] | None = None,
+) -> Iterator[dict[str, str]]:
+    """Yield clean canonical parties without retaining the population in memory."""
+    emitted = 0
+    seed_index = 0
+    while seed_index < cfg.n_parties and (target_rows is None or emitted < target_rows):
+        is_person = rng.random() < cfg.person_share
+        candidates: list[dict[str, str]] = []
+        if is_person:
+            person = persona.sample(rng, 1)[0]
+            postal, full_address = address.format(
+                address.sample(rng, person.prefecture), rng, buildings
+            )
+            name_kanji, name_kana, name_romaji = (
+                person.name_kanji,
+                person.name_kana,
+                person.name_romaji,
+            )
+            date_birth = _dob(person.age, rng, cfg)
+            main_email = generate_email(name_kanji, name_romaji, rng)
+            if rng.random() < cfg.twin_rate:
+                dna = int(rng.integers(1, 10))
+                twin_birth = _dob(max(person.age - dna, 18), rng, cfg)
+                twin_postal, twin_address = address.format(
+                    address.sample(rng, person.prefecture), rng, buildings
+                )
+                candidates.append(
+                    {
+                        "party_type": "person",
+                        "name_kanji": name_kanji,
+                        "name_kana": name_kana,
+                        "name_romaji": name_romaji,
+                        "date_birth": twin_birth,
+                        "postal_code": twin_postal,
+                        "address": twin_address,
+                        "phone": default_phone(rng),
+                        "email": generate_email(name_kanji, name_romaji, rng),
+                    }
+                )
+            main_phone = default_phone(rng)
+            candidates.append(
+                {
+                    "party_type": "person",
+                    "name_kanji": name_kanji,
+                    "name_kana": name_kana,
+                    "name_romaji": name_romaji,
+                    "date_birth": date_birth,
+                    "postal_code": postal,
+                    "address": full_address,
+                    "phone": main_phone,
+                    "email": main_email,
+                }
+            )
+        else:
+            company = companies.sample(rng)
+            postal, full_address = address.format(address.sample(rng, None), rng, buildings)
+            company_email = generate_email(company.name_kanji, company.name_romaji, rng)
+            company_phone = default_phone(rng)
+            candidates.append(
+                {
+                    "party_type": "company",
+                    "name_kanji": company.name_kanji,
+                    "name_kana": company.name_kana,
+                    "name_romaji": company.name_romaji,
+                    "date_birth": "",
+                    "postal_code": postal,
+                    "address": full_address,
+                    "phone": company_phone,
+                    "email": company_email,
+                }
+            )
+        for candidate in candidates:
+            if target_rows is not None and emitted >= target_rows:
+                break
+            yield candidate
+            emitted += 1
+        seed_index += 1
+        if progress is not None:
+            progress(seed_index, cfg.n_parties)
+
+
 def generate_parties(
     cfg: SyntheticConfig,
     rng: np.random.Generator,
@@ -51,60 +148,16 @@ def generate_parties(
     buildings: BuildingComposer,
 ) -> pd.DataFrame:
     """Clean party truth: one row per customer entity."""
-    rows = []
     t0 = time.perf_counter()
     step = _progress_interval(cfg.n_parties)
-    for i in range(cfg.n_parties):
-        is_person = rng.random() < cfg.person_share
-        if is_person:
-            p = persona.sample(rng, 1)[0]
-            postal, full_addr = address.format(address.sample(rng, p.prefecture), rng, buildings)
-            kanji, kana, romaji = p.name_kanji, p.name_kana, p.name_romaji
-            dob = _dob(p.age, rng, cfg)
-            email = generate_email(kanji, romaji, rng)
-            party_type = "person"
-            if rng.random() < cfg.twin_rate:
-                # Hard-case twin: two customers with the SAME name/kana/romaji but
-                # different identity fields (dob, address, contacts). Exact-name
-                # anchors become ambiguous; resolution must use other fields.
-                dna = int(rng.integers(1, 10))
-                t_dob = _dob(max(p.age - dna, 18), rng, cfg)
-                t_postal, t_addr = address.format(address.sample(rng, p.prefecture), rng, buildings)
-                rows.append(
-                    {
-                        "party_type": "person",
-                        "name_kanji": kanji,
-                        "name_kana": kana,
-                        "name_romaji": romaji,
-                        "date_birth": t_dob,
-                        "postal_code": t_postal,
-                        "address": t_addr,
-                        "phone": default_phone(rng),
-                        "email": generate_email(kanji, romaji, rng),
-                    }
-                )
-        else:
-            c = companies.sample(rng)
-            postal, full_addr = address.format(address.sample(rng, None), rng, buildings)
-            kanji, kana, romaji = c.name_kanji, c.name_kana, c.name_romaji
-            dob = ""
-            email = generate_email(kanji, romaji, rng)
-            party_type = "company"
-        rows.append(
-            {
-                "party_type": party_type,
-                "name_kanji": kanji,
-                "name_kana": kana,
-                "name_romaji": romaji,
-                "date_birth": dob,
-                "postal_code": postal,
-                "address": full_addr,
-                "phone": default_phone(rng),
-                "email": email,
-            }
-        )
-        if (i + 1) % step == 0:
-            print(_eta_line("parties", i + 1, cfg.n_parties, t0))
+
+    def report(done: int, total: int) -> None:
+        if done % step == 0:
+            print(_eta_line("parties", done, total, t0))
+
+    rows = list(
+        iter_clean_party_rows(cfg, rng, persona, companies, address, buildings, progress=report)
+    )
     frame = pd.DataFrame(rows)
     dup = frame.name_kanji.value_counts()
     frame["name_dup_count"] = frame.name_kanji.map(dup).to_numpy()
@@ -114,6 +167,30 @@ def generate_parties(
         f"unique names {frame.name_kanji.nunique():,}"
     )
     return frame
+
+
+def apply_household_sharing(
+    parties: pd.DataFrame,
+    relation_members: dict[int, list[int]],
+    rng: np.random.Generator,
+) -> pd.DataFrame:
+    """Create clean household-level contact overlap before record sabotage."""
+    sharing = POLICY_PARAMS["household_sharing"]
+    result = parties.copy()
+    for members in relation_members.values():
+        if len(members) < 2:
+            continue
+        anchor = result.loc[members[0]]
+        for member in members[1:]:
+            if rng.random() < float(sharing["postal_address"]):
+                result.loc[member, ["postal_code", "address"]] = anchor[
+                    ["postal_code", "address"]
+                ].to_numpy()
+            if rng.random() < float(sharing["phone"]):
+                result.loc[member, "phone"] = anchor["phone"]
+            if rng.random() < float(sharing["email"]):
+                result.loc[member, "email"] = anchor["email"]
+    return result
 
 
 def generate_agencies(cfg: SyntheticConfig, rng: np.random.Generator) -> pd.DataFrame:
@@ -211,18 +288,41 @@ def build_observations(
                 if quality_roll < cfg.poor
                 else "average"
             )
-            agency = agency_rows[int(rng.integers(len(agency_rows)))]
+            party_policies = policies[party_idx]
+            compatible_agencies = [
+                candidate
+                for candidate in agency_rows
+                if not party_policies
+                or any(
+                    event.year <= noise_cfg.vintage[candidate["channel"]][1]
+                    for policy in party_policies
+                    for event in policy.events
+                )
+            ]
+            agency = compatible_agencies[int(rng.integers(len(compatible_agencies)))]
             channel = agency["channel"]
             low, high = noise_cfg.vintage[channel]
-            # G1: attach the record to a (policy, event) that fits the channel era
-            party_policies = policies[party_idx]
+            # G1: attach the record to a (policy, event) that fits the channel era.
             if party_policies:
                 policy, event = pick_policy_event(rng, party_policies, high)
                 policy_id = policy.policy_id
-                upper = max(low + 1, min(high, event.year) + 1)
-                obs_year = int(rng.integers(low, upper))
+                policy_term_id = event.term_id
+                policy_product = policy.product_type
+                policy_risk_id = policy.risk_id
+                policy_risk_kind = policy.risk_kind
+                policy_event = event.kind
+                policy_status = policy_status_at(policy, max(low, min(high, event.year)))
+                policy_party_role = policy_role(policy, party_idx, event.term_id)
+                obs_year = max(low, min(high, event.year))
             else:
                 policy_id = f"P{record_idx // 1:010d}"
+                policy_term_id = ""
+                policy_product = ""
+                policy_risk_id = ""
+                policy_risk_kind = ""
+                policy_event = ""
+                policy_status = "active"
+                policy_party_role = "named_insured"
                 obs_year = int(rng.integers(low, high + 1))
             snapshot = snapshot_at(history.get(party_idx, []), obs_year)
             observed_at = (
@@ -238,6 +338,13 @@ def build_observations(
                     "channel": channel,
                     "observed_at": observed_at,
                     "record_quality": quality,
+                    "policy_term_id": policy_term_id,
+                    "policy_product": policy_product,
+                    "policy_risk_id": policy_risk_id,
+                    "policy_risk_kind": policy_risk_kind,
+                    "policy_event": policy_event,
+                    "policy_status": policy_status,
+                    "policy_role": policy_party_role,
                     **result.values,
                 }
             )
@@ -261,12 +368,14 @@ def generate_queries(
     address: AddressSource,
     buildings: BuildingComposer,
     rng: np.random.Generator,
+    agencies: pd.DataFrame | None = None,
 ) -> tuple[pd.DataFrame, list[dict], dict[str, list[tuple[str, str]]]]:
     """Benchmark queries + evaluation metadata + query lineage."""
     n_queries = int(len(parties) * cfg.query_share)
     scenarios = list(cfg.query_mix.keys())
     probs = list(cfg.query_mix.values())
     corruptor = QueryCorruptor(noise_cfg)
+    agency_rows = agencies.to_dict("records") if agencies is not None and len(agencies) else []
     rows, meta, lineage = [], [], {}
     relation_members: dict[int, list[int]] = {}
     for party_idx, rel in relation_of.items():
@@ -279,6 +388,15 @@ def generate_queries(
 
     for i in range(n_queries):
         query_id = f"Q{i:010d}"
+        agency = (
+            agency_rows[int(rng.integers(len(agency_rows)))]
+            if agency_rows
+            else {
+                "agency_id": f"A{int(rng.integers(cfg.n_agencies)):03d}",
+                "channel": str(rng.choice(["web", "agent_pc", "paper_ocr", "legacy_migration"])),
+            }
+        )
+        channel = str(agency["channel"])
         scenario = str(rng.choice(scenarios, p=probs))
         if scenario == "related_only" and not multi_members:
             scenario = "existing_stable"
@@ -306,7 +424,9 @@ def generate_queries(
             action = "NEW_CUSTOMER"
             rel = relation_of.get(party_idx, party_idx)
             hard_case = ""
-            lineage[query_id] = [(f, "new_customer") for f in values if f != "party_type"]
+            result = corruptor.corrupt("new_customer", pd.Series(values), rng, channel=channel)
+            values = result.values
+            lineage[query_id] = result.lineage
         else:
             if scenario == "related_only":
                 members = list(multi_members[int(rng.integers(len(multi_members)))])
@@ -319,7 +439,7 @@ def generate_queries(
                 related_idx = party_idx
             party = parties.loc[party_idx]
             related = parties.loc[related_idx] if scenario == "related_only" else None
-            result = corruptor.corrupt(scenario, party, rng, related_party=related)
+            result = corruptor.corrupt(scenario, party, rng, related_party=related, channel=channel)
             values = result.values
             target = f"T{party_idx:010d}"
             owner = f"T{related_idx:010d}" if scenario == "related_only" else target
@@ -349,8 +469,8 @@ def generate_queries(
         rows.append(
             {
                 "query_id": query_id,
-                "agency_id": f"A{int(rng.integers(cfg.n_agencies)):03d}",
-                "channel": str(rng.choice(["web", "agent_pc", "paper_ocr", "legacy_migration"])),
+                "agency_id": str(agency["agency_id"]),
+                "channel": channel,
                 "observed_at": cfg.query_date,
                 **values,
             }

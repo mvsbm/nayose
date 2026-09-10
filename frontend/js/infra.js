@@ -1,9 +1,36 @@
-export class ApiError extends Error {
-}
+import { adaptDatasetRows } from "./dataset-adapter.js";
+import { ApiError } from "./api-error.js";
 function adaptSearchResult(data) {
     if (!data || typeof data !== "object" || !Array.isArray(data.rows))
         throw new ApiError("search_schema_mismatch");
     return data;
+}
+function isObject(value) {
+    return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+function adaptEntityExplorerPage(data) {
+    if (!isObject(data))
+        throw new ApiError("entity_explorer_schema_mismatch");
+    const page = data;
+    const validSorts = new Set(["relevance", "records", "name", "last_seen"]);
+    const validModes = new Set(["exact", "hybrid_fallback"]);
+    if (!Array.isArray(page.rows) || typeof page.total !== "number" || typeof page.offset !== "number" || typeof page.limit !== "number" || typeof page.query !== "string" || !validSorts.has(page.sort ?? "") || !validModes.has(page.search_mode ?? "") || typeof page.total_is_exact !== "boolean" || !isObject(page.filters) || !isObject(page.query_plan) || !isObject(page.search_trace)) {
+        throw new ApiError("entity_explorer_schema_mismatch");
+    }
+    return page;
+}
+function adaptEntityGraph(data) {
+    if (!isObject(data))
+        throw new ApiError("entity_graph_schema_mismatch");
+    const graph = data;
+    const validKinds = new Set(["entity", "record", "policy", "agency", "channel"]);
+    const validEdgeKinds = new Set(["observed", "potential"]);
+    const validNode = (node) => isObject(node) && typeof node.id === "string" && typeof node.label === "string" && validKinds.has(String(node.kind)) && isObject(node.metadata);
+    const validEdge = (edge) => isObject(edge) && typeof edge.source === "string" && typeof edge.target === "string" && typeof edge.relation === "string" && validEdgeKinds.has(String(edge.kind)) && isObject(edge.evidence);
+    if (typeof graph.entity_id !== "string" || !Array.isArray(graph.nodes) || !Array.isArray(graph.edges) || graph.nodes.some(node => !validNode(node)) || graph.edges.some(edge => !validEdge(edge)) || typeof graph.truncated !== "boolean" || typeof graph.potential_matches_available !== "boolean") {
+        throw new ApiError("entity_graph_schema_mismatch");
+    }
+    return graph;
 }
 function adaptGenerationPreview(data) {
     if (!data || typeof data !== "object")
@@ -16,12 +43,15 @@ function adaptGenerationPreview(data) {
 }
 async function fetchJson(path, init) {
     const controller = new AbortController();
+    const externalSignal = init?.signal;
+    const abortFromCaller = () => controller.abort();
+    if (externalSignal?.aborted)
+        controller.abort();
+    else
+        externalSignal?.addEventListener("abort", abortFromCaller, { once: true });
     const timeout = setTimeout(() => controller.abort(), 20000);
     const headers = new Headers(init?.headers ?? {});
-    // Bearer adapter: the transport attaches a deployment token when present, so
-    // the GUI works behind NAYOSE_API_TOKEN too. The token is stored under
-    // "nayose.token" (e.g. set by an authed wrapper page) — views never think
-    // about auth; the Facade owns that sharp edge.
+    // Attach the deployment token when present. Views do not handle auth.
     try {
         const token = localStorage.getItem("nayose.token");
         if (token)
@@ -37,12 +67,15 @@ async function fetchJson(path, init) {
         return await res.json();
     }
     catch (err) {
+        if (externalSignal?.aborted)
+            throw new ApiError("request_cancelled");
         if (controller.signal.aborted)
             throw new ApiError("request_timeout");
         throw err;
     }
     finally {
         clearTimeout(timeout);
+        externalSignal?.removeEventListener("abort", abortFromCaller);
     }
 }
 export class ApiAdapter {
@@ -75,9 +108,19 @@ export class ApiAdapter {
     adminDatasetSummary(generationId) {
         return fetchJson(`/api/admin/generations/${encodeURIComponent(generationId)}/summary`).then(d => d);
     }
-    adminDatasetRows(generationId, table, query, offset, limit) {
-        const params = new URLSearchParams({ table, q: query, offset: String(offset), limit: String(limit) });
-        return fetchJson(`/api/admin/generations/${encodeURIComponent(generationId)}/records?${params}`).then(d => d);
+    adminDatasetRows(generationId, table, query, offset, limit, filters = {}, includeTotal = false, after = "", signal) {
+        const params = new URLSearchParams({
+            table,
+            q: query,
+            offset: String(offset),
+            limit: String(limit),
+            count: String(includeTotal),
+        });
+        if (after)
+            params.set("after", after);
+        if (Object.keys(filters).length)
+            params.set("filters", JSON.stringify(filters));
+        return fetchJson(`/api/admin/generations/${encodeURIComponent(generationId)}/records?${params}`, { signal }).then(adaptDatasetRows);
     }
     adminStart(action, params) {
         return fetchJson("/api/admin/jobs", {
@@ -129,6 +172,17 @@ export class ApiAdapter {
         if (filters?.min_record_count)
             params.set("min_record_count", String(filters.min_record_count));
         return fetchJson(`/api/entities?${params.toString()}`).then(adaptSearchResult);
+    }
+    entityExplorer(q, offset, limit, sort, filters) {
+        const params = new URLSearchParams({ q, run_id: this.runId, offset: String(offset), limit: String(limit), sort });
+        if (filters?.party_type)
+            params.set("party_type", filters.party_type);
+        if (filters?.min_record_count)
+            params.set("min_record_count", String(filters.min_record_count));
+        return fetchJson(`/api/entities/explorer?${params.toString()}`).then(adaptEntityExplorerPage);
+    }
+    entityGraph(id, includePotential = false) {
+        return fetchJson(`/api/entity/${encodeURIComponent(id)}/graph?run_id=${encodeURIComponent(this.runId)}&include_potential=${includePotential ? "true" : "false"}`).then(adaptEntityGraph);
     }
     normalizePreview(text) {
         return fetchJson(`/api/normalize?text=${encodeURIComponent(text)}`).then(d => d);
@@ -191,9 +245,8 @@ export class ApiAdapter {
         }
     }
 }
-// Decorator/Proxy: memoizes read ops of any QueryPort, keyed by (run, op,
-// args); run() clears the cache. Mutations and command-adjacent reads
-// (recommend/loadDecisions/saveDecisions) pass through uncached.
+// Memoizes read operations by run, operation, and arguments. run() clears the
+// cache; mutations and command-adjacent reads pass through uncached.
 export class MemoProxy {
     inner;
     runId = "";
@@ -229,8 +282,8 @@ export class MemoProxy {
     adminDatasetSummary(generationId) {
         return this.inner.adminDatasetSummary(generationId);
     }
-    adminDatasetRows(generationId, table, query, offset, limit) {
-        return this.inner.adminDatasetRows(generationId, table, query, offset, limit);
+    adminDatasetRows(generationId, table, query, offset, limit, filters, includeTotal, after, signal) {
+        return this.inner.adminDatasetRows(generationId, table, query, offset, limit, filters, includeTotal, after, signal);
     }
     adminStart(action, params) {
         return this.inner.adminStart(action, params);
@@ -268,6 +321,12 @@ export class MemoProxy {
     }
     entities(q, limit, filters) {
         return this.memo("entities", `${q}:${limit ?? 50}:${JSON.stringify(filters ?? {})}`, () => this.inner.entities(q, limit, filters));
+    }
+    entityExplorer(q, offset, limit, sort, filters) {
+        return this.memo("entityExplorer", `${q}:${offset}:${limit}:${sort}:${JSON.stringify(filters ?? {})}`, () => this.inner.entityExplorer(q, offset, limit, sort, filters));
+    }
+    entityGraph(id, includePotential = false) {
+        return this.memo("entityGraph", `${id}:${includePotential}`, () => this.inner.entityGraph(id, includePotential));
     }
     normalizePreview(text) {
         return this.memo("normalize", text, () => this.inner.normalizePreview(text));

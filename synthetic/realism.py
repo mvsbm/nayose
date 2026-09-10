@@ -1,8 +1,8 @@
-"""Baseline contact realism: phone styles and email domains (SRP).
+"""Baseline contact realism: phone styles and email domains.
 
-The engine and query builders ASK for a realistic contact value; the format
-knowledge (fixed-line vs mobile, era-appropriate carrier/ISP domains) lives
-here and in config.py — never hardcoded in the engine.
+The engine and query builders request realistic contact values; format
+knowledge (fixed-line versus mobile, era-appropriate carrier/ISP domains)
+lives here and in config.py rather than in the engine.
 
 Privacy: domain suffixes are real shapes only; every address is synthetic.
 """
