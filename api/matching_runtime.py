@@ -16,6 +16,7 @@ import duckdb
 from fastapi import HTTPException
 
 from api.evidence import sufficient
+from api.job_store import SQLiteJobStore
 from api.matching_components import empty_result
 from api.search import EntitySearch
 
@@ -138,12 +139,38 @@ class EngineSession:
 
 
 class MatchingJobRunner:
-    def __init__(self, session: EngineSession):
+    def __init__(self, session: EngineSession, job_store_path: Path | None = None):
         self.session = session
         self._jobs_lock = Lock()
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="matching")
         self._jobs: dict[str, dict[str, Any]] = {}
         self._futures: dict[str, Future] = {}
+        repo_root = getattr(session.repo, "root", session.data_dir.parent)
+        self._job_store = SQLiteJobStore(
+            job_store_path or Path(repo_root).resolve().parent / "operational.sqlite3", "matching"
+        )
+        self._restore_jobs()
+
+    def _restore_jobs(self) -> None:
+        now = time.monotonic()
+        for job in self._job_store.list():
+            elapsed_ms = int(job.pop("_elapsed_ms", 0))
+            job["started"] = now - elapsed_ms / 1000
+            job["updated"] = now
+            if job.get("stage") not in ("complete", "failed"):
+                job["stage"] = "failed"
+                job["error"] = "worker_lost"
+                job["timeline"] = [
+                    *job.get("timeline", []),
+                    {"stage": "failed", "elapsed_ms": elapsed_ms},
+                ]
+            self._jobs[str(job["id"])] = job
+            self._persist(job)
+
+    def _persist(self, job: dict[str, Any]) -> None:
+        persisted = dict(job)
+        persisted["_elapsed_ms"] = round((time.monotonic() - job["started"]) * 1000)
+        self._job_store.save(persisted, action="recommend")
 
     def start(
         self, run_id: str, record: dict[str, str], overrides: dict[str, float] | None = None
@@ -159,6 +186,7 @@ class MatchingJobRunner:
             for job_id in expired:
                 self._jobs.pop(job_id)
                 self._futures.pop(job_id, None)
+                self._job_store.delete(job_id)
             if len(self._jobs) >= 32:
                 finished = next(
                     (k for k, j in self._jobs.items() if j["stage"] in ("complete", "failed")), None
@@ -177,7 +205,9 @@ class MatchingJobRunner:
                 "timeline": [{"stage": "queued", "elapsed_ms": 0}],
                 "result": None,
                 "error": None,
+                "_action": "recommend",
             }
+            self._persist(self._jobs[job_id])
             if sufficient(record):
                 self._futures[job_id] = self._pool.submit(
                     self._execute, job_id, key, dict(record), dict(overrides) if overrides else None
@@ -191,6 +221,7 @@ class MatchingJobRunner:
                         {"stage": "complete", "elapsed_ms": 0},
                     ],
                 )
+                self._persist(self._jobs[job_id])
                 future: Future = Future()
                 future.set_result(None)
                 self._futures[job_id] = future
@@ -209,6 +240,7 @@ class MatchingJobRunner:
                 job["timeline"][-1]["elapsed_ms"] = elapsed
             else:
                 job["timeline"].append({"stage": stage, "elapsed_ms": elapsed})
+            self._persist(job)
         LOGGER.info("matching job=%s stage=%s elapsed_ms=%s", job_id, stage, elapsed)
 
     def _execute(
@@ -245,11 +277,19 @@ class MatchingJobRunner:
         stop = job["updated"] if job["stage"] in ("complete", "failed") else time.monotonic()
         job["elapsed_ms"] = round((stop - job.pop("started")) * 1000)
         job.pop("updated")
+        job.pop("_action", None)
+        job.pop("_elapsed_ms", None)
         return job
 
     def wait(self, job_id: str, timeout: float) -> None:
-        self._futures[job_id].result(timeout=timeout)
+        future = self._futures.get(job_id)
+        if future is None:
+            if self.status(job_id)["stage"] in ("complete", "failed"):
+                return
+            raise HTTPException(503, "matching_worker_unavailable")
+        future.result(timeout=timeout)
 
     def close(self) -> None:
         self._pool.shutdown(wait=False, cancel_futures=True)
+        self._job_store.close()
         self.session.close()

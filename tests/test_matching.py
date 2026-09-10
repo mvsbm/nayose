@@ -606,6 +606,27 @@ def test_engine_session_closes_previous_engine_before_swap(tmp_path):
     assert len(handles) == 2
 
 
+def test_matching_job_status_survives_service_restart(tmp_path):
+    from api.matching import RecommendationService
+
+    repo = SimpleNamespace(resolve=lambda _run_id: tmp_path / "run")
+    service = RecommendationService(repo, tmp_path / "data", loader=lambda *_: None)
+    try:
+        job = service.start("run", {})
+        service.wait(job["id"], timeout=5)
+    finally:
+        service.close()
+
+    restarted = RecommendationService(repo, tmp_path / "data", loader=lambda *_: None)
+    try:
+        status = restarted.status(job["id"])
+    finally:
+        restarted.close()
+
+    assert status["stage"] == "complete"
+    assert status["result"]["action"] == "INSUFFICIENT_INPUT"
+
+
 def test_async_jobs_report_real_loading_and_reuse_engine(tmp_path):
     from api.matching import ExplainedMatcher, RecommendationService
 
