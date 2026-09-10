@@ -98,6 +98,18 @@ def test_matching_returns_actual_support_and_threshold_reason():
     assert support["features"]["phone_exact"] == 1
     assert support["retrieval"]["sparse_score"] == 0.0
     assert support["retrieval"]["exact_blocks"] == ["name_kana"]
+    assert support["retrieval_edges"] == [
+        {
+            "record_id": "R1",
+            "entity_id": "N1",
+            "channel": "",
+            "view": "exact",
+            "rank": 1,
+            "score": 1.0,
+            "alias": "name_kana",
+            "confidence": 1.0,
+        }
+    ]
     assert result["pipeline"]["selected_candidate"] == "N1"
     assert [node["id"] for node in result["pipeline"]["nodes"]] == [
         "input",

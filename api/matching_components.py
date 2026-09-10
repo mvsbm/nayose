@@ -78,6 +78,7 @@ class CandidateAggregator:
                         "score": float(scores[i]),
                         "comparisons": compare_fields(record, row),
                         "features": {k: float(v) for k, v in features.iloc[i].items()},
+                        "retrieval_edges": self._retrieval_edges(row, entity_id, retrieval_row),
                         "retrieval": {
                             "exact_blocks": [
                                 str(block) for block in retrieval_row.get("exact_blocks", [])
@@ -152,6 +153,46 @@ class CandidateAggregator:
             )
         candidates.sort(key=lambda c: (-c["probability"], c["nayose_id"]))
         return candidates
+
+    @staticmethod
+    def _retrieval_edges(
+        record: dict[str, Any], entity_id: str, retrieval: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        record_id = str(record.get("record_id") or "")
+        channel = str(record.get("channel") or "")
+        edges: list[dict[str, Any]] = []
+
+        def add(view: str, rank: Any, score: Any, alias: Any = None) -> None:
+            try:
+                edge_rank = int(rank)
+                edge_score = min(1.0, max(0.0, float(score)))
+            except (TypeError, ValueError):
+                return
+            if edge_rank < 1:
+                return
+            edges.append(
+                {
+                    "record_id": record_id,
+                    "entity_id": entity_id,
+                    "channel": channel,
+                    "view": view,
+                    "rank": edge_rank,
+                    "score": edge_score,
+                    "alias": str(alias) if alias else None,
+                    "confidence": edge_score,
+                }
+            )
+
+        for block in retrieval.get("exact_blocks", []):
+            add("exact", 1, 1.0, block)
+        add("sparse", retrieval.get("sparse_rank", 0), retrieval.get("sparse_score", 0.0))
+        add("record", retrieval.get("dense_rank", 0), retrieval.get("dense_score", 0.0))
+        view_scores = retrieval.get("dense_view_scores", {})
+        view_ranks = retrieval.get("dense_view_ranks", {})
+        if isinstance(view_scores, dict) and isinstance(view_ranks, dict):
+            for view, rank in view_ranks.items():
+                add(str(view), rank, view_scores.get(view, 0.0))
+        return edges
 
 
 class PipelineTraceBuilder:

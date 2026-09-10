@@ -121,12 +121,24 @@ class SampleRecord(BaseModel):
     record: dict[str, str]
 
 
+class CandidateEdge(BaseModel):
+    record_id: str
+    entity_id: str
+    channel: str
+    view: str
+    rank: int = Field(ge=1)
+    score: float = Field(ge=0, le=1)
+    alias: str | None = None
+    confidence: float = Field(ge=0, le=1)
+
+
 class CandidateEvidence(BaseModel):
     record: dict[str, str]
     score: float = Field(ge=0, le=1)
     comparisons: dict[str, FieldComparison]
     features: dict[str, float]
     retrieval: dict[str, Any] = Field(default_factory=dict)
+    retrieval_edges: list[CandidateEdge] = Field(default_factory=list)
 
 
 class PipelineNode(BaseModel):
