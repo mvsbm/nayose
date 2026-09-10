@@ -90,7 +90,7 @@ function resultRows(page: EntityExplorerPage, state: ExplorerState, store: Store
 function renderSearch(page: EntityExplorerPage, state: ExplorerState, store: Store): string {
   const first = page.rows.length ? state.offset + 1 : 0;
   const last = state.offset + page.rows.length;
-  const total = page.total_is_exact ? String(page.total) : `${page.total}+`;
+  const total = page.total_is_exact ? String(page.total) : page.total >= 0 ? `${page.total}+` : "?";
   const hasMore = page.has_more ?? (page.total_is_exact ? last < page.total : Boolean(page.next_cursor));
   return `<section class="card entity-explorer-search">
     <div class="toolbar"><div><p class="eyebrow">${esc(store.t("entityExplorerEyebrow"))}</p><h2>${esc(store.t("entityExplorerTitle"))}</h2></div>
