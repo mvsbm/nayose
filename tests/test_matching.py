@@ -569,6 +569,43 @@ def test_score_context_reports_decision_load(tmp_path):
     assert ctx["pct"] == 66.7
 
 
+def test_engine_session_closes_previous_engine_before_swap(tmp_path):
+    from api.matching_runtime import EngineSession
+
+    run_paths = {name: tmp_path / name for name in ("run-a", "run-b")}
+    events: list[str] = []
+    handles: list[object] = []
+
+    class Handle:
+        def __init__(self, run_id: str):
+            self.run_id = run_id
+
+        def recommend(self, record, stage, overrides=None):
+            return {"top_probability": 0, "candidates": []}
+
+        def close(self):
+            events.append(f"close:{self.run_id}")
+
+    def loader(run_dir, _data_dir):
+        run_id = run_dir.name
+        events.append(f"load:{run_id}")
+        handle = Handle(run_id)
+        handles.append(handle)
+        return handle
+
+    repo = SimpleNamespace(resolve=lambda run_id: run_paths[run_id])
+    session = EngineSession(repo, tmp_path / "data", loader)
+    try:
+        session.recommend("run-a", {"name_kanji": "佐藤"})
+        session.recommend("run-b", {"name_kanji": "鈴木"})
+    finally:
+        session.close()
+
+    assert events[:3] == ["load:run-a", "close:run-a", "load:run-b"]
+    assert events[-1] == "close:run-b"
+    assert len(handles) == 2
+
+
 def test_async_jobs_report_real_loading_and_reuse_engine(tmp_path):
     from api.matching import ExplainedMatcher, RecommendationService
 

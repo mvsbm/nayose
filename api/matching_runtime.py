@@ -80,25 +80,25 @@ class EngineSession:
         engine is not ready (caller falls back to exact LIKE search) — a search
         must NEVER trigger a multi-minute model load."""
         key = self.repo.resolve(run_id).resolve(), self.data_dir.resolve()
-        if not self.engine_ready(run_id):
-            return None
-        assert self._engine is not None
-        searcher = self._searchers.get(key)
-        if searcher is None:
-            searcher = EntitySearch(self._engine)
-            self._searchers[key] = searcher
-        future = self._search_futures.get(key)
-        if future is None:
-            self._search_futures[key] = self._search_pool.submit(searcher.prepare)
-            return None
-        if not future.done():
-            return None
-        try:
-            future.result()
-        except (OSError, RuntimeError, ValueError):
-            self._search_futures.pop(key, None)
-            return None
-        return searcher.search(text, top_k=limit)
+        with self._engine_lock:
+            if self._engine_key != key or self._engine is None:
+                return None
+            searcher = self._searchers.get(key)
+            if searcher is None:
+                searcher = EntitySearch(self._engine)
+                self._searchers[key] = searcher
+            future = self._search_futures.get(key)
+            if future is None:
+                self._search_futures[key] = self._search_pool.submit(searcher.prepare)
+                return None
+            if not future.done():
+                return None
+            try:
+                future.result()
+            except (OSError, RuntimeError, ValueError):
+                self._search_futures.pop(key, None)
+                return None
+            return searcher.search(text, top_k=limit)
 
     def _recommend(
         self,
@@ -112,6 +112,12 @@ class EngineSession:
         with self._engine_lock:
             if self._engine_key != key:
                 stage("loading")
+                old_engine = self._engine
+                if old_engine is not None:
+                    close = getattr(old_engine, "close", None)
+                    if close is not None:
+                        close()
+                self._engine, self._engine_key = None, None
                 try:
                     engine = self.loader(*key)
                 except (RuntimeError, FileNotFoundError) as exc:
