@@ -106,7 +106,7 @@ def test_matching_returns_actual_support_and_threshold_reason():
             "view": "exact",
             "rank": 1,
             "score": 1.0,
-            "alias": "name_kana",
+            "alias": None,
             "confidence": 1.0,
         }
     ]

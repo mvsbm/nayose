@@ -90,6 +90,3 @@ class SQLiteJobStore:
                 "DELETE FROM job_snapshots WHERE namespace = ? AND job_id = ?",
                 (self.namespace, job_id),
             )
-
-    def close(self) -> None:
-        return None

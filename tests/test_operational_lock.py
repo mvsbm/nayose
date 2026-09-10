@@ -18,4 +18,11 @@ def test_audit_records_form_a_hash_chain(tmp_path):
     assert first["prev_hash"] == ""
     assert first["event_hash"] == expected
     assert second["prev_hash"] == first["event_hash"]
+    assert log.verify() is True
     assert log.tail(2) == [first, second]
+
+    log_path = tmp_path / "admin_audit.jsonl"
+    log_path.write_text(
+        log_path.read_text(encoding="utf-8").replace('"done"', '"tampered"'), encoding="utf-8"
+    )
+    assert log.verify() is False

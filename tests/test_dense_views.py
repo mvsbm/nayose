@@ -82,11 +82,12 @@ def test_dense_view_artifacts_build_and_restore_with_source_row_mapping(tmp_path
             return np.tile(np.array([[1.0, 0.0]], dtype=np.float32), (len(texts), 1))
 
     loads: list[tuple[str, str]] = []
-    monkeypatch.setattr(
-        dense_views,
-        "_model",
-        lambda model_id, device: loads.append((model_id, device)) or FakeModel(),
-    )
+
+    def fake_model(model_id: str, device: str) -> FakeModel:
+        loads.append((model_id, device))
+        return FakeModel()
+
+    monkeypatch.setattr(dense_views, "_model", fake_model)
     artifacts = dense_views.build_dense_view_artifacts(
         reference,
         tmp_path / "generation",
@@ -120,12 +121,15 @@ def test_alias_queries_match_single_alias_index_rows():
 
 
 def test_field_view_evidence_does_not_overwrite_record_dense_score():
-    from types import SimpleNamespace
-
     from api.dense_retrieval import _apply_view_dense
 
     states = {3: {"dense_score": 0.92, "dense_rank": 1}}
-    artifact = SimpleNamespace(row_indices=np.asarray([3], dtype=np.int32))
+    artifact = dense_views.DenseView(
+        "name",
+        np.empty((1, 1), dtype=np.float32),
+        object(),
+        row_indices=np.asarray([3], dtype=np.int32),
+    )
     _apply_view_dense(
         "name",
         artifact,

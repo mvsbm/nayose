@@ -338,4 +338,3 @@ class AdminJobRunner:
 
     def close(self) -> None:
         self._pool.shutdown(wait=False, cancel_futures=True)
-        self._job_store.close()

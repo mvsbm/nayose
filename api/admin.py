@@ -96,6 +96,32 @@ class AuditLog:
                 return str(value)
         return ""
 
+    def verify(self) -> bool:
+        with self._lock, advisory_file_lock(self.path.with_suffix(".lock"), shared=True):
+            if not self.path.exists():
+                return True
+            previous_hash = ""
+            for line in self.path.read_text(encoding="utf-8").splitlines():
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    return False
+                if not isinstance(row, dict):
+                    return False
+                event_hash = row.get("event_hash")
+                if not event_hash:
+                    if previous_hash:
+                        return False
+                    continue
+                if row.get("prev_hash", "") != previous_hash:
+                    return False
+                unsigned = {key: value for key, value in row.items() if key != "event_hash"}
+                payload = json.dumps(unsigned, ensure_ascii=False, separators=(",", ":"))
+                if hashlib.sha256(payload.encode("utf-8")).hexdigest() != event_hash:
+                    return False
+                previous_hash = str(event_hash)
+            return True
+
     def tail(self, limit: int = 50) -> list[dict[str, Any]]:
         if not self.path.exists():
             return []

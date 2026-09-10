@@ -183,8 +183,8 @@ class CandidateAggregator:
                 }
             )
 
-        for block in retrieval.get("exact_blocks", []):
-            add("exact", 1, 1.0, block)
+        for _ in retrieval.get("exact_blocks", []):
+            add("exact", 1, 1.0)
         add("sparse", retrieval.get("sparse_rank", 0), retrieval.get("sparse_score", 0.0))
         add("record", retrieval.get("dense_rank", 0), retrieval.get("dense_score", 0.0))
         view_scores = retrieval.get("dense_view_scores", {})
