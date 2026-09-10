@@ -18,6 +18,7 @@ from uuid import uuid4
 import pandas as pd
 from fastapi import HTTPException
 
+from api.job_store import SQLiteJobStore
 from api.progress import parse as parse_progress
 
 LOGGER = logging.getLogger(__name__)
@@ -41,7 +42,13 @@ def newest(root: Path, prefix: str) -> Path | None:
 class AdminJobRunner:
     """Own the bounded worker and lifecycle of generation/training jobs."""
 
-    def __init__(self, data_root: Path, models_dir: Path, audit: AuditSink):
+    def __init__(
+        self,
+        data_root: Path,
+        models_dir: Path,
+        audit: AuditSink,
+        job_store_path: Path | None = None,
+    ):
         self.data_root = data_root.resolve()
         self.models_dir = models_dir.resolve()
         self.audit = audit
@@ -49,37 +56,86 @@ class AdminJobRunner:
         self._jobs_lock = Lock()
         self._jobs: dict[str, dict[str, Any]] = {}
         self._futures: dict[str, Future] = {}
+        self._job_store = SQLiteJobStore(
+            job_store_path or self.models_dir.parent / "operational.sqlite3", "admin"
+        )
+        self._restore_jobs()
+
+    def _restore_jobs(self) -> None:
+        now = time.monotonic()
+        for job in self._job_store.list():
+            elapsed_ms = int(job.pop("_elapsed_ms", 0))
+            job["started"] = now - elapsed_ms / 1000
+            job["updated"] = now
+            if job.get("stage") not in ("complete", "failed"):
+                job["stage"] = "failed"
+                job["error"] = "worker_lost"
+                job["timeline"] = [
+                    *job.get("timeline", []),
+                    {"stage": "failed", "elapsed_ms": elapsed_ms},
+                ]
+            self._jobs[str(job["id"])] = job
+            self._persist(job)
+
+    def _persist(self, job: dict[str, Any]) -> None:
+        persisted = dict(job)
+        persisted["_elapsed_ms"] = round((time.monotonic() - job["started"]) * 1000)
+        self._job_store.save(
+            persisted,
+            action=str(job.get("_action", "")),
+            idempotency_key=job.get("_idempotency_key"),
+        )
 
     def start(self, action: str, params: dict[str, Any], actor: str) -> dict[str, Any]:
         if action not in ("generate", "train"):
             raise HTTPException(400, f"unsupported job action {action!r}")
+        params = dict(params)
+        idempotency_key = str(params.pop("idempotency_key", "")).strip() or None
+        if idempotency_key and len(idempotency_key) > 128:
+            raise HTTPException(422, "idempotency_key_too_long")
+        existing_id: str | None = None
         with self._jobs_lock:
-            running = [j for j in self._jobs.values() if j["stage"] not in ("complete", "failed")]
-            if running:
-                raise HTTPException(409, "admin_busy")
-            if len(self._jobs) >= 16:
-                oldest = min(
-                    (j for j in self._jobs.values() if j["stage"] in ("complete", "failed")),
-                    key=lambda j: j["updated"],
-                    default=None,
+            if idempotency_key:
+                existing = self._job_store.find_by_idempotency(idempotency_key)
+                if existing is not None:
+                    existing_id = str(existing["id"])
+            if existing_id is None:
+                running = [
+                    j for j in self._jobs.values() if j["stage"] not in ("complete", "failed")
+                ]
+                if running:
+                    raise HTTPException(409, "admin_busy")
+                if len(self._jobs) >= 16:
+                    oldest = min(
+                        (j for j in self._jobs.values() if j["stage"] in ("complete", "failed")),
+                        key=lambda j: j["updated"],
+                        default=None,
+                    )
+                    if oldest:
+                        self._jobs.pop(oldest["id"])
+                        self._futures.pop(oldest["id"], None)
+                        self._job_store.delete(oldest["id"])
+                job_id = uuid4().hex
+                started = time.monotonic()
+                self._jobs[job_id] = {
+                    "id": job_id,
+                    "run_id": "admin",
+                    "stage": "queued",
+                    "started": started,
+                    "updated": started,
+                    "timeline": [{"stage": "queued", "elapsed_ms": 0}],
+                    "progress": None,
+                    "error": None,
+                    "result": None,
+                    "_action": action,
+                    "_idempotency_key": idempotency_key,
+                }
+                self._persist(self._jobs[job_id])
+                self._futures[job_id] = self._pool.submit(
+                    self._execute, action, params, actor, job_id
                 )
-                if oldest:
-                    self._jobs.pop(oldest["id"])
-                    self._futures.pop(oldest["id"], None)
-            job_id = uuid4().hex
-            started = time.monotonic()
-            self._jobs[job_id] = {
-                "id": job_id,
-                "run_id": "admin",
-                "stage": "queued",
-                "started": started,
-                "updated": started,
-                "timeline": [{"stage": "queued", "elapsed_ms": 0}],
-                "progress": None,
-                "error": None,
-                "result": None,
-            }
-            self._futures[job_id] = self._pool.submit(self._execute, action, params, actor, job_id)
+        if existing_id is not None:
+            return self.status(existing_id)
         self.audit.record(actor, action + "_start", {"job": job_id, **params})
         return self.status(job_id)
 
@@ -93,6 +149,7 @@ class AdminJobRunner:
                 job["timeline"][-1]["elapsed_ms"] = elapsed
             else:
                 job["timeline"].append({"stage": stage, "elapsed_ms": elapsed})
+            self._persist(job)
         LOGGER.info("admin job=%s stage=%s", job_id, stage)
 
     def _execute(self, action: str, params: dict[str, Any], actor: str, job_id: str) -> None:
@@ -181,6 +238,7 @@ class AdminJobRunner:
                 "total": total,
             }
             job["updated"] = time.monotonic()
+            self._persist(job)
         LOGGER.info("admin job=%s progress phase=%s pct=%s", job_id, phase, round(pct, 1))
 
     def _run_generate(self, params: dict[str, Any], job_id: str) -> dict[str, Any]:
@@ -255,10 +313,18 @@ class AdminJobRunner:
         stop = job["updated"] if job["stage"] in ("complete", "failed") else time.monotonic()
         job["elapsed_ms"] = round((stop - job.pop("started")) * 1000)
         job.pop("updated")
+        job.pop("_action", None)
+        job.pop("_idempotency_key", None)
         return job
 
     def wait(self, job_id: str, timeout: float) -> None:
-        self._futures[job_id].result(timeout=timeout)
+        future = self._futures.get(job_id)
+        if future is None:
+            if self.status(job_id)["stage"] in ("complete", "failed"):
+                return
+            raise HTTPException(503, "admin_worker_unavailable")
+        future.result(timeout=timeout)
 
     def close(self) -> None:
         self._pool.shutdown(wait=False, cancel_futures=True)
+        self._job_store.close()
