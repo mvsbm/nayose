@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -130,10 +131,20 @@ class AdminJobRunner:
                     "_action": action,
                     "_idempotency_key": idempotency_key,
                 }
-                self._persist(self._jobs[job_id])
-                self._futures[job_id] = self._pool.submit(
-                    self._execute, action, params, actor, job_id
-                )
+                try:
+                    self._persist(self._jobs[job_id])
+                except sqlite3.IntegrityError:
+                    self._jobs.pop(job_id)
+                    if idempotency_key is None:
+                        raise
+                    persisted = self._job_store.find_by_idempotency(idempotency_key)
+                    if persisted is None:
+                        raise
+                    existing_id = str(persisted["id"])
+                else:
+                    self._futures[job_id] = self._pool.submit(
+                        self._execute, action, params, actor, job_id
+                    )
         if existing_id is not None:
             return self.status(existing_id)
         self.audit.record(actor, action + "_start", {"job": job_id, **params})

@@ -1,3 +1,7 @@
+import sqlite3
+
+import pytest
+
 from api.admin_jobs import AdminJobRunner
 from api.job_store import SQLiteJobStore
 
@@ -18,6 +22,10 @@ def test_sqlite_job_store_round_trips_and_filters_namespace(tmp_path):
     assert admin.list() == [job]
     assert admin.find_by_idempotency("request-1") == job
     assert matching.list() == []
+    with pytest.raises(sqlite3.IntegrityError):
+        admin.save(
+            {"id": "job-2", "stage": "queued"}, action="generate", idempotency_key="request-1"
+        )
 
 
 def test_admin_jobs_mark_unfinished_work_as_lost_after_restart(tmp_path):
