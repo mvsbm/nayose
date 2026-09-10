@@ -147,7 +147,7 @@ class MatchingJobRunner:
         self._futures: dict[str, Future] = {}
         repo_root = getattr(session.repo, "root", session.data_dir.parent)
         self._job_store = SQLiteJobStore(
-            job_store_path or Path(repo_root).resolve().parent / "operational.sqlite3", "matching"
+            job_store_path or Path(repo_root).resolve() / "operational.sqlite3", "matching"
         )
         self._restore_jobs()
 

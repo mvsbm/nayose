@@ -57,7 +57,7 @@ class AdminJobRunner:
         self._jobs: dict[str, dict[str, Any]] = {}
         self._futures: dict[str, Future] = {}
         self._job_store = SQLiteJobStore(
-            job_store_path or self.models_dir.parent / "operational.sqlite3", "admin"
+            job_store_path or self.models_dir / "operational.sqlite3", "admin"
         )
         self._restore_jobs()
 
