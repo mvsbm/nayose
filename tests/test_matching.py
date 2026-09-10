@@ -1,3 +1,4 @@
+import json
 from threading import Event
 from types import SimpleNamespace
 
@@ -243,6 +244,35 @@ def test_dense_serving_refuses_missing_ann_artifact(tmp_path):
 
     with pytest.raises(RuntimeError, match="requires"):
         _load_dense_artifacts(InferenceConfig(model_dir=tmp_path), reference)
+
+
+def test_dense_serving_memory_maps_reference_embeddings(tmp_path, monkeypatch):
+    import api.engine as engine
+
+    np.save(tmp_path / "reference_embeddings.f16.npy", np.ones((2, 3), dtype=np.float16))
+    (tmp_path / "dense_index.usearch").touch()
+    (tmp_path / "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "runtime_artifacts": {
+                    "dense_index": {
+                        "platform": engine.target_platform(),
+                        "usearch_version": engine.usearch_version(),
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(engine, "load_dense_index", lambda *args, **kwargs: object())
+
+    embeddings, _, _ = engine._load_dense_artifacts(
+        engine.InferenceConfig(model_dir=tmp_path),
+        pd.DataFrame({"record_id": ["R1", "R2"]}),
+    )
+
+    assert isinstance(embeddings, np.memmap)
+    assert embeddings.dtype == np.float16
 
 
 def test_svd_bundle_uses_saved_transform_not_neural_encoder(tmp_path, monkeypatch):

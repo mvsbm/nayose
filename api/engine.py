@@ -286,7 +286,7 @@ def _load_dense_artifacts(
         if emb_path is None:
             print("WARN: no reference embeddings in the bundle; dense retrieval disabled.")
         return None, None, None
-    embeddings = np.load(emb_path)
+    embeddings = np.load(emb_path, mmap_mode="r")
     if embeddings.shape[0] != len(reference):
         raise RuntimeError(
             f"embedding file {emb_path} has {embeddings.shape[0]} rows but reference has "
@@ -330,7 +330,7 @@ def _load_dense_artifacts(
             "serving refuses to fall back to a slower backend"
         ) from exc
     print(f"OK: dense retrieval enabled ({emb_path.name}, restored usearch HNSW)")
-    return embeddings.astype(np.float32, copy=False), index, dense_svd
+    return embeddings, index, dense_svd
 
 
 def _load_dense_views(
