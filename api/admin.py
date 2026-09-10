@@ -16,6 +16,7 @@ Design notes
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -24,6 +25,7 @@ from collections.abc import Callable
 from pathlib import Path
 from threading import Lock
 from typing import Any
+from uuid import uuid4
 
 from fastapi import HTTPException
 
@@ -60,17 +62,39 @@ class AuditLog:
         self._lock = Lock()
 
     def record(self, actor: str, action: str, detail: dict[str, Any]) -> dict[str, Any]:
-        row = {"ts": _now(), "actor": actor, "action": action, **detail}
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with (
             self._lock,
             advisory_file_lock(self.path.with_suffix(".lock")),
             self.path.open("a", encoding="utf-8") as fh,
         ):
+            previous_hash = self._last_hash()
+            row = {
+                "ts": _now(),
+                "event_id": uuid4().hex,
+                "actor": actor,
+                "action": action,
+                "prev_hash": previous_hash,
+                **detail,
+            }
+            payload = json.dumps(row, ensure_ascii=False, separators=(",", ":"))
+            row["event_hash"] = hashlib.sha256(payload.encode("utf-8")).hexdigest()
             fh.write(json.dumps(row, ensure_ascii=False) + "\n")
             fh.flush()
             os.fsync(fh.fileno())
         return row
+
+    def _last_hash(self) -> str:
+        if not self.path.exists():
+            return ""
+        for line in reversed(self.path.read_text(encoding="utf-8").splitlines()):
+            try:
+                value = json.loads(line).get("event_hash")
+            except json.JSONDecodeError:
+                continue
+            if value:
+                return str(value)
+        return ""
 
     def tail(self, limit: int = 50) -> list[dict[str, Any]]:
         if not self.path.exists():
