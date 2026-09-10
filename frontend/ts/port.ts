@@ -371,7 +371,7 @@ export interface ConfusionPort {
 }
 
 export interface EntityExplorerPort {
-  entityExplorer(q: string, offset: number, limit: number, sort: EntitySort, filters?: SearchFilters): Promise<EntityExplorerPage>;
+  entityExplorer(q: string, offset: number, limit: number, sort: EntitySort, filters?: SearchFilters, cursor?: string): Promise<EntityExplorerPage>;
   entityGraph(id: string, includePotential?: boolean): Promise<EntityGraph>;
 }
 

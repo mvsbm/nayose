@@ -84,6 +84,9 @@ class EntityExplorerPage(BaseModel):
     limit: int
     query: str
     sort: Literal["relevance", "records", "name", "last_seen"]
+    cursor: str | None = None
+    next_cursor: str | None = None
+    has_more: bool = False
     filters: dict[str, Any] = Field(default_factory=dict)
     query_plan: dict[str, Any] = Field(default_factory=dict)
     search_mode: Literal["exact", "hybrid_fallback"] = "exact"

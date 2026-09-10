@@ -15,6 +15,7 @@ function stateFromUrl() {
     return {
         query: params.get("q") ?? "",
         offset: Math.max(0, Math.floor(Number(params.get("offset")) || 0)),
+        cursor: params.get("cursor") ?? "",
         size: PAGE_SIZES.includes(requestedSize) ? requestedSize : 50,
         sort: SORTS.includes(requestedSort) ? requestedSort : "records",
         partyType,
@@ -35,6 +36,8 @@ function hashFor(state, selected = state.selected) {
         params.set("q", state.query);
     if (state.offset)
         params.set("offset", String(state.offset));
+    if (state.cursor)
+        params.set("cursor", state.cursor);
     if (state.size !== 50)
         params.set("size", String(state.size));
     if (state.sort !== "records")
@@ -62,9 +65,10 @@ function resultRows(page, state, store) {
     <td><a href="#/entity/${encodeURIComponent(row.nayose_id)}">${esc(store.t("inspectEntity"))}</a></td></tr>`).join("");
 }
 function renderSearch(page, state, store) {
-    const first = page.total ? page.offset + 1 : 0;
-    const last = page.offset + page.rows.length;
+    const first = page.rows.length ? state.offset + 1 : 0;
+    const last = state.offset + page.rows.length;
     const total = page.total_is_exact ? String(page.total) : `${page.total}+`;
+    const hasMore = page.has_more ?? (page.total_is_exact ? last < page.total : Boolean(page.next_cursor));
     return `<section class="card entity-explorer-search">
     <div class="toolbar"><div><p class="eyebrow">${esc(store.t("entityExplorerEyebrow"))}</p><h2>${esc(store.t("entityExplorerTitle"))}</h2></div>
       <span class="members" role="status" aria-live="polite">${esc(store.t("entityExplorerRange", { first, last, total }))}</span></div>
@@ -77,7 +81,7 @@ function renderSearch(page, state, store) {
     </form>
     <div class="toolbar entity-explorer-controls"><label>${esc(store.t("pageSize"))}<select id="entity-explorer-size">${PAGE_SIZES.map((size) => `<option value="${size}" ${size === state.size ? "selected" : ""}>${size}</option>`).join("")}</select></label>
       <label>${esc(store.t("sort"))}<select id="entity-explorer-sort"><option value="records" ${state.sort === "records" ? "selected" : ""}>${esc(store.t("sortRecords"))}</option><option value="name" ${state.sort === "name" ? "selected" : ""}>${esc(store.t("sortName"))}</option><option value="last_seen" ${state.sort === "last_seen" ? "selected" : ""}>${esc(store.t("sortLastSeen"))}</option><option value="relevance" ${state.sort === "relevance" ? "selected" : ""}>${esc(store.t("sortRelevance"))}</option></select></label>
-      <button type="button" class="more" id="entity-explorer-prev" ${state.offset <= 0 ? "disabled" : ""}>${esc(store.t("previous"))}</button><button type="button" class="more" id="entity-explorer-next" ${state.offset + page.rows.length >= page.total ? "disabled" : ""}>${esc(store.t("next"))}</button>
+      <button type="button" class="more" id="entity-explorer-prev" ${state.offset <= 0 ? "disabled" : ""}>${esc(store.t("previous"))}</button><button type="button" class="more" id="entity-explorer-next" ${!hasMore || !page.next_cursor ? "disabled" : ""}>${esc(store.t("next"))}</button>
     </div>
   </section>`;
 }
@@ -194,9 +198,9 @@ function bindPotential(view, state) {
         location.hash = hashFor({ ...state, potential: event.target.checked }, state.selected);
     });
 }
-function bind(view, state) {
+function bind(view, state, page) {
     const navigate = (changes, selected = changes.selected ?? state.selected) => {
-        location.hash = hashFor({ ...state, ...changes, offset: changes.offset ?? 0 }, selected);
+        location.hash = hashFor({ ...state, ...changes, offset: changes.offset ?? state.offset }, selected);
     };
     view.querySelector("#entity-explorer-form")?.addEventListener("submit", (event) => {
         event.preventDefault();
@@ -204,12 +208,21 @@ function bind(view, state) {
         const partyType = (view.querySelector("#entity-explorer-party")?.value ?? "");
         const minRecords = Math.max(0, Number(view.querySelector("#entity-explorer-min")?.value) || 0);
         const sort = query && !state.query ? "relevance" : query ? state.sort : "records";
-        navigate({ query, partyType, minRecords, sort, selected: "" });
+        navigate({ query, partyType, minRecords, sort, selected: "", offset: 0, cursor: "" });
     });
-    view.querySelector("#entity-explorer-size")?.addEventListener("change", (event) => navigate({ size: Number(event.target.value) }));
-    view.querySelector("#entity-explorer-sort")?.addEventListener("change", (event) => navigate({ sort: event.target.value }));
-    view.querySelector("#entity-explorer-prev")?.addEventListener("click", () => navigate({ offset: Math.max(0, state.offset - state.size) }));
-    view.querySelector("#entity-explorer-next")?.addEventListener("click", () => navigate({ offset: state.offset + state.size }));
+    view.querySelector("#entity-explorer-size")?.addEventListener("change", (event) => navigate({ size: Number(event.target.value), offset: 0, cursor: "" }));
+    view.querySelector("#entity-explorer-sort")?.addEventListener("change", (event) => navigate({ sort: event.target.value, offset: 0, cursor: "" }));
+    view.querySelector("#entity-explorer-prev")?.addEventListener("click", () => {
+        if (state.cursor) {
+            history.back();
+            return;
+        }
+        navigate({ offset: Math.max(0, state.offset - state.size), cursor: "" });
+    });
+    view.querySelector("#entity-explorer-next")?.addEventListener("click", () => {
+        if (page.next_cursor)
+            navigate({ offset: state.offset + state.size, cursor: page.next_cursor });
+    });
     view.querySelectorAll("[data-entity-select]").forEach((row) => row.addEventListener("click", () => navigate({}, row.dataset.entitySelect ?? "")));
     bindPotential(view, state);
 }
@@ -234,8 +247,8 @@ export async function mountEntityExplorer(el, port, store, scope) {
     el.addEventListener("unmount", () => { mounted = false; }, { once: true });
     const isCurrent = () => mounted && requestVersions.get(el) === version;
     el.innerHTML = renderLoading(state, store);
-    bind(el, state);
-    const page = await port.entityExplorer(state.query, state.offset, state.size, state.sort, filtersFrom(state));
+    bind(el, state, loadingPage(state));
+    const page = await port.entityExplorer(state.query, state.offset, state.size, state.sort, filtersFrom(state), state.cursor || undefined);
     if (!isCurrent())
         return;
     const selected = state.selected || page.rows[0]?.nayose_id || "";
@@ -250,7 +263,7 @@ export async function mountEntityExplorer(el, port, store, scope) {
         pointerSide: "left",
         mobileQuery: "(max-width: 980px)",
     }));
-    bind(el, effectiveState);
+    bind(el, effectiveState, page);
     if (!selected)
         return;
     try {

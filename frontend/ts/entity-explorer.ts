@@ -24,6 +24,7 @@ type ExplorerPort = EntityExplorerPort & EntityDetailPort;
 interface ExplorerState {
   query: string;
   offset: number;
+  cursor: string;
   size: number;
   sort: EntitySort;
   partyType: "" | "person" | "company";
@@ -41,6 +42,7 @@ function stateFromUrl(): ExplorerState {
   return {
     query: params.get("q") ?? "",
     offset: Math.max(0, Math.floor(Number(params.get("offset")) || 0)),
+    cursor: params.get("cursor") ?? "",
     size: PAGE_SIZES.includes(requestedSize as (typeof PAGE_SIZES)[number]) ? requestedSize : 50,
     sort: SORTS.includes(requestedSort) ? requestedSort : "records",
     partyType,
@@ -61,6 +63,7 @@ function hashFor(state: ExplorerState, selected = state.selected): string {
   const params = new URLSearchParams();
   if (state.query) params.set("q", state.query);
   if (state.offset) params.set("offset", String(state.offset));
+  if (state.cursor) params.set("cursor", state.cursor);
   if (state.size !== 50) params.set("size", String(state.size));
   if (state.sort !== "records") params.set("sort", state.sort);
   if (state.partyType) params.set("party_type", state.partyType);
@@ -85,9 +88,10 @@ function resultRows(page: EntityExplorerPage, state: ExplorerState, store: Store
 }
 
 function renderSearch(page: EntityExplorerPage, state: ExplorerState, store: Store): string {
-  const first = page.total ? page.offset + 1 : 0;
-  const last = page.offset + page.rows.length;
+  const first = page.rows.length ? state.offset + 1 : 0;
+  const last = state.offset + page.rows.length;
   const total = page.total_is_exact ? String(page.total) : `${page.total}+`;
+  const hasMore = page.has_more ?? (page.total_is_exact ? last < page.total : Boolean(page.next_cursor));
   return `<section class="card entity-explorer-search">
     <div class="toolbar"><div><p class="eyebrow">${esc(store.t("entityExplorerEyebrow"))}</p><h2>${esc(store.t("entityExplorerTitle"))}</h2></div>
       <span class="members" role="status" aria-live="polite">${esc(store.t("entityExplorerRange", { first, last, total }))}</span></div>
@@ -100,7 +104,7 @@ function renderSearch(page: EntityExplorerPage, state: ExplorerState, store: Sto
     </form>
     <div class="toolbar entity-explorer-controls"><label>${esc(store.t("pageSize"))}<select id="entity-explorer-size">${PAGE_SIZES.map((size) => `<option value="${size}" ${size === state.size ? "selected" : ""}>${size}</option>`).join("")}</select></label>
       <label>${esc(store.t("sort"))}<select id="entity-explorer-sort"><option value="records" ${state.sort === "records" ? "selected" : ""}>${esc(store.t("sortRecords"))}</option><option value="name" ${state.sort === "name" ? "selected" : ""}>${esc(store.t("sortName"))}</option><option value="last_seen" ${state.sort === "last_seen" ? "selected" : ""}>${esc(store.t("sortLastSeen"))}</option><option value="relevance" ${state.sort === "relevance" ? "selected" : ""}>${esc(store.t("sortRelevance"))}</option></select></label>
-      <button type="button" class="more" id="entity-explorer-prev" ${state.offset <= 0 ? "disabled" : ""}>${esc(store.t("previous"))}</button><button type="button" class="more" id="entity-explorer-next" ${state.offset + page.rows.length >= page.total ? "disabled" : ""}>${esc(store.t("next"))}</button>
+      <button type="button" class="more" id="entity-explorer-prev" ${state.offset <= 0 ? "disabled" : ""}>${esc(store.t("previous"))}</button><button type="button" class="more" id="entity-explorer-next" ${!hasMore || !page.next_cursor ? "disabled" : ""}>${esc(store.t("next"))}</button>
     </div>
   </section>`;
 }
@@ -243,9 +247,9 @@ function bindPotential(view: HTMLElement, state: ExplorerState): void {
   });
 }
 
-function bind(view: HTMLElement, state: ExplorerState): void {
+function bind(view: HTMLElement, state: ExplorerState, page: EntityExplorerPage): void {
   const navigate = (changes: Partial<ExplorerState>, selected = changes.selected ?? state.selected): void => {
-    location.hash = hashFor({ ...state, ...changes, offset: changes.offset ?? 0 }, selected);
+    location.hash = hashFor({ ...state, ...changes, offset: changes.offset ?? state.offset }, selected);
   };
   view.querySelector("#entity-explorer-form")?.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -253,12 +257,20 @@ function bind(view: HTMLElement, state: ExplorerState): void {
     const partyType = (view.querySelector<HTMLSelectElement>("#entity-explorer-party")?.value ?? "") as ExplorerState["partyType"];
     const minRecords = Math.max(0, Number(view.querySelector<HTMLInputElement>("#entity-explorer-min")?.value) || 0);
     const sort = query && !state.query ? "relevance" : query ? state.sort : "records";
-    navigate({ query, partyType, minRecords, sort, selected: "" });
+    navigate({ query, partyType, minRecords, sort, selected: "", offset: 0, cursor: "" });
   });
-  view.querySelector("#entity-explorer-size")?.addEventListener("change", (event) => navigate({ size: Number((event.target as HTMLSelectElement).value) }));
-  view.querySelector("#entity-explorer-sort")?.addEventListener("change", (event) => navigate({ sort: (event.target as HTMLSelectElement).value as EntitySort }));
-  view.querySelector("#entity-explorer-prev")?.addEventListener("click", () => navigate({ offset: Math.max(0, state.offset - state.size) }));
-  view.querySelector("#entity-explorer-next")?.addEventListener("click", () => navigate({ offset: state.offset + state.size }));
+  view.querySelector("#entity-explorer-size")?.addEventListener("change", (event) => navigate({ size: Number((event.target as HTMLSelectElement).value), offset: 0, cursor: "" }));
+  view.querySelector("#entity-explorer-sort")?.addEventListener("change", (event) => navigate({ sort: (event.target as HTMLSelectElement).value as EntitySort, offset: 0, cursor: "" }));
+  view.querySelector("#entity-explorer-prev")?.addEventListener("click", () => {
+    if (state.cursor) {
+      history.back();
+      return;
+    }
+    navigate({ offset: Math.max(0, state.offset - state.size), cursor: "" });
+  });
+  view.querySelector("#entity-explorer-next")?.addEventListener("click", () => {
+    if (page.next_cursor) navigate({ offset: state.offset + state.size, cursor: page.next_cursor });
+  });
   view.querySelectorAll<HTMLElement>("[data-entity-select]").forEach((row) => row.addEventListener("click", () => navigate({}, row.dataset.entitySelect ?? "")));
   bindPotential(view, state);
 }
@@ -284,8 +296,8 @@ export async function mountEntityExplorer(el: HTMLElement, port: ExplorerPort, s
   el.addEventListener("unmount", () => { mounted = false; }, { once: true });
   const isCurrent = (): boolean => mounted && requestVersions.get(el) === version;
   el.innerHTML = renderLoading(state, store);
-  bind(el, state);
-  const page = await port.entityExplorer(state.query, state.offset, state.size, state.sort, filtersFrom(state));
+  bind(el, state, loadingPage(state));
+  const page = await port.entityExplorer(state.query, state.offset, state.size, state.sort, filtersFrom(state), state.cursor || undefined);
   if (!isCurrent()) return;
   const selected = state.selected || page.rows[0]?.nayose_id || "";
   const effectiveState = { ...state, selected };
@@ -299,7 +311,7 @@ export async function mountEntityExplorer(el: HTMLElement, port: ExplorerPort, s
     pointerSide: "left",
     mobileQuery: "(max-width: 980px)",
   }));
-  bind(el, effectiveState);
+  bind(el, effectiveState, page);
   if (!selected) return;
   try {
     const [detail, graph] = await Promise.all([port.entity(selected, 0, 10), port.entityGraph(selected, state.potential)]);

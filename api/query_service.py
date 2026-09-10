@@ -52,8 +52,9 @@ class QueryService:
         limit: int = 50,
         sort: str = "relevance",
         filters: SearchFilters | None = None,
+        cursor: str | None = None,
     ) -> dict[str, Any]:
-        return self.entities_query.entity_page(run_id, q, offset, limit, sort, filters)
+        return self.entities_query.entity_page(run_id, q, offset, limit, sort, filters, cursor)
 
     def normalized_query(self, q: str) -> dict[str, str]:
         return self.entities_query.normalized_query(q)

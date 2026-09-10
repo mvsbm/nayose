@@ -11,6 +11,9 @@ export interface EntityExplorerPage {
   query_plan: Record<string, unknown>;
   search_mode: "exact" | "hybrid_fallback";
   total_is_exact: boolean;
+  cursor?: string | null;
+  next_cursor?: string | null;
+  has_more?: boolean;
   search_trace: Record<string, unknown>;
 }
 

@@ -39,6 +39,7 @@ from api.contracts import (
 from api.dataset_service import DatasetService
 from api.decisions import DecisionsStore
 from api.entity_graph_repository import EntityNotFoundError
+from api.entity_index import EntityCursorError
 from api.evidence import NORMALIZED_FIELDS, VISIBLE_FIELDS
 from api.matching import RecommendationService as RecommendService
 from api.normalize import normalize_query_fields
@@ -229,6 +230,7 @@ def entity_explorer(
     run_id: str = "",
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
+    cursor: str | None = Query(default=None, max_length=512),
     sort: Literal["relevance", "records", "name", "last_seen"] = "relevance",
     party_type: str = "",
     min_record_count: int = Query(0, ge=0),
@@ -240,16 +242,20 @@ def entity_explorer(
             party_type=party_type.strip() or None,
             min_record_count=min_record_count if min_record_count > 0 else None,
         )
-        return current_search_service().explore(
-            EntitySearchRequest(
-                run_id=run_id,
-                query=q,
-                offset=offset,
-                limit=limit,
-                sort=sort,
-                filters=filters,
+        try:
+            return current_search_service().explore(
+                EntitySearchRequest(
+                    run_id=run_id,
+                    query=q,
+                    offset=offset,
+                    limit=limit,
+                    sort=sort,
+                    filters=filters,
+                    cursor=cursor,
+                )
             )
-        )
+        except EntityCursorError as exc:
+            raise HTTPException(422, str(exc)) from exc
 
     return op("entity_explorer", run)
 

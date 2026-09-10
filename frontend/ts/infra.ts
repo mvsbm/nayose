@@ -45,7 +45,7 @@ function adaptEntityExplorerPage(data: unknown): EntityExplorerPage {
   const page = data as Partial<EntityExplorerPage>;
   const validSorts = new Set(["relevance", "records", "name", "last_seen"]);
   const validModes = new Set(["exact", "hybrid_fallback"]);
-  if (!Array.isArray(page.rows) || typeof page.total !== "number" || typeof page.offset !== "number" || typeof page.limit !== "number" || typeof page.query !== "string" || !validSorts.has(page.sort ?? "") || !validModes.has(page.search_mode ?? "") || typeof page.total_is_exact !== "boolean" || !isObject(page.filters) || !isObject(page.query_plan) || !isObject(page.search_trace)) {
+  if (!Array.isArray(page.rows) || typeof page.total !== "number" || typeof page.offset !== "number" || typeof page.limit !== "number" || typeof page.query !== "string" || !validSorts.has(page.sort ?? "") || !validModes.has(page.search_mode ?? "") || typeof page.total_is_exact !== "boolean" || (page.cursor !== undefined && page.cursor !== null && typeof page.cursor !== "string") || (page.next_cursor !== undefined && page.next_cursor !== null && typeof page.next_cursor !== "string") || (page.has_more !== undefined && typeof page.has_more !== "boolean") || !isObject(page.filters) || !isObject(page.query_plan) || !isObject(page.search_trace)) {
     throw new ApiError("entity_explorer_schema_mismatch");
   }
   return page as EntityExplorerPage;
@@ -206,8 +206,9 @@ export class ApiAdapter implements WorkbenchPort {
     if (filters?.min_record_count) params.set("min_record_count", String(filters.min_record_count));
     return fetchJson(`/api/entities?${params.toString()}`).then(adaptSearchResult);
   }
-  entityExplorer(q: string, offset: number, limit: number, sort: EntitySort, filters?: SearchFilters): Promise<EntityExplorerPage> {
+  entityExplorer(q: string, offset: number, limit: number, sort: EntitySort, filters?: SearchFilters, cursor?: string): Promise<EntityExplorerPage> {
     const params = new URLSearchParams({ q, run_id: this.runId, offset: String(offset), limit: String(limit), sort });
+    if (cursor) params.set("cursor", cursor);
     if (filters?.party_type) params.set("party_type", filters.party_type);
     if (filters?.min_record_count) params.set("min_record_count", String(filters.min_record_count));
     return fetchJson(`/api/entities/explorer?${params.toString()}`).then(adaptEntityExplorerPage);
@@ -379,11 +380,11 @@ export class MemoProxy implements WorkbenchPort {
       () => this.inner.entities(q, limit, filters),
     );
   }
-  entityExplorer(q: string, offset: number, limit: number, sort: EntitySort, filters?: SearchFilters): Promise<EntityExplorerPage> {
+  entityExplorer(q: string, offset: number, limit: number, sort: EntitySort, filters?: SearchFilters, cursor?: string): Promise<EntityExplorerPage> {
     return this.memo(
       "entityExplorer",
-      `${q}:${offset}:${limit}:${sort}:${JSON.stringify(filters ?? {})}`,
-      () => this.inner.entityExplorer(q, offset, limit, sort, filters),
+      `${q}:${offset}:${limit}:${sort}:${cursor ?? ""}:${JSON.stringify(filters ?? {})}`,
+      () => this.inner.entityExplorer(q, offset, limit, sort, filters, cursor),
     );
   }
   entityGraph(id: string, includePotential = false): Promise<EntityGraph> {

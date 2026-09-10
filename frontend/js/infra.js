@@ -14,7 +14,7 @@ function adaptEntityExplorerPage(data) {
     const page = data;
     const validSorts = new Set(["relevance", "records", "name", "last_seen"]);
     const validModes = new Set(["exact", "hybrid_fallback"]);
-    if (!Array.isArray(page.rows) || typeof page.total !== "number" || typeof page.offset !== "number" || typeof page.limit !== "number" || typeof page.query !== "string" || !validSorts.has(page.sort ?? "") || !validModes.has(page.search_mode ?? "") || typeof page.total_is_exact !== "boolean" || !isObject(page.filters) || !isObject(page.query_plan) || !isObject(page.search_trace)) {
+    if (!Array.isArray(page.rows) || typeof page.total !== "number" || typeof page.offset !== "number" || typeof page.limit !== "number" || typeof page.query !== "string" || !validSorts.has(page.sort ?? "") || !validModes.has(page.search_mode ?? "") || typeof page.total_is_exact !== "boolean" || (page.cursor !== undefined && page.cursor !== null && typeof page.cursor !== "string") || (page.next_cursor !== undefined && page.next_cursor !== null && typeof page.next_cursor !== "string") || (page.has_more !== undefined && typeof page.has_more !== "boolean") || !isObject(page.filters) || !isObject(page.query_plan) || !isObject(page.search_trace)) {
         throw new ApiError("entity_explorer_schema_mismatch");
     }
     return page;
@@ -173,8 +173,10 @@ export class ApiAdapter {
             params.set("min_record_count", String(filters.min_record_count));
         return fetchJson(`/api/entities?${params.toString()}`).then(adaptSearchResult);
     }
-    entityExplorer(q, offset, limit, sort, filters) {
+    entityExplorer(q, offset, limit, sort, filters, cursor) {
         const params = new URLSearchParams({ q, run_id: this.runId, offset: String(offset), limit: String(limit), sort });
+        if (cursor)
+            params.set("cursor", cursor);
         if (filters?.party_type)
             params.set("party_type", filters.party_type);
         if (filters?.min_record_count)
@@ -322,8 +324,8 @@ export class MemoProxy {
     entities(q, limit, filters) {
         return this.memo("entities", `${q}:${limit ?? 50}:${JSON.stringify(filters ?? {})}`, () => this.inner.entities(q, limit, filters));
     }
-    entityExplorer(q, offset, limit, sort, filters) {
-        return this.memo("entityExplorer", `${q}:${offset}:${limit}:${sort}:${JSON.stringify(filters ?? {})}`, () => this.inner.entityExplorer(q, offset, limit, sort, filters));
+    entityExplorer(q, offset, limit, sort, filters, cursor) {
+        return this.memo("entityExplorer", `${q}:${offset}:${limit}:${sort}:${cursor ?? ""}:${JSON.stringify(filters ?? {})}`, () => this.inner.entityExplorer(q, offset, limit, sort, filters, cursor));
     }
     entityGraph(id, includePotential = false) {
         return this.memo("entityGraph", `${id}:${includePotential}`, () => this.inner.entityGraph(id, includePotential));

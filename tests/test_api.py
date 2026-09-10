@@ -231,6 +231,61 @@ def test_entities_search_and_list(client):
     assert len(all_rows) == 1
 
 
+def test_entity_explorer_supports_stable_keyset_cursor(client):
+    from api import main as m
+
+    path = m.RUNS.resolve("run_fake") / "canonical_entities.parquet"
+    canonical = pd.read_parquet(path)
+    second = canonical.iloc[[0]].copy()
+    second["nayose_id"] = "N000000002"
+    second["name_kanji"] = "佐藤 花子"
+    second["name_kana"] = "サトウ ハナコ"
+    pd.concat([canonical, second], ignore_index=True).to_parquet(path, index=False)
+
+    first = client.get(
+        "/api/entities/explorer" + Q,
+        params={"limit": 1, "sort": "name"},
+    )
+    assert first.status_code == 200
+    first_body = first.json()
+    assert first_body["total"] == 2
+    assert first_body["has_more"] is True
+    assert first_body["next_cursor"]
+
+    second_page = client.get(
+        "/api/entities/explorer" + Q,
+        params={"limit": 1, "sort": "name", "cursor": first_body["next_cursor"]},
+    )
+    assert second_page.status_code == 200
+    second_body = second_page.json()
+    assert second_body["total"] == -1
+    assert second_body["offset"] == 0
+    assert second_body["rows"][0]["nayose_id"] != first_body["rows"][0]["nayose_id"]
+
+    relevance_first = client.get(
+        "/api/entities/explorer" + Q,
+        params={"q": "佐藤", "limit": 1, "sort": "relevance"},
+    ).json()
+    relevance_second = client.get(
+        "/api/entities/explorer" + Q,
+        params={
+            "q": "佐藤",
+            "limit": 1,
+            "sort": "relevance",
+            "cursor": relevance_first["next_cursor"],
+        },
+    ).json()
+    assert relevance_first["total"] == 2
+    assert relevance_second["total"] == -1
+    assert relevance_second["rows"][0]["nayose_id"] != relevance_first["rows"][0]["nayose_id"]
+
+    stale = client.get(
+        "/api/entities/explorer" + Q,
+        params={"limit": 1, "sort": "records", "cursor": first_body["next_cursor"]},
+    )
+    assert stale.status_code == 422
+
+
 def test_entity_explorer_pages_server_side_and_projects_observed_graph(client):
     page = client.get(
         "/api/entities/explorer" + Q, params={"q": "佐藤", "offset": 1, "limit": 1, "sort": "name"}

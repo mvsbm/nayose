@@ -52,8 +52,9 @@ class EntityQueries:
         limit: int,
         sort: str,
         filters: SearchFilters | None = None,
+        cursor: str | None = None,
     ) -> dict[str, Any]:
-        return self.index.page(run_id, q, offset, limit, sort, filters)
+        return self.index.page(run_id, q, offset, limit, sort, filters, cursor=cursor)
 
     def normalized_query(self, q: str) -> dict[str, str]:
         return normalize_query_fields(q)

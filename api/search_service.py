@@ -185,6 +185,7 @@ class EntitySearchRequest:
     sort: str = "relevance"
     filters: SearchFilters = SearchFilters()
     semantic: bool = True
+    cursor: str | None = None
 
 
 class ExactService(Protocol):
@@ -206,6 +207,7 @@ class PagedExactService(Protocol):
         limit: int,
         sort: str,
         filters: SearchFilters,
+        cursor: str | None,
     ) -> dict[str, Any]: ...
 
 
@@ -280,6 +282,7 @@ class ExactPageRetriever:
             request.limit,
             request.sort,
             request.filters,
+            request.cursor,
         )
 
 
@@ -592,7 +595,12 @@ class SearchService:
         plan = self.interpreter.interpret(request.query, request.filters)
         telemetry = SearchTelemetry()
         page = telemetry.measure("exact", lambda: paged_exact.retrieve(request))
-        if page["total"] > 0 or not plan.raw_query or request.sort != "relevance":
+        if (
+            page["total"] > 0
+            or request.cursor is not None
+            or not plan.raw_query
+            or request.sort != "relevance"
+        ):
             return {
                 **page,
                 "query_plan": plan.as_dict(),
