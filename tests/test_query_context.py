@@ -6,6 +6,35 @@ from api.query_context import BundleReader
 from api.repositories import RunRepository
 
 
+def test_cache_single_flight_runs_one_loader_for_same_key(tmp_path):
+    reader = BundleReader(RunRepository(tmp_path), tmp_path)
+    started = Event()
+    release = Event()
+    calls = 0
+    results: list[str] = []
+
+    def operation() -> str:
+        nonlocal calls
+        calls += 1
+        started.set()
+        release.wait(timeout=2)
+        return "shared"
+
+    threads = [
+        Thread(target=lambda: results.append(reader.cached("same", operation))) for _ in range(2)
+    ]
+    threads[0].start()
+    assert started.wait(timeout=1)
+    threads[1].start()
+    release.set()
+    for thread in threads:
+        thread.join(timeout=2)
+
+    assert calls == 1
+    assert results == ["shared", "shared"]
+    assert all(not thread.is_alive() for thread in threads)
+
+
 def test_cache_miss_does_not_block_unrelated_keys(tmp_path):
     reader = BundleReader(RunRepository(tmp_path), tmp_path)
     slow_started = Event()

@@ -6,7 +6,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from threading import Lock
+from threading import Event, Lock
 from typing import Any
 
 import duckdb
@@ -89,16 +89,46 @@ class BundleReader:
         self.repo = repo
         self.data_dir = data_dir
         self._cache: dict[str, tuple[float, Any]] = {}
+        self._cache_errors: dict[str, tuple[float, BaseException]] = {}
+        self._cache_inflight: dict[str, Event] = {}
         self._cache_lock = Lock()
 
     def cached(self, key: str, operation: Callable[[], Any]) -> Any:
-        with self._cache_lock:
-            hit = self._cache.get(key)
-            if hit and time.time() - hit[0] < 300:
-                return hit[1]
-        value = operation()
+        while True:
+            with self._cache_lock:
+                now = time.time()
+                hit = self._cache.get(key)
+                if hit and now - hit[0] < 300:
+                    return hit[1]
+                error = self._cache_errors.get(key)
+                if error and error[0] > now:
+                    raise error[1]
+                if error:
+                    self._cache_errors.pop(key, None)
+                event = self._cache_inflight.get(key)
+                if event is None:
+                    event = Event()
+                    self._cache_inflight[key] = event
+                    leader = True
+                else:
+                    leader = False
+            if leader:
+                break
+            event.wait()
+
+        try:
+            value = operation()
+        except Exception as exc:
+            with self._cache_lock:
+                self._cache_errors[key] = (time.time() + 1, exc)
+                self._cache_inflight.pop(key, None)
+                event.set()
+            raise
         with self._cache_lock:
             self._cache[key] = (time.time(), value)
+            self._cache_errors.pop(key, None)
+            self._cache_inflight.pop(key, None)
+            event.set()
             if len(self._cache) > MAX_CACHE:
                 oldest = min(self._cache, key=lambda cache_key: self._cache[cache_key][0])
                 del self._cache[oldest]
