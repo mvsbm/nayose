@@ -9,6 +9,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Any
 
+from api.operational_lock import advisory_file_lock
 from api.release import safe_run_id
 
 
@@ -53,33 +54,58 @@ class DecisionsStore:
     def load(self, run_id: str) -> list[dict[str, Any]]:
         with self._lock:
             path = self._path(run_id)
-            if not path.exists():
-                return []
-            manifest_path, manifest = self._manifest(run_id or path.stem)
-            binding_path = self._binding_path(path)
-            if not binding_path.exists():
-                raise ValueError("decision file is not bound to a model manifest")
-            binding = json.loads(binding_path.read_text(encoding="utf-8"))
-            manifest_sha256 = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
-            if binding.get("data_fingerprint") != manifest.get("data_fingerprint"):
-                raise ValueError("decision data fingerprint does not match the model")
-            if binding.get("manifest_sha256") != manifest_sha256:
-                raise ValueError("decision model manifest has changed")
-            return json.loads(path.read_text(encoding="utf-8"))
+            with advisory_file_lock(path.with_suffix(".lock"), shared=True):
+                if not path.exists():
+                    return []
+                manifest_path, manifest = self._manifest(run_id or path.stem)
+                binding_path = self._binding_path(path)
+                if not binding_path.exists():
+                    raise ValueError("decision file is not bound to a model manifest")
+                binding = json.loads(binding_path.read_text(encoding="utf-8"))
+                manifest_sha256 = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+                if binding.get("data_fingerprint") != manifest.get("data_fingerprint"):
+                    raise ValueError("decision data fingerprint does not match the model")
+                if binding.get("manifest_sha256") != manifest_sha256:
+                    raise ValueError("decision model manifest has changed")
+                return json.loads(path.read_text(encoding="utf-8"))
 
     def save(self, run_id: str, items: list[dict[str, Any]]) -> None:
         with self._lock:
             path = self._path(run_id)
-            manifest_path, manifest = self._manifest(run_id or path.stem)
-            binding = {
-                "run_id": path.stem,
-                "data_fingerprint": manifest["data_fingerprint"],
-                "manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
-            }
-            tmp = path.with_name(f".{path.name}.tmp.{os.getpid()}")
-            meta = self._binding_path(path)
-            meta_tmp = meta.with_name(f".{meta.name}.tmp.{os.getpid()}")
-            tmp.write_text(json.dumps(items, ensure_ascii=False, indent=1), encoding="utf-8")
-            meta_tmp.write_text(json.dumps(binding, ensure_ascii=False, indent=1), encoding="utf-8")
-            os.replace(tmp, path)
-            os.replace(meta_tmp, meta)
+            with advisory_file_lock(path.with_suffix(".lock")):
+                manifest_path, manifest = self._manifest(run_id or path.stem)
+                binding = {
+                    "run_id": path.stem,
+                    "data_fingerprint": manifest["data_fingerprint"],
+                    "manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+                }
+                tmp = path.with_name(f".{path.name}.tmp.{os.getpid()}")
+                meta = self._binding_path(path)
+                meta_tmp = meta.with_name(f".{meta.name}.tmp.{os.getpid()}")
+                try:
+                    _atomic_json_write(tmp, items)
+                    _atomic_json_write(meta_tmp, binding)
+                    os.replace(tmp, path)
+                    os.replace(meta_tmp, meta)
+                    _fsync_directory(path.parent)
+                finally:
+                    tmp.unlink(missing_ok=True)
+                    meta_tmp.unlink(missing_ok=True)
+
+
+def _atomic_json_write(path: Path, value: Any) -> None:
+    with path.open("w", encoding="utf-8") as stream:
+        json.dump(value, stream, ensure_ascii=False, indent=1)
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def _fsync_directory(path: Path) -> None:
+    try:
+        descriptor = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
