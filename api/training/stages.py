@@ -61,8 +61,6 @@ class StageReporter:
 def _rss_mib() -> float:
     if resource is None:
         return float("nan")
-    if resource is None:
-        return float("nan")
     usage = resource.getrusage(resource.RUSAGE_SELF)
     value = getattr(usage, "ru_maxrss", 0)
     if sys.platform != "darwin":
