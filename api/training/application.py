@@ -6,6 +6,7 @@ from dataclasses import dataclass, replace
 
 import pandas as pd
 
+from api.infrastructure.process.work_ledger import WorkflowLedger
 from api.training.artifacts import RunBundleWriter
 from api.training.clustering import build_clusters
 from api.training.config import TrainingConfig
@@ -22,7 +23,6 @@ from api.training.indexing import TrainingCandidateIndex, build_graph, build_ind
 from api.training.pair_training import PairTrainer
 from api.training.preflight import Preflight
 from api.training.stages import StageReporter
-from api.work_ledger import WorkflowLedger
 
 
 @dataclass(slots=True)

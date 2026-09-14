@@ -263,7 +263,7 @@ def test_single_transport_seam():
 def test_no_root_legacy_modules_in_api():
     """The retired root-level engine and obsolete CLI must stay deleted.
 
-    API modules use the shared primitives and api/engine.py loader instead of
+    API modules use the shared primitives and the infrastructure runtime engine instead of
     recreating legacy implementations.
     """
     assert not (REPO / "nayose_inference.py").exists(), "legacy root engine must stay retired"
@@ -271,7 +271,8 @@ def test_no_root_legacy_modules_in_api():
     for path in sorted((REPO / "api").glob("*.py")):
         src = path.read_text(encoding="utf-8")
         assert "nayose_inference" not in src and "nayose_cli" not in src, (
-            f"{path.name}: reference to a root-level legacy module — import from api/engine.py"
+            f"{path.name}: reference to a root-level legacy module — "
+            "import from the infrastructure runtime"
         )
 
 
@@ -297,7 +298,7 @@ def test_i18n_dictionary_is_complete_and_bilingual():
 
 def test_matching_stage_literals_have_i18n_labels():
     """State-machine parity: the server's job stages must be user-readable."""
-    contracts = (REPO / "api" / "contracts.py").read_text(encoding="utf-8")
+    contracts = (REPO / "api" / "http" / "contracts.py").read_text(encoding="utf-8")
     match = re.search(r"Stage = Literal\[(.*?)\]", contracts, re.S)
     assert match, "contracts.py must declare the Stage Literal"
     stages = set(re.findall(r'"(\w+)"', match.group(1)))

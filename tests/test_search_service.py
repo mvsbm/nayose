@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from api.search_service import (
+from api.application.search import (
     EntitySearchRequest,
     QueryInterpreter,
     SearchFilters,
@@ -52,7 +52,7 @@ def test_query_interpreter_selects_structured_intent():
 
 
 def test_candidate_merger_keeps_provenance_after_reaching_limit():
-    from api.search_service import CandidateMerger
+    from api.application.search import CandidateMerger
 
     rows = CandidateMerger().merge(
         [

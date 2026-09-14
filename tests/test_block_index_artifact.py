@@ -7,7 +7,7 @@ import pytest
 
 def test_polars_block_index_backend_matches_pandas():
     pytest.importorskip("polars")
-    from api.block_index import build_block_indexes
+    from api.infrastructure.retrieval.block_index import build_block_indexes
 
     reference = pd.DataFrame(
         [
@@ -44,8 +44,12 @@ def test_polars_block_index_backend_matches_pandas():
 
 
 def test_block_index_artifact_round_trip_preserves_candidates(tmp_path: Path):
-    from api.block_index import build_block_indexes, load_block_indexes, save_block_indexes
-    from api.engine import _data_fingerprint
+    from api.infrastructure.retrieval.block_index import (
+        build_block_indexes,
+        load_block_indexes,
+        save_block_indexes,
+    )
+    from api.infrastructure.runtime.engine import _data_fingerprint
 
     reference = pd.DataFrame(
         [
@@ -86,7 +90,11 @@ def test_block_index_artifact_round_trip_preserves_candidates(tmp_path: Path):
 
 
 def test_block_index_artifact_rejects_wrong_reference(tmp_path: Path):
-    from api.block_index import build_block_indexes, load_block_indexes, save_block_indexes
+    from api.infrastructure.retrieval.block_index import (
+        build_block_indexes,
+        load_block_indexes,
+        save_block_indexes,
+    )
 
     path = tmp_path / "block_indexes.npz"
     save_block_indexes(
@@ -102,7 +110,11 @@ def test_block_index_artifact_rejects_wrong_reference(tmp_path: Path):
 
 def test_dense_index_artifact_round_trip_is_optional(tmp_path: Path):
     pytest.importorskip("usearch")
-    from api.dense_index import build_dense_index, load_dense_index, save_dense_index
+    from api.infrastructure.retrieval.dense_index import (
+        build_dense_index,
+        load_dense_index,
+        save_dense_index,
+    )
 
     embeddings: np.ndarray = np.asarray([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32)
     path = tmp_path / "dense_index.usearch"
@@ -117,7 +129,11 @@ def test_dense_index_artifact_round_trip_is_optional(tmp_path: Path):
 
 
 def test_block_index_artifact_rejects_invalid_row_count(tmp_path: Path):
-    from api.block_index import build_block_indexes, load_block_indexes, save_block_indexes
+    from api.infrastructure.retrieval.block_index import (
+        build_block_indexes,
+        load_block_indexes,
+        save_block_indexes,
+    )
 
     path = tmp_path / "block_indexes.npz"
     save_block_indexes(

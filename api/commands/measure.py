@@ -15,7 +15,11 @@ from pathlib import Path
 from threading import Lock
 from typing import Any
 
-from api.performance import available_cpu_count, cpu_thread_budget, model_thread_budget
+from api.infrastructure.runtime.performance import (
+    available_cpu_count,
+    cpu_thread_budget,
+    model_thread_budget,
+)
 
 try:
     import psutil  # type: ignore[import-untyped]

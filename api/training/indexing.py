@@ -14,24 +14,27 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.neighbors import NearestNeighbors
 from sklearn.preprocessing import normalize as l2_normalize
 
-from api.embedding_cache import (
+from api.infrastructure.retrieval.sparse_retrieval import (
+    DEFAULT_QUERY_FEATURE_CAP,
+    SparseCandidateBackend,
+)
+from api.infrastructure.runtime.embedding_cache import (
     EMBEDDING_FIELD_SCHEMA_VERSION,
     EMBEDDING_PREPROCESSING_VERSION,
     cache_paths,
     model_revision,
     text_fingerprint,
 )
-from api.embedding_cache import (
+from api.infrastructure.runtime.embedding_cache import (
     load as load_embedding_cache,
 )
-from api.embedding_cache import (
+from api.infrastructure.runtime.embedding_cache import (
     save as save_embedding_cache,
 )
-from api.performance import require_mps_device
-from api.sparse_retrieval import DEFAULT_QUERY_FEATURE_CAP, SparseCandidateBackend
+from api.infrastructure.runtime.performance import require_mps_device
 from api.training.config import TrainingConfig
 from api.training.contracts import NormalizedCorpus, RuntimeInfo
-from api.training_retrieval import CandidateGraphConfig, build_candidate_graph
+from api.training.retrieval import CandidateGraphConfig, build_candidate_graph
 
 BLOCK_SPECS: dict[str, tuple[str, ...]] = {
     "exact_email": ("n_email",),

@@ -15,7 +15,7 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
-from api.work_ledger import WorkflowLedger
+from api.infrastructure.process.work_ledger import WorkflowLedger
 from synthetic import SyntheticConfig
 from synthetic.clean import write_clean_entities
 from synthetic.generation_preview import config_from_controls

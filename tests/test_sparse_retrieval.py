@@ -6,8 +6,11 @@ import pytest
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.neighbors import NearestNeighbors
 
-from api.engine import CandidateIndex, InferenceConfig
-from api.sparse_retrieval import DEFAULT_QUERY_FEATURE_CAP, SparseCandidateBackend
+from api.infrastructure.retrieval.sparse_retrieval import (
+    DEFAULT_QUERY_FEATURE_CAP,
+    SparseCandidateBackend,
+)
+from api.infrastructure.runtime.engine import CandidateIndex, InferenceConfig
 
 
 def test_sparse_backend_matches_cosine_nearest_neighbors() -> None:
@@ -89,7 +92,7 @@ def test_candidate_index_batches_dense_and_sparse_channels(monkeypatch) -> None:
             )
 
     monkeypatch.setattr(
-        "api.engine.encode_queries",
+        "api.infrastructure.runtime.engine.encode_queries",
         lambda values, expected_dimensions: np.ones(
             (len(values), expected_dimensions), dtype=np.float32
         ),
@@ -115,7 +118,7 @@ def test_candidate_index_batches_dense_and_sparse_channels(monkeypatch) -> None:
 def test_materializer_writes_inverted_sparse_artifact(tmp_path) -> None:
     from scipy.sparse import load_npz, save_npz
 
-    from api.bundle_materialization import _materialize_sparse_inverted_artifact
+    from api.infrastructure.bundles.materialization import _materialize_sparse_inverted_artifact
 
     vectorizer = TfidfVectorizer().fit(["alpha beta", "beta gamma"])
     save_npz(
@@ -142,7 +145,7 @@ def test_sparse_backend_rejects_invalid_inputs() -> None:
 
 
 def test_training_candidate_graph_merges_channels_without_pair_objects() -> None:
-    from api.training_retrieval import CandidateGraphConfig, build_candidate_graph
+    from api.training.retrieval import CandidateGraphConfig, build_candidate_graph
 
     class Index:
         reference = pd.DataFrame(

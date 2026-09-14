@@ -6,7 +6,7 @@ import sys
 from collections.abc import Sequence
 
 from api.commands._dispatch import invoke
-from api.native_runtime import reexec_with_aligned_macos_runtime
+from api.infrastructure.runtime.native_runtime import reexec_with_aligned_macos_runtime
 
 _USAGE = """Usage: nayose <family> <command> [options]
 

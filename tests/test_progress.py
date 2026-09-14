@@ -1,7 +1,7 @@
 """Progress parser + streaming unit tests (design: honest, deterministic)."""
 
-from api.admin import AdminService
-from api.progress import ProgressUpdate, parse
+from api.application.admin import AdminService
+from api.infrastructure.process.progress import ProgressUpdate, parse
 
 
 def test_parse_standard_eta_line():

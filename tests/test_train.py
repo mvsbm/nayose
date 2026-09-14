@@ -4,12 +4,12 @@ from pathlib import Path
 from typing import Any
 
 from api.commands.lifecycle import REQUIRED_BUNDLE_TABLES, promote_bundle, verify_bundle
-from api.embedding_config import (
+from api.infrastructure.runtime.embedding_config import (
     F2LLM_330M_MODEL_ID,
     embedding_model_id,
     pipeline_model_family,
 )
-from api.model_gate import evaluate_f2llm_candidate
+from api.infrastructure.runtime.model_gate import evaluate_f2llm_candidate
 
 
 def _args(data_root: Path, models_root: Path) -> Namespace:

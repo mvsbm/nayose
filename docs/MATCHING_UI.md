@@ -17,14 +17,14 @@ The current bundle does not export historical merge paths. Entity detail states 
 
 ## Backend boundaries
 
-- `api/evidence.py`: visible-field whitelist and field comparison, reusing existing normalization.
-- `api/retrieval.py`: bundle-aware query encoding and retrieval. SVD bundles use their saved `dense_svd.joblib`; neural bundles use their recorded model ID. Embedding dimensions are checked before ANN search. `NAYOSE_EXACT_MODE` and `NAYOSE_USE_DENSE` remain effective.
-- `api/search.py`: entity search ranking from the loaded engine's embeddings
+- `api/domain/evidence.py`: visible-field whitelist and field comparison, reusing existing normalization.
+- `api/infrastructure/retrieval/bundle_retrieval.py`: bundle-aware query encoding and retrieval. SVD bundles use their saved `dense_svd.joblib`; neural bundles use their recorded model ID. Embedding dimensions are checked before ANN search. `NAYOSE_EXACT_MODE` and `NAYOSE_USE_DENSE` remain effective.
+- `api/infrastructure/retrieval/entity_search.py`: entity search ranking from the loaded engine's embeddings
   (entity centroids over per-record vectors); typed-search hybrid — exact LIKE
   hits are always preserved, semantic similarity scores/order added once the
   engine is loaded (`NAYOSE_WARM_EMBED=1` or after a match request).
-- `api/matching.py`: scoring orchestration and bounded background request lifecycle, using `api/engine.py.load_engine` (which performs the corpus fingerprint guard).
-- `api/contracts.py`: response schemas.
+- `api/application/matching.py`: scoring orchestration and bounded background request lifecycle, using `api/infrastructure/runtime/engine.py.load_engine` (which performs the corpus fingerprint guard).
+- `api/http/contracts.py`: response schemas.
 - `frontend/ts/port.ts` / `infra.ts`: typed ports and transport; views contain no SQL or network calls.
 - `frontend/ts/matching-state.ts`: matching lifecycle, polling and stale-run protection.
 - `frontend/ts/i18n.ts`: bilingual message dictionary, independent of source data.

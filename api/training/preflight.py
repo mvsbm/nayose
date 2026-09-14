@@ -7,7 +7,7 @@ import sys
 from dataclasses import dataclass
 from typing import Any
 
-from api.performance import (
+from api.infrastructure.runtime.performance import (
     configure_mps_runtime,
     configure_torch_threads,
     model_thread_budget,

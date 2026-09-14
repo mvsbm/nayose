@@ -7,8 +7,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from api.embedding_cache import cache_paths
-from api.release import validate_artifact_checksums
+from api.infrastructure.bundles.release import validate_artifact_checksums
+from api.infrastructure.runtime.embedding_cache import cache_paths
 from api.training.config import TrainingConfig
 from api.training.contracts import NormalizedCorpus, RuntimeInfo
 from api.training.indexing import _load_or_encode_embeddings

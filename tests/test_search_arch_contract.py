@@ -6,9 +6,9 @@ import ast
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-SEARCH = REPO / "api" / "search_service.py"
-SEARCH_ROUTES = REPO / "api" / "routers" / "search.py"
-MAIN = REPO / "api" / "main.py"
+SEARCH = REPO / "api" / "application" / "search.py"
+SEARCH_ROUTES = REPO / "api" / "http" / "routers" / "entities.py"
+MAIN = REPO / "api" / "composition.py"
 MATCH_VIEW = REPO / "frontend" / "ts" / "match-view.ts"
 INFRA = REPO / "frontend" / "ts" / "infra.ts"
 

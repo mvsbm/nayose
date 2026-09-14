@@ -20,10 +20,10 @@ EntitySearchRequest
   -> bounded hybrid fallback when relevance search has no exact hits
 ```
 
-The composition root is `api/main.py` (`build_search_service`). The pipeline implementation is `api/search_service.py`.
+The composition root is `api/composition.py` (`build_search_service`). The pipeline implementation is `api/application/search.py`.
 
 Dense candidate discovery uses immutable, fingerprint-bound artifacts from
-`api/dense_views.py`: record embeddings remain the broad view, while separate
+`api/infrastructure/retrieval/dense_views.py`: record embeddings remain the broad view, while separate
 name, address, and alias indexes preserve field scope. `NameVariantExpander`
 creates search-only aliases with the source record, generation method, and
 confidence; aliases never rewrite canonical entity profiles. Record candidates retain exact-block, sparse, record-dense, and field-view
@@ -32,7 +32,7 @@ pair verification. The full record-dense rank is primary; only views relevant
 to populated query fields contribute, and name, address, and alias views remain
 lower-weight correlated discovery signals. Field-view scores never overwrite
 the record-dense feature consumed by the trained verifier.
-Dense evidence is discovery evidence, not an identity decision. Offline candidate graph construction uses the bounded sparse backend in `api/training_retrieval.py`; its capped CSC postings path shares the serving query-feature cap instead of materializing all-pairs sparse scores. Exact block indexes are fingerprint-bound and stored with deflate compression.
+Dense evidence is discovery evidence, not an identity decision. Offline candidate graph construction uses the bounded sparse backend in `api/training/retrieval.py`; its capped CSC postings path shares the serving query-feature cap instead of materializing all-pairs sparse scores. Exact block indexes are fingerprint-bound and stored with deflate compression.
 
 | Component | Responsibility |
 |---|---|

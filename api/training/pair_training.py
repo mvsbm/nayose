@@ -11,8 +11,8 @@ from scipy.special import expit
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import average_precision_score
 
-from api.features import PAIR_FEATURE_COLS, compute_pair_features_frame, logit_clip
-from api.hard_negatives import select_hard_negatives
+from api.domain.features import PAIR_FEATURE_COLS, compute_pair_features_frame, logit_clip
+from api.domain.hard_negatives import select_hard_negatives
 from api.training.config import MODEL_SPECS, TrainingConfig
 from api.training.contracts import PairTrainingResult, RuntimeInfo, TruthSnapshot
 

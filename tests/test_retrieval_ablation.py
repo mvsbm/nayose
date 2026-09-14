@@ -1,4 +1,4 @@
-from api.retrieval_ablation import _metrics
+from api.infrastructure.retrieval.ablation import _metrics
 
 
 def test_ablation_metrics_include_operational_slices() -> None:

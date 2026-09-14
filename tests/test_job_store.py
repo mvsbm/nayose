@@ -2,8 +2,8 @@ import sqlite3
 
 import pytest
 
-from api.admin_jobs import AdminJobRunner
-from api.job_store import JobConflict, SQLiteJobStore
+from api.infrastructure.persistence.job_store import JobConflict, SQLiteJobStore
+from api.infrastructure.process.admin_jobs import AdminJobRunner
 
 
 class Audit:

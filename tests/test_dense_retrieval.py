@@ -2,8 +2,8 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from api.dense_retrieval import retrieve_dense_candidates
-from api.dense_views import DenseView
+from api.infrastructure.retrieval.dense_retrieval import retrieve_dense_candidates
+from api.infrastructure.retrieval.dense_views import DenseView
 
 
 class _SearchIndex:

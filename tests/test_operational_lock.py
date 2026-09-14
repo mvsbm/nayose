@@ -1,8 +1,8 @@
 import hashlib
 import json
 
-from api.audit import AuditLog
-from api.operational_store import OperationalStore
+from api.infrastructure.persistence.audit import AuditLog
+from api.infrastructure.persistence.operational_store import OperationalStore
 
 
 def test_audit_records_form_a_hash_chain(tmp_path):

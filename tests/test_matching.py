@@ -8,7 +8,7 @@ import pytest
 
 
 def test_comparisons_distinguish_missing_normalized_and_conflicting():
-    from api.evidence import compare_fields
+    from api.domain.evidence import compare_fields
 
     evidence = compare_fields(
         {"phone": "09012345678", "postal_code": "", "date_birth": "2000-01-01"},
@@ -69,7 +69,7 @@ def fake_engine(broken=False):
 
 
 def test_safe_identity_anchor_requires_name_and_stable_exact_field():
-    from api.features import has_safe_identity_anchor
+    from api.domain.features import has_safe_identity_anchor
 
     assert has_safe_identity_anchor({"name_loose_exact": 1, "dob_exact": 1})
     assert not has_safe_identity_anchor({"name_loose_exact": 1, "phone_exact": 1})
@@ -77,7 +77,7 @@ def test_safe_identity_anchor_requires_name_and_stable_exact_field():
 
 
 def test_matching_returns_actual_support_and_threshold_reason():
-    from api.matching import ExplainedMatcher
+    from api.application.matching import ExplainedMatcher
 
     stages: list[str] = []
     result = ExplainedMatcher(fake_engine()).recommend(
@@ -128,7 +128,7 @@ def test_matching_returns_actual_support_and_threshold_reason():
 
 
 def test_minimum_reference_density_allows_safe_no_match():
-    from api.matching import ExplainedMatcher
+    from api.application.matching import ExplainedMatcher
 
     engine = fake_engine()
     engine.config.minimum_reference_density = 1.0
@@ -148,14 +148,14 @@ def test_minimum_reference_density_allows_safe_no_match():
 
 
 def test_scoring_failure_is_not_disguised_as_probability():
-    from api.matching import ExplainedMatcher
+    from api.application.matching import ExplainedMatcher
 
     with pytest.raises(ValueError, match="broken model"):
         ExplainedMatcher(fake_engine(broken=True)).recommend({"name_kanji": "佐藤"}, lambda _: None)
 
 
 def test_inference_config_validates_dense_profile_and_density():
-    from api.engine import InferenceConfig
+    from api.infrastructure.runtime.engine import InferenceConfig
 
     assert InferenceConfig(dense_profile="field_aware", minimum_reference_density=0.5)
     with pytest.raises(ValueError, match="dense_profile"):
@@ -167,7 +167,7 @@ def test_inference_config_validates_dense_profile_and_density():
 def test_engine_load_defaults_to_promoted_aliases():
     import inspect
 
-    from api.engine import NayoseEngine, load_engine
+    from api.infrastructure.runtime.engine import NayoseEngine, load_engine
 
     assert inspect.signature(NayoseEngine.load).parameters["model_dir"].default == "models/current"
     assert inspect.signature(NayoseEngine.load).parameters["data_dir"].default == "data/current"
@@ -176,7 +176,7 @@ def test_engine_load_defaults_to_promoted_aliases():
 
 
 def test_engine_refuses_bundles_without_fingerprint_guard(tmp_path):
-    from api.engine import NayoseEngine
+    from api.infrastructure.runtime.engine import NayoseEngine
 
     reference = pd.DataFrame({"record_id": ["R1"]})
     config = SimpleNamespace(model_dir=tmp_path)
@@ -190,8 +190,8 @@ def test_engine_refuses_bundles_without_fingerprint_guard(tmp_path):
 
 
 def test_query_embedding_encoder_batches_and_reuses_model():
-    from api.embedding_runtime import QueryEmbeddingEncoder
-    from api.telemetry import Stats
+    from api.infrastructure.observability.telemetry import Stats
+    from api.infrastructure.runtime.embedding_runtime import QueryEmbeddingEncoder
 
     calls: list[list[str]] = []
 
@@ -218,7 +218,7 @@ def test_query_embedding_encoder_batches_and_reuses_model():
 
 
 def test_process_wide_query_encoder_is_reused_and_rebound(monkeypatch):
-    import api.embedding_runtime as runtime
+    import api.infrastructure.runtime.embedding_runtime as runtime
 
     created = []
     closed = []
@@ -251,7 +251,7 @@ def test_degraded_dense_index_uses_saved_svd_for_queries(monkeypatch):
     from sklearn.feature_extraction.text import TfidfVectorizer
     from sklearn.preprocessing import normalize
 
-    from api.engine import CandidateIndex, InferenceConfig
+    from api.infrastructure.runtime.engine import CandidateIndex, InferenceConfig
 
     texts = ["alpha beta", "beta gamma", "gamma delta"]
     vectorizer = TfidfVectorizer().fit(texts)
@@ -268,7 +268,8 @@ def test_degraded_dense_index_uses_saved_svd_for_queries(monkeypatch):
 
     monkeypatch.setenv("NAYOSE_USE_DENSE", "1")
     monkeypatch.setattr(
-        "api.engine.encode_query", lambda _: (_ for _ in ()).throw(AssertionError())
+        "api.infrastructure.runtime.engine.encode_query",
+        lambda _: (_ for _ in ()).throw(AssertionError()),
     )
     index = CandidateIndex(
         pd.DataFrame({"record_id": ["R1", "R2", "R3"]}),
@@ -286,7 +287,7 @@ def test_degraded_dense_index_uses_saved_svd_for_queries(monkeypatch):
 
 
 def test_dense_serving_refuses_missing_ann_artifact(tmp_path):
-    from api.engine import InferenceConfig, _load_dense_artifacts
+    from api.infrastructure.runtime.engine import InferenceConfig, _load_dense_artifacts
 
     np.save(tmp_path / "reference_embeddings.npy", np.ones((2, 3), dtype=np.float32))
     reference = pd.DataFrame({"record_id": ["R1", "R2"]})
@@ -296,7 +297,7 @@ def test_dense_serving_refuses_missing_ann_artifact(tmp_path):
 
 
 def test_dense_serving_memory_maps_reference_embeddings(tmp_path, monkeypatch):
-    import api.engine as engine
+    import api.infrastructure.runtime.engine as engine
 
     np.save(tmp_path / "reference_embeddings.f16.npy", np.ones((2, 3), dtype=np.float16))
     (tmp_path / "dense_index.usearch").touch()
@@ -330,7 +331,7 @@ def test_svd_bundle_uses_saved_transform_not_neural_encoder(tmp_path, monkeypatc
     from sklearn.feature_extraction.text import TfidfVectorizer
     from sklearn.preprocessing import normalize
 
-    from api.retrieval import BundleRetriever
+    from api.infrastructure.retrieval.bundle_retrieval import BundleRetriever
 
     texts = ["alpha beta", "beta gamma", "gamma delta"]
     vectorizer = TfidfVectorizer().fit(texts)
@@ -339,7 +340,7 @@ def test_svd_bundle_uses_saved_transform_not_neural_encoder(tmp_path, monkeypatc
     embeddings = normalize(svd.transform(sparse))
     joblib.dump(svd, tmp_path / "dense_svd.joblib")
     reference = pd.DataFrame({"record_id": ["R1", "R2", "R3"]})
-    from api.engine import CandidateIndex, InferenceConfig
+    from api.infrastructure.runtime.engine import CandidateIndex, InferenceConfig
 
     config = InferenceConfig(model_dir=tmp_path)
     index = CandidateIndex(reference, sparse, vectorizer, {}, config, embeddings)
@@ -359,9 +360,9 @@ def test_svd_bundle_uses_saved_transform_not_neural_encoder(tmp_path, monkeypatc
 
 def test_normalization_and_pair_features_are_shared_with_engine():
     """The engine re-exports api/* primitives — identity, not a copy."""
-    import api.engine as engine
-    import api.features as features
-    import api.normalize as normalize
+    import api.domain.features as features
+    import api.domain.normalize as normalize
+    import api.infrastructure.runtime.engine as engine
 
     assert engine.normalize_record is normalize.normalize_record
     assert engine.compute_pair_features is features.compute_pair_features
@@ -371,7 +372,7 @@ def test_normalization_and_pair_features_are_shared_with_engine():
 
 
 def test_normalize_record_retrieval_text_is_labeled_and_model_compatible():
-    from api.normalize import normalize_record
+    from api.domain.normalize import normalize_record
 
     normalized = normalize_record(
         {
@@ -393,7 +394,7 @@ def test_normalize_record_retrieval_text_is_labeled_and_model_compatible():
 
 
 def test_normalize_record_field_invariants():
-    from api.normalize import (
+    from api.domain.normalize import (
         normalize_email,
         normalize_kana,
         normalize_phone,
@@ -420,7 +421,7 @@ def test_normalize_record_field_invariants():
     # _compact strips punctuation (legacy email contract)
     assert normalized["n_email"] == "taro@examplecojp"
     assert "1000001" in normalized["retrieval_text"]
-    from api.normalize import normalize_frame
+    from api.domain.normalize import normalize_frame
 
     frame = normalize_frame(pd.DataFrame([{"record_id": "R1", **raw}]), "record_id").iloc[0]
     for field, value in normalized.items():
@@ -436,8 +437,8 @@ def test_normalize_record_field_invariants():
 
 
 def test_pair_feature_agreement_missing_and_conflict():
-    from api.features import PAIR_FEATURE_COLS, compute_pair_features
-    from api.normalize import normalize_record
+    from api.domain.features import PAIR_FEATURE_COLS, compute_pair_features
+    from api.domain.normalize import normalize_record
 
     query = normalize_record(
         {
@@ -481,7 +482,7 @@ def test_pair_feature_agreement_missing_and_conflict():
 
 
 def test_entity_search_ranks_by_embedding_similarity():
-    from api.search import EntitySearch
+    from api.infrastructure.retrieval.entity_search import EntitySearch
 
     class FakeIndex:
         reference_embeddings = np.array([[1.0, 0.0], [1.0, 0.0], [0.0, 1.0]], dtype=np.float32)
@@ -526,7 +527,7 @@ def test_entity_search_ranks_by_embedding_similarity():
 
 
 def test_entity_auto_link_rejects_name_only_identity_evidence():
-    from api.matching import ExplainedMatcher
+    from api.application.matching import ExplainedMatcher
 
     engine = fake_engine()
     engine.config.entity_margin_threshold = 0.0
@@ -538,7 +539,7 @@ def test_entity_auto_link_rejects_name_only_identity_evidence():
 
 
 def test_entity_auto_link_requires_margin_and_evidence_safety():
-    from api.matching import ExplainedMatcher
+    from api.application.matching import ExplainedMatcher
 
     engine = fake_engine()
     engine.config.entity_margin_threshold = 0.06
@@ -556,7 +557,7 @@ def test_entity_auto_link_requires_margin_and_evidence_safety():
 
 
 def test_threshold_overrides_move_only_the_decision_layer():
-    from api.matching import ExplainedMatcher
+    from api.application.matching import ExplainedMatcher
 
     matcher = ExplainedMatcher(fake_engine())
     base = matcher.recommend(
@@ -596,7 +597,7 @@ def test_threshold_overrides_move_only_the_decision_layer():
 
 
 def test_input_normalized_and_no_match_nearest_are_disclosed():
-    from api.matching import ExplainedMatcher
+    from api.application.matching import ExplainedMatcher
 
     matcher = ExplainedMatcher(fake_engine())
     result = matcher.recommend(
@@ -614,7 +615,7 @@ def test_input_normalized_and_no_match_nearest_are_disclosed():
 
 
 def test_score_context_reports_decision_load(tmp_path):
-    from api.matching import RecommendationService
+    from api.application.matching import RecommendationService
 
     path = tmp_path / "review_queue.parquet"
     pd.DataFrame({"pair_probability": [0.9, 0.7, 0.5]}).to_parquet(path, index=False)
@@ -624,7 +625,7 @@ def test_score_context_reports_decision_load(tmp_path):
 
 
 def test_engine_session_closes_previous_engine_before_swap(tmp_path):
-    from api.matching_runtime import EngineSession
+    from api.application.matching_runtime import EngineSession
 
     run_paths = {name: tmp_path / name for name in ("run-a", "run-b")}
     events: list[str] = []
@@ -661,7 +662,7 @@ def test_engine_session_closes_previous_engine_before_swap(tmp_path):
 
 
 def test_matching_job_status_survives_service_restart(tmp_path):
-    from api.matching import RecommendationService
+    from api.application.matching import RecommendationService
 
     repo = SimpleNamespace(resolve=lambda _run_id: tmp_path / "run")
     service = RecommendationService(repo, tmp_path / "data", loader=lambda *_: None)
@@ -682,7 +683,7 @@ def test_matching_job_status_survives_service_restart(tmp_path):
 
 
 def test_matching_job_cancellation_is_persisted(tmp_path):
-    from api.matching import ExplainedMatcher, RecommendationService
+    from api.application.matching import ExplainedMatcher, RecommendationService
 
     started, release = Event(), Event()
 
@@ -708,7 +709,7 @@ def test_matching_job_cancellation_is_persisted(tmp_path):
 
 
 def test_async_jobs_report_real_loading_and_reuse_engine(tmp_path):
-    from api.matching import ExplainedMatcher, RecommendationService
+    from api.application.matching import ExplainedMatcher, RecommendationService
 
     started, release = Event(), Event()
     loads = []

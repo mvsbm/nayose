@@ -23,9 +23,14 @@ import sys
 import time
 from pathlib import Path
 
-from api.block_index import BLOCK_INDEX_ARTIFACT  # noqa: E402
-from api.bundle_materialization import materialize_runtime_artifacts  # noqa: E402
-from api.embedding_config import (  # noqa: E402
+from api.infrastructure.bundles.materialization import materialize_runtime_artifacts  # noqa: E402
+from api.infrastructure.bundles.release import (  # noqa: E402
+    ReleaseCatalog,
+    ReleasePublisher,
+    validate_model_for_data,
+)
+from api.infrastructure.retrieval.block_index import BLOCK_INDEX_ARTIFACT  # noqa: E402
+from api.infrastructure.runtime.embedding_config import (  # noqa: E402
     F2LLM_330M_MODEL_ID,
     F2LLM_MPS_BATCH_SIZE,
     F2LLM_MPS_DEVICE,
@@ -35,13 +40,12 @@ from api.embedding_config import (  # noqa: E402
     embedding_model_id,
     pipeline_model_family,
 )
-from api.model_gate import evaluate_f2llm_candidate  # noqa: E402
-from api.performance import (  # noqa: E402
+from api.infrastructure.runtime.model_gate import evaluate_f2llm_candidate  # noqa: E402
+from api.infrastructure.runtime.performance import (  # noqa: E402
     cpu_thread_budget,
     model_thread_budget,
     native_thread_environment,
 )
-from api.release import ReleaseCatalog, ReleasePublisher, validate_model_for_data  # noqa: E402
 
 REQUIRED_BUNDLE_ARTIFACTS = (BLOCK_INDEX_ARTIFACT,)
 REQUIRED_BUNDLE_TABLES = (

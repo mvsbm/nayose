@@ -1,4 +1,4 @@
-// Column contract — mirrored in api/main.py REQUIRED_COLUMNS; a test
+// Column contract — mirrored in api/http/contracts.py REQUIRED_COLUMNS; a test
 // (tests/test_schema_contract.py) asserts the two stay in sync (Rust-style:
 // a shape mismatch fails the build/tests, never at render time in a browser).
 export const SCHEMA = {

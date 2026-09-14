@@ -6,9 +6,7 @@ from argparse import Namespace
 
 import pytest
 
-from api.operational_store import OperationalStore
-from api.query_context import BundleReader
-from api.release import (
+from api.infrastructure.bundles.release import (
     ReleaseCatalog,
     ReleaseError,
     ReleasePublisher,
@@ -19,6 +17,8 @@ from api.release import (
     safe_run_id,
     validate_model_for_data,
 )
+from api.infrastructure.persistence.operational_store import OperationalStore
+from api.infrastructure.read_model.bundle_reader import BundleReader
 
 
 def manifest(path, filename, fingerprint):
@@ -70,8 +70,8 @@ def test_release_publication_records_historical_metadata(tmp_path):
 
 
 def test_snapshot_resolution_is_request_stable_and_historical(tmp_path):
-    from api.repositories import RunRepository
-    from api.request_context import clear_snapshot_context
+    from api.infrastructure.bundles.repositories import RunRepository
+    from api.infrastructure.bundles.request_context import clear_snapshot_context
 
     data_root = tmp_path / "data"
     models_root = tmp_path / "models"
@@ -139,7 +139,7 @@ def test_release_catalog_preserves_previous_pointer_when_publish_fails(tmp_path,
             raise OSError("simulated crash")
         original_replace(source, target)
 
-    monkeypatch.setattr("api.release.os.replace", fail_replace)
+    monkeypatch.setattr("api.infrastructure.bundles.release.os.replace", fail_replace)
     with pytest.raises(OSError):
         publisher.publish("gen_new", "run_new")
 
@@ -149,8 +149,8 @@ def test_release_catalog_preserves_previous_pointer_when_publish_fails(tmp_path,
 
 
 def test_release_catalog_is_authoritative_over_legacy_aliases(tmp_path):
-    from api.query_context import BundleReader
-    from api.repositories import RunRepository
+    from api.infrastructure.bundles.repositories import RunRepository
+    from api.infrastructure.read_model.bundle_reader import BundleReader
 
     data_root = tmp_path / "data"
     models_root = tmp_path / "models"

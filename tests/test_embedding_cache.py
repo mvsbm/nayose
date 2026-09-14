@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from api.embedding_cache import cache_paths, load, save, text_fingerprint
+from api.infrastructure.runtime.embedding_cache import cache_paths, load, save, text_fingerprint
 
 
 def test_text_fingerprint_is_order_sensitive_without_exposing_text() -> None:

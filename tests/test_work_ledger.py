@@ -6,7 +6,11 @@ from typing import Any, cast
 
 import pytest
 
-from api.work_ledger import InMemoryMetricSink, JsonlMetricSink, WorkflowLedger
+from api.infrastructure.process.work_ledger import (
+    InMemoryMetricSink,
+    JsonlMetricSink,
+    WorkflowLedger,
+)
 
 
 def test_workflow_ledger_records_spans_counters_and_resources(tmp_path):

@@ -8,7 +8,7 @@ import json
 from dataclasses import asdict
 from pathlib import Path
 
-from api.retrieval_ablation import ABLATION_NAMES, evaluate
+from api.infrastructure.retrieval.ablation import ABLATION_NAMES, evaluate
 
 
 def parse_args() -> argparse.Namespace:

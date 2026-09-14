@@ -12,7 +12,7 @@ python -m api.cli audit repo       # ruff, mypy, tsc, npm test, pytest (+ E2E op
 ```
 
 The original root-level app layer (`nayose_cli.py`) was retired and the engine
-migrated to `api/engine.py`; all behavior lives in `api/`, `frontend/`,
+migrated to `api/infrastructure/runtime/engine.py`; all behavior lives in `api/`, `frontend/`,
 `synthetic/`.
 
 ## Quick Start
@@ -71,7 +71,7 @@ the
 reference data** and refuses stale combinations:
 
 ```python
-from api.engine import load_engine
+from api.infrastructure.runtime.engine import load_engine
 
 engine = load_engine()  # models/ + data/ (after a fresh nayose run)
 result = engine.recommend({"name_kanji": "山田太郎", "phone": "090-1234-5678"})
@@ -91,11 +91,14 @@ NAYOSE_DASH_PORT=8899 NAYOSE_WARM_EMBED=1 python -m api.main
 ```
 ├── api/cli.py                  # Canonical data/model/audit/benchmark CLI facade
 ├── api/commands/               # Focused command implementations
-├── api/                        # Serving (FastAPI) + matching engine
-│   ├── main.py                 #   typed routes, composition, auth
-│   ├── query_service.py        #   server-owned bundle reads
-│   ├── admin.py                #   jobs, settings, and audit coordination
-│   └── engine.py               #   trained-artifact loading + fingerprint guard
+├── api/                        # Serving package
+│   ├── main.py                 #   process entrypoint
+│   ├── composition.py          #   dependency composition root
+│   ├── http/routers/           #   typed FastAPI endpoint adapters
+│   ├── application/            #   matching, search, query, and admin use cases
+│   ├── domain/                 #   normalization, evidence, and identity rules
+│   ├── infrastructure/         #   bundle, storage, retrieval, and runtime adapters
+│   └── training/               #   isolated modular training application
 │
 ├── data/                       # Training data (gitignored)
 │   ├── raw/                        # immutable reference data (ken_all, personas, EDINET)
@@ -327,7 +330,7 @@ Frontend is **strict TypeScript** compiled to ESM (`tsc`), no bundler:
 ```
 
 Contracts are Rust-disciplined: `frontend/ts/schema.ts` mirrors
-`api/main.py REQUIRED_COLUMNS`, and `tests/test_schema_contract.py` fails CI
+`api/http/contracts.py REQUIRED_COLUMNS`, and `tests/test_schema_contract.py` fails CI
 if they drift; the data adapter validates shapes at runtime before render.
 Never hand-edit `frontend/js/` (generated).
 
@@ -373,7 +376,7 @@ ranking/robustness layer; keep them on by default.
 
 ```
 frontend/            no-build ESM app (index.html, styles.css, js/app.js)
-api/main.py          FastAPI composition root; typed routers expose search, matching, data, and admin APIs
+api/composition.py   FastAPI dependency composition; api/http/routers exposes typed search, matching, data, and admin APIs
 tests/test_api.py    API contract tests (self-contained fake bundle)
 ```
 

@@ -71,15 +71,15 @@ New modules must have one responsibility and follow the current layout:
 
 | Concern | Primary owner | Planned additions or evolution |
 |---|---|---|
-| Runtime configuration | `api/performance.py`, new `api/runtime_config.py` if needed | Typed, validated configuration object; derive data root/snapshot consistently |
-| Release and snapshots | `api/release.py`, `api/repositories.py` | `ReleaseCatalog` / `SnapshotResolver`; request-scoped snapshot value object |
-| Read access | `api/query_context.py`, `api/query_service.py`, `api/*_queries.py` | Read-only connection adapter and snapshot-bound query context |
-| Search | `api/search_service.py`, `api/entity_index.py`, `api/entity_queries.py` | Offline exact/fuzzy indexes, typed candidate edges, cursor pagination |
-| Matching lifecycle | `api/matching_runtime.py`, `api/matching.py`, `api/engine.py` | Warm engine handles, safe swap, bounded concurrency |
-| Decisions | `api/decisions.py` | Transactional revisions, optimistic concurrency, manifest binding |
-| Jobs | `api/admin_jobs.py`, `api/matching_runtime.py` | Durable job repository, worker protocol, retries and heartbeats |
-| Audit | `api/admin.py` initially; extract `api/audit.py` when needed | Durable, tamper-evident, PII-safe audit events |
-| API composition | `api/main.py` | App factory, lifespan ownership, dependency injection |
+| Runtime configuration | `api/infrastructure/runtime/performance.py`, new `api/runtime_config.py` if needed | Typed, validated configuration object; derive data root/snapshot consistently |
+| Release and snapshots | `api/infrastructure/bundles/release.py`, `api/infrastructure/bundles/repositories.py` | `ReleaseCatalog` / `SnapshotResolver`; request-scoped snapshot value object |
+| Read access | `api/infrastructure/read_model/bundle_reader.py`, `api/application/queries.py`, `api/infrastructure/read_model/*.py` | Read-only connection adapter and snapshot-bound query context |
+| Search | `api/application/search.py`, `api/infrastructure/retrieval/entity_index.py`, `api/infrastructure/read_model/entity.py` | Offline exact/fuzzy indexes, typed candidate edges, cursor pagination |
+| Matching lifecycle | `api/application/matching_runtime.py`, `api/application/matching.py`, `api/infrastructure/runtime/engine.py` | Warm engine handles, safe swap, bounded concurrency |
+| Decisions | `api/infrastructure/persistence/decisions.py` | Transactional revisions, optimistic concurrency, manifest binding |
+| Jobs | `api/infrastructure/process/admin_jobs.py`, `api/application/matching_runtime.py` | Durable job repository, worker protocol, retries and heartbeats |
+| Audit | `api/application/admin.py` initially; extract `api/infrastructure/persistence/audit.py` when needed | Durable, tamper-evident, PII-safe audit events |
+| API composition | `api/composition.py`, `api/http/app.py`, `api/main.py` | Dependency wiring, app factory, lifespan ownership, and process entrypoint |
 | Batch workflows | `api/cli.py`, `api/commands/` | lifecycle, release, audit, and benchmark command families |
 | Tests | `tests/` | Unit and fixture-backed integration tests; no external downloads |
 | Operations docs | `docs/` | Update `OPERATIONS.md`, `CLOUD.md`, and this roadmap together |

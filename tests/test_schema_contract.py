@@ -1,6 +1,6 @@
 """Cross-language contract test: frontend/ts/schema.ts must mirror
-api/main.py REQUIRED_COLUMNS exactly (Rust-style: drift fails the tests,
-never fails in a browser). Pure file-parse — no TS toolchain needed."""
+api/http/contracts.py REQUIRED_COLUMNS exactly (Rust-style: drift fails the
+tests, never fails in a browser). Pure file-parse — no TS toolchain needed."""
 
 import ast
 import re
@@ -10,7 +10,7 @@ REPO = Path(__file__).resolve().parents[1]
 
 
 def _py_contract() -> dict[str, list[str]]:
-    mod = ast.parse((REPO / "api" / "main.py").read_text(encoding="utf-8"))
+    mod = ast.parse((REPO / "api" / "http" / "contracts.py").read_text(encoding="utf-8"))
     for node in mod.body:
         if isinstance(node, ast.Assign):
             targets = [t for t in node.targets if isinstance(t, ast.Name)]

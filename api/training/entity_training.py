@@ -9,7 +9,7 @@ import pandas as pd
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
 
-from api.features import (
+from api.domain.features import (
     ENTITY_FEATURE_COLS,
     PAIR_FEATURE_COLS,
     compute_pair_features_frame,

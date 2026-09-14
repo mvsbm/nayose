@@ -6,7 +6,7 @@ import argparse
 import json
 from pathlib import Path
 
-from api.release import (
+from api.infrastructure.bundles.release import (
     ReleaseCatalog,
     ReleaseError,
     ReleasePublisher,

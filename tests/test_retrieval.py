@@ -1,6 +1,6 @@
 import numpy as np
 
-from api.retrieval import BundleRetriever
+from api.infrastructure.retrieval.bundle_retrieval import BundleRetriever
 
 
 class _Index:
@@ -15,7 +15,9 @@ def test_bundle_retriever_chunks_large_query_encoding(monkeypatch) -> None:
         calls.append(len(texts))
         return np.ones((len(texts), 2), dtype=np.float32)
 
-    monkeypatch.setattr("api.retrieval.encode_queries", encode_queries)
+    monkeypatch.setattr(
+        "api.infrastructure.retrieval.bundle_retrieval.encode_queries", encode_queries
+    )
     retriever = object.__new__(BundleRetriever)
     retriever.index = _Index()
     retriever.svd = None

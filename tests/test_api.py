@@ -9,7 +9,7 @@ import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
 
-from api.release import ReleaseCatalog, ReleasePublisher
+from api.infrastructure.bundles.release import ReleaseCatalog, ReleasePublisher
 
 
 def _write_bundle(root) -> tuple[str, str]:
@@ -707,9 +707,9 @@ def test_queries_bind_reference_data_to_model_fingerprint(tmp_path):
         '{"data_fingerprint":"different"}', encoding="utf-8"
     )
 
-    from api.query_service import QueryService
-    from api.release import atomic_directory_alias
-    from api.repositories import RunRepository
+    from api.application.queries import QueryService
+    from api.infrastructure.bundles.release import atomic_directory_alias
+    from api.infrastructure.bundles.repositories import RunRepository
 
     atomic_directory_alias(newer, tmp_path / "data" / "current")
     service = QueryService(RunRepository(tmp_path), tmp_path / "data" / "current")

@@ -1,5 +1,5 @@
-from api.entity_graph_projector import EntityGraphProjector
-from api.entity_graph_repository import (
+from api.infrastructure.read_model.entity_graph_projector import EntityGraphProjector
+from api.infrastructure.read_model.entity_graph_repository import (
     EntityGraphSnapshot,
     EntitySummary,
     PotentialMatch,

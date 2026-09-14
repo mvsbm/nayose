@@ -11,8 +11,8 @@ import sys
 import time
 from pathlib import Path
 
-from api.matching import ExplainedMatcher
-from api.performance import RuntimeProfile
+from api.application.matching import ExplainedMatcher
+from api.infrastructure.runtime.performance import RuntimeProfile
 
 
 def parse_args() -> argparse.Namespace:

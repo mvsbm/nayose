@@ -7,8 +7,8 @@ from contextlib import nullcontext
 from dataclasses import dataclass, field
 from typing import Protocol, TypeVar
 
+from api.infrastructure.process.work_ledger import WorkflowLedger
 from api.training.contracts import StageRecord
-from api.work_ledger import WorkflowLedger
 
 
 class ResourceModule(Protocol):

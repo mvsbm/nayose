@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 
-from api.hard_negatives import select_hard_negatives
+from api.domain.hard_negatives import select_hard_negatives
 
 
 def test_hard_negative_selection_reserves_same_name_and_missing_contact_cases() -> None:

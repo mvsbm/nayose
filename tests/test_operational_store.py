@@ -2,9 +2,9 @@ import sqlite3
 
 import pytest
 
-from api.audit import AuditLog
-from api.operational_store import OperationalStore
-from api.telemetry import Stats
+from api.infrastructure.observability.telemetry import Stats
+from api.infrastructure.persistence.audit import AuditLog
+from api.infrastructure.persistence.operational_store import OperationalStore
 
 
 def test_operational_store_uses_one_transactional_schema(tmp_path):

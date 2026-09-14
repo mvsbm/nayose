@@ -3,8 +3,8 @@ import sys
 import threading
 from pathlib import Path
 
-from api.admin_process import AdminProcessRunner
-from api.telemetry import Stats
+from api.infrastructure.observability.telemetry import Stats
+from api.infrastructure.process.admin_process import AdminProcessRunner
 
 
 def test_stats_are_thread_safe_and_report_bounded_latency_fields():

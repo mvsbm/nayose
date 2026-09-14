@@ -7,20 +7,21 @@ import pytest
 from fastapi import APIRouter
 from fastapi.testclient import TestClient
 
-from api.admin import AdminService
-from api.app import create_app
 from api.application import ApplicationServices
-from api.audit import AuditLog
-from api.dataset_service import DatasetService
-from api.decisions import DecisionsStore
-from api.matching import RecommendationService
-from api.operational_store import OperationalStore
-from api.query_service import QueryService
-from api.release import ReleaseCatalog, ReleasePublisher
-from api.repositories import RunRepository
+from api.application.admin import AdminService
+from api.application.dataset import DatasetService
+from api.application.matching import RecommendationService
+from api.application.queries import QueryService
+from api.application.review import ReviewService
+from api.application.search import SearchService
+from api.http.app import create_app
+from api.infrastructure.bundles.release import ReleaseCatalog, ReleasePublisher
+from api.infrastructure.bundles.repositories import RunRepository
+from api.infrastructure.observability.telemetry import Stats
+from api.infrastructure.persistence.audit import AuditLog
+from api.infrastructure.persistence.decisions import DecisionsStore
+from api.infrastructure.persistence.operational_store import OperationalStore
 from api.runtime_config import RuntimeConfig
-from api.search_service import SearchService
-from api.telemetry import Stats
 
 
 class Closeable:
@@ -93,6 +94,7 @@ def test_application_services_close_owned_resources(tmp_path: Path) -> None:
         queries=cast(QueryService, object()),
         recommend=cast(RecommendationService, recommend),
         decisions=cast(DecisionsStore, object()),
+        review=cast(ReviewService, object()),
         dataset=DatasetService(Path(".")),
         admin=cast(AdminService, admin),
         search=cast(SearchService, object()),
@@ -114,7 +116,7 @@ def test_runtime_config_can_be_overridden_without_mutating_the_original() -> Non
 
 
 def test_admin_settings_update_the_owned_matching_service(monkeypatch, tmp_path: Path) -> None:
-    from api.admin import AdminService
+    from api.application.admin import AdminService
 
     selected: list[str] = []
     monkeypatch.delenv("NAYOSE_EXACT_MODE", raising=False)
@@ -146,6 +148,7 @@ def test_application_lifespan_closes_services(tmp_path: Path) -> None:
         queries=cast(QueryService, object()),
         recommend=cast(RecommendationService, recommend),
         decisions=cast(DecisionsStore, object()),
+        review=cast(ReviewService, object()),
         dataset=DatasetService(Path(".")),
         admin=cast(AdminService, admin),
         search=cast(SearchService, object()),
@@ -172,6 +175,7 @@ def test_routes_use_the_application_service_container(tmp_path: Path) -> None:
         queries=cast(QueryService, object()),
         recommend=cast(RecommendationService, Closeable()),
         decisions=cast(DecisionsStore, object()),
+        review=cast(ReviewService, object()),
         dataset=DatasetService(Path(".")),
         admin=cast(AdminService, Closeable()),
         search=cast(SearchService, object()),

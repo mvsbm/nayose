@@ -22,9 +22,9 @@ from pathlib import Path
 import duckdb
 import pandas as pd
 
-from api.decisions import DecisionsStore
-from api.operational_store import OperationalStore
-from api.release import data_generation_for_fingerprint, safe_run_id
+from api.infrastructure.bundles.release import data_generation_for_fingerprint, safe_run_id
+from api.infrastructure.persistence.decisions import DecisionsStore
+from api.infrastructure.persistence.operational_store import OperationalStore
 
 REPO = Path(__file__).resolve().parents[2]
 

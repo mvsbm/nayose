@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pandas as pd
 
-from api.block_index import data_fingerprint
-from api.normalize import normalize_frame
+from api.domain.fingerprint import data_fingerprint
+from api.domain.normalize import normalize_frame
 from api.training.config import TrainingConfig
 from api.training.contracts import NormalizedCorpus, TruthSnapshot, VisibleSnapshot
 

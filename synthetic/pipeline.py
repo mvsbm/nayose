@@ -79,7 +79,7 @@ class PipelineResult:
 
 
 def data_fingerprint(reference: pd.DataFrame) -> str:
-    """Canonical fingerprint shared with the training pipeline and api.engine.py."""
+    """Canonical fingerprint shared by training and infrastructure runtime."""
     return hashlib.sha256(
         pd.util.hash_pandas_object(reference[REFERENCE_COLS], index=False).values.tobytes()
     ).hexdigest()

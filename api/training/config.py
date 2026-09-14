@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from api.embedding_config import (
+from api.infrastructure.runtime.embedding_config import (
     F2LLM_330M_MODEL_ID,
     F2LLM_MPS_BATCH_SIZE,
     F2LLM_MPS_DEVICE,

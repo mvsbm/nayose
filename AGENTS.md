@@ -22,7 +22,12 @@ curl http://127.0.0.1:8000/api/health            # readiness probe (auth-exempt)
 | Path | Responsibility |
 |---|---|
 | `synthetic/` | Engine: `config.py` (presets/rates/data incl. email domains, channel contact profiles, POLICY_PARAMS), `providers.py` (real data sources; persona Han-initial sanitizer), `realism.py` (phone styles + email domains), `policy.py` (policy aggregate roots + truth timeline states + temporal validation), `noise.py` (correlated dirty events + lineage; agent profiles consumed), `truth.py` (party, relationship, policy, and query ground-truth tables), `engine.py` (orchestration), `pipeline.py` (generate + single save contract) |
-| `api/` | Serving: `main.py` (typed FastAPI routes + token gate), `contracts.py` (response schemas incl. admin job stages), `evidence.py` (visible fields + field comparison), `normalize.py` + `features.py` (shared primitives), `retrieval.py` (bundle-aware query encoding), `search.py` (embedding entity search), `query_service.py` + `repositories.py` (server-owned bundle reads), `matching.py` (scored evidence + async jobs + session threshold overrides), `admin.py` (generate/train jobs, settings, and audit coordination), `manual_store.py` (manual staging repository), `decisions.py` (bound review state), `operational_store.py` (SQLite WAL transaction boundary), `audit.py` (append-only audit repository), `telemetry.py` (endpoint timing), `engine.py` (trained-artifact loading + fingerprint guard). |
+| `api/http/` | FastAPI factory, auth, transport schemas, dependencies, and routers grouped by endpoint capability. |
+| `api/application/` | Use-case facades for matching, search, entity queries, administration, and service-graph ownership. |
+| `api/domain/` | Pure identity, normalization, evidence, blocking, feature, search-filter, and scoring rules. |
+| `api/infrastructure/` | Bundle publication/read models, persistence, retrieval, runtime/model adapters, bounded jobs, and telemetry. |
+| `api/training/` | Isolated modular training application and worker boundary. |
+| `api/composition.py` + `api/main.py` | Concrete dependency wiring and the serving process entrypoint. |
 | `tests/` | Unit tests only — must never require external data or downloads |
 | `api/cli.py` + `api/commands/data.py` | Headless generation CLI; writes the generation tables |
 | `api/commands/lifecycle.py` / `api/training/` | Training, evaluation, and immutable bundle publication |
@@ -62,8 +67,8 @@ curl http://127.0.0.1:8000/api/health            # readiness probe (auth-exempt)
 
 New VIEW (#/route):
 1. `port.ts`: add the focused capability method(s) the view needs.
-2. `api/main.py`: add the typed endpoint and call the relevant server-owned
-   service (`api/query_service.py` for DuckDB reads); wrap with
+2. `api/http/routers/`: add the typed endpoint and call the relevant
+   application service (`api/application/queries.py` for bundle reads); wrap with
    `op("name", lambda: ...)`; add a fixture-backed test in `tests/test_api.py`.
 3. `ts/infra.ts`: implement the port method on `ApiAdapter` (+ memo key).
 4. `ts/features.ts`: new `mountX(el, port, store)`; register in `app.ts` VIEWS +
@@ -86,7 +91,7 @@ Definition of done (EVERY change):
 
 ## Do not
 
-- Keep `api/cli.py` thin; implementation belongs in `api/commands/`, `api/`, and `synthetic/`.
+- Keep `api/cli.py` thin; implementation belongs in the appropriate `api/application/`, `api/domain/`, `api/infrastructure/`, `api/commands/`, or `synthetic/` package.
 - Testing pyramid: unit (pure) + jsdom view tests are the workhorse; Playwright
   E2E (`frontend/test/e2e.test.mjs`, opt-in `NAYOSE_E2E=1`) is for stories that
   cross the real server⇄browser⇄persistence seam. `e2e-util.mjs` copies the
@@ -96,7 +101,7 @@ Definition of done (EVERY change):
   spans the server) an E2E journey. E2E selectors use ids and semantic
   `data-*` hooks (e.g. `data-entity`), never `.class` chains.
 - Bilingual labels go through `frontend/ts/i18n.ts` with BOTH locales; every
-  matching/admin job `Stage` in `api/contracts.py` must have a label.
+  matching/admin job `Stage` in `api/http/contracts.py` must have a label.
   `tests/test_arch_contract.py` enforces dictionary completeness and stage
   parity (drift fails the gate).
 - Admin workspace (`#/admin`) and data entry (`#/data-entry`) are always OPEN
@@ -115,9 +120,9 @@ Definition of done (EVERY change):
   hooks, never structural paths under `#view`; assert domain semantics (e.g.
   an entity item exists), not incidental artifact counts.
 - The repo-root engine (`nayose_inference.py`) and CLI (`nayose_cli.py`) are
-  RETIRED: the engine lives at `api/engine.py`, the CLI is deleted. `api/` must
+  RETIRED: the engine lives at `api/infrastructure/runtime/engine.py`, the CLI is deleted. `api/` must
   never reference root-level legacy modules; shared normalization/features
-  live in `api/normalize.py`/`api/features.py` and the engine re-exports them.
+  live in `api/domain/normalize.py`/`api/domain/features.py` and the runtime engine re-exports them.
   `tests/test_arch_contract.py` enforces this boundary.
 - Evidence-first UI: match results must show actual scored records, per-field
   comparisons, thresholds and the decision reason — never invented explanations
@@ -139,7 +144,7 @@ Definition of done (EVERY change):
   no email (keep=0.0). Keep `channel_events` as the source-document bundles.
 - Frontend is strict-TS only: edit `frontend/ts/`, run `npm --prefix frontend run
   typecheck`, keep `frontend/js/` generated (build & commit). Keep
-  `frontend/ts/schema.ts` in sync with `api/main.py REQUIRED_COLUMNS`
+  `frontend/ts/schema.ts` in sync with `api/http/contracts.py REQUIRED_COLUMNS`
   (test_schema_contract.py enforces).
 - Frontend boundaries are explicit: views depend only on `port.ts` interfaces;
   state flows through `store.ts` reversible commands; `app.ts` assembles
@@ -170,8 +175,8 @@ Definition of done (EVERY change):
 ## Retired (do not reintroduce)
 
 - `nayose_cli.py` — obsolete CLI app layer, deleted. The engine moved from
-  `nayose_inference.py` to `api/engine.py` (artifact loading + fingerprint
-  guard). `api/engine.py` carries historical long lines/defensive
+  `nayose_inference.py` to `api/infrastructure/runtime/engine.py` (artifact loading + fingerprint
+  guard). `api/infrastructure/runtime/engine.py` carries historical long lines/defensive
   naming; it is excluded from mypy and gets `E501/E402/B905/B007` per-file
   ruff ignores in pyproject.toml — new logic goes into `api/` + `frontend/` +
   `synthetic/`, and the arch contract forbids root-level legacy references.

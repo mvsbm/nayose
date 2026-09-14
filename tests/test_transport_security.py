@@ -5,22 +5,23 @@ from uuid import UUID
 from fastapi import APIRouter, Depends
 from fastapi.testclient import TestClient
 
-from api.admin import AdminService
-from api.app import create_app
 from api.application import ApplicationServices
-from api.audit import AuditLog
-from api.auth import require_scope
-from api.dataset_service import DatasetService
-from api.decisions import DecisionsStore
-from api.dependencies import actor_identity
-from api.matching import RecommendationService
-from api.operational_store import OperationalStore
-from api.query_service import QueryService
-from api.release import ReleaseCatalog, ReleasePublisher
-from api.repositories import RunRepository
+from api.application.admin import AdminService
+from api.application.dataset import DatasetService
+from api.application.matching import RecommendationService
+from api.application.queries import QueryService
+from api.application.review import ReviewService
+from api.application.search import SearchService
+from api.http.app import create_app
+from api.http.auth import require_scope
+from api.http.dependencies import actor_identity
+from api.infrastructure.bundles.release import ReleaseCatalog, ReleasePublisher
+from api.infrastructure.bundles.repositories import RunRepository
+from api.infrastructure.observability.telemetry import Stats
+from api.infrastructure.persistence.audit import AuditLog
+from api.infrastructure.persistence.decisions import DecisionsStore
+from api.infrastructure.persistence.operational_store import OperationalStore
 from api.runtime_config import RuntimeConfig
-from api.search_service import SearchService
-from api.telemetry import Stats
 
 
 class _Closable:
@@ -39,6 +40,7 @@ def _services(config: RuntimeConfig) -> ApplicationServices:
         queries=cast(QueryService, _Closable()),
         recommend=cast(RecommendationService, _Closable()),
         decisions=cast(DecisionsStore, _Closable()),
+        review=cast(ReviewService, _Closable()),
         dataset=DatasetService(config.data_root),
         admin=cast(AdminService, _Closable()),
         search=cast(SearchService, _Closable()),

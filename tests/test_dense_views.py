@@ -4,9 +4,10 @@ import numpy as np
 import pandas as pd
 import pytest
 
-import api.dense_views as dense_views
-from api.dense_views import dense_view_queries, dense_view_text
-from api.name_variants import NameVariantExpander, build_entity_aliases
+import api.infrastructure.retrieval.dense_views as dense_views
+from api.domain.name_variants import NameVariantExpander
+from api.infrastructure.bundles.aliases import build_entity_aliases
+from api.infrastructure.retrieval.dense_views import dense_view_queries, dense_view_text
 
 RECORD = {
     "party_type": "person",
@@ -131,7 +132,7 @@ def test_alias_queries_match_single_alias_index_rows():
 
 
 def test_field_view_evidence_does_not_overwrite_record_dense_score():
-    from api.dense_retrieval import _apply_view_dense
+    from api.infrastructure.retrieval.dense_retrieval import _apply_view_dense
 
     states = {3: {"dense_score": 0.92, "dense_rank": 1}}
     artifact = dense_views.DenseView(
@@ -153,7 +154,7 @@ def test_field_view_evidence_does_not_overwrite_record_dense_score():
 
 
 def test_weighted_fusion_keeps_weak_views_below_record_dense_evidence():
-    from api.retrieval_fusion import RetrievalFusionPolicy
+    from api.infrastructure.retrieval.fusion import RetrievalFusionPolicy
 
     policy = RetrievalFusionPolicy()
     record = {"dense_rank": 1}
@@ -162,7 +163,7 @@ def test_weighted_fusion_keeps_weak_views_below_record_dense_evidence():
 
 
 def test_fusion_weights_only_populated_query_views():
-    from api.retrieval_fusion import RetrievalFusionPolicy
+    from api.infrastructure.retrieval.fusion import RetrievalFusionPolicy
 
     policy = RetrievalFusionPolicy()
     name_query = {"n_name_loose": "佐藤", "n_phone": ""}
