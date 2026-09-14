@@ -64,7 +64,7 @@ python -m api.cli model train --data-dir data/current --models-dir models \
 
 ### 3. Run Inference
 
-`nayose model train` runs `api/training_pipeline.py`, then writes a model bundle
+`nayose model train` runs the isolated `api.training.worker`, which delegates to the modular `api/training/` application, then writes a model bundle
 (portable indexes + target-platform ANN + run_manifest) into its output
 directory. `NayoseEngine.load` **fingerprint-checks the bundle against
 the
@@ -245,7 +245,7 @@ an identity decision by itself.
 | | `NAYOSE_ENTITY_OVERRIDE` | 0 | force manifest thresholds off |
 
 LightGBM internals (n_estimators=260, lr=0.035, num_leaves=31, …) live in
-`api/training_pipeline.py`'s `train_pair_model`; the sklearn HistGB backend is
+the modular pair-training stage; the sklearn HistGB backend is
 the MPS-serving alternative.
 
 ## Confusion matrices & evaluation discipline

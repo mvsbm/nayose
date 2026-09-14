@@ -10,7 +10,7 @@ rules, README.md the usage.
 data/raw/...  generations/gen_*/  current↙   immutable real data + generation products
 synthetic/    engine + providers + noise + truth + pipeline      (generator + CLI contract)
 api/commands/data.py                                           (data command implementation)
-api/commands/lifecycle.py + api/training_pipeline.py             (training and evaluation CLI/pipeline)
+api/commands/lifecycle.py + api/training/                         (training and evaluation application)
 models/runs/run_*/  current↙  + registry.json                     (matcher bundles)
 data/operational.sqlite3                                        (jobs, decisions, audit, manual staging)
 frontend/     typed TS app with explicit ports (no bundler; tsc -> ESM in js/)

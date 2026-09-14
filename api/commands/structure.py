@@ -18,7 +18,7 @@ MAX_FRONTEND_MODULE_LINES = 450
 MAX_CLASS_LINES = 380
 MAX_FUNCTION_LINES = 180
 
-STRUCTURE_EXCEPTIONS = {"api/training_pipeline.py"}
+STRUCTURE_EXCEPTIONS: set[str] = set()
 
 
 def _length(node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef) -> int:

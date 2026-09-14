@@ -25,7 +25,7 @@ curl http://127.0.0.1:8000/api/health            # readiness probe (auth-exempt)
 | `api/` | Serving: `main.py` (typed FastAPI routes + token gate), `contracts.py` (response schemas incl. admin job stages), `evidence.py` (visible fields + field comparison), `normalize.py` + `features.py` (shared primitives), `retrieval.py` (bundle-aware query encoding), `search.py` (embedding entity search), `query_service.py` + `repositories.py` (server-owned bundle reads), `matching.py` (scored evidence + async jobs + session threshold overrides), `admin.py` (generate/train jobs, settings, and audit coordination), `manual_store.py` (manual staging repository), `decisions.py` (bound review state), `operational_store.py` (SQLite WAL transaction boundary), `audit.py` (append-only audit repository), `telemetry.py` (endpoint timing), `engine.py` (trained-artifact loading + fingerprint guard). |
 | `tests/` | Unit tests only — must never require external data or downloads |
 | `api/cli.py` + `api/commands/data.py` | Headless generation CLI; writes the generation tables |
-| `api/commands/lifecycle.py` / `api/training_pipeline.py` | Training, evaluation, and immutable bundle publication |
+| `api/commands/lifecycle.py` / `api/training/` | Training, evaluation, and immutable bundle publication |
 | `data/raw` | Immutable reference-data cache (ken_all, personas, EDINET) — never mutate |
 | `data/generations/gen_*` + `data/current` | Immutable sabotaged dataset products; `current` is the matcher consumer alias |
 | `data/clean_generations/clean_*` + `data/clean_current` | Immutable streamable canonical entity products; clean-only source layer |
