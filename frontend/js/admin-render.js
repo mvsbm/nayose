@@ -18,9 +18,48 @@ function optionList(store, items, value) {
 function range(attrs, value, max, step = 1) {
     return `<input type="range" min="0" max="${max}" step="${step}" value="${value}" ${attrs}>`;
 }
+function configValue(value) {
+    if (value === null || value === undefined || value === "")
+        return "—";
+    if (Array.isArray(value))
+        return `[${value.length}]`;
+    if (typeof value === "object")
+        return `{${Object.keys(value).length}}`;
+    return String(value);
+}
+function configSectionLabel(store, id) {
+    const key = `configSection_${id}`;
+    const translated = store.t(key);
+    return translated === key ? id : translated;
+}
+function renderConfiguration(config, store) {
+    const t = (key) => esc(store.t(key));
+    if (!config) {
+        return `<section class="card configuration-overview" id="admin-configuration"><div class="configuration-header"><div><p class="eyebrow">${t("configurationEyebrow")}</p><h2>${t("configurationTitle")}</h2></div><span class="configuration-readonly warn">${t("configurationUnavailable")}</span></div></section>`;
+    }
+    const sections = Object.entries(config.sections).map(([id, values]) => {
+        const entries = Object.entries(values);
+        const open = id === "serving" || id === "generation";
+        const rows = entries.map(([key, value]) => `<div><dt>${esc(key)}</dt><dd title="${esc(configValue(value))}">${esc(configValue(value))}</dd></div>`).join("");
+        return `<details class="configuration-section" id="config-section-${esc(id)}"${open ? " open" : ""}><summary><span>${esc(configSectionLabel(store, id))}</span><span class="configuration-section-count">${entries.length}</span></summary><dl class="configuration-values">${rows}</dl></details>`;
+    }).join("");
+    return `<details class="card configuration-overview" id="admin-configuration"><summary class="configuration-header"><div><p class="eyebrow">${t("configurationEyebrow")}</p><h2>${t("configurationTitle")}</h2><p class="members">${t("configurationHelp")}</p></div><span class="configuration-readonly">${t("configurationReadonly")}</span></summary><div class="configuration-meta"><span>${t("configurationSource")}: <b>${esc(config.source)}</b></span><span>${t("configurationVersion")}: <b>${config.schema_version}</b></span><span class="configuration-hash">${t("configurationHash")}: <b>${esc(config.config_hash)}</b></span></div><div class="configuration-sections">${sections}</div><p class="members">${t("configurationReadonlyHelp")}</p></details>`;
+}
 function renderGenerationControls(model, store) {
     const { catalog, controls: c } = model;
     const t = (key) => esc(store.t(key));
+    const training = model.config?.sections.training ?? {};
+    const performance = model.config?.sections.performance ?? {};
+    const setting = (values, key, fallback) => {
+        const value = values[key];
+        return typeof value === typeof fallback ? value : fallback;
+    };
+    const family = setting(training, "model_family", model.state.profile.model_families[0] ?? "off");
+    const device = setting(training, "device", model.state.profile.devices[0] ?? "mps");
+    const threads = setting(performance, "model_threads", model.state.profile.threads_default);
+    const maxRecords = setting(training, "max_full_match_records", 100_000);
+    const trainingSeed = setting(training, "seed", 42);
+    const candidateCap = setting(training, "candidate_cap_per_record", 80);
     const entityMax = catalog.bounds.n_parties?.max ?? 0;
     const bundleLabel = (ids) => ids.map(id => {
         const event = catalog.events.find(item => item.id === id);
@@ -52,9 +91,9 @@ function renderGenerationControls(model, store) {
       <details id="systematic-controls"><summary>${t("systematicTuning")}</summary><p>${t("systematicHelp")}</p><div class="table-scroll" tabindex="0" role="region" aria-label="${t("qualityImpactCaption")}"><table id="quality-controls"><caption>${t("qualityImpactCaption")}</caption><thead><tr><th>${t("qualityBand")}</th><th>${t("populationShare")}</th><th>${t("corruptionIntensity")}</th><th>${t("residualOmission")}</th></tr></thead><tbody>${qualityRows}</tbody></table></div><label>${t("staleRate")} ${range("id=gen-stale-rate", Math.round((c.stale_rate ?? 0) * 100), 100)}<output data-control-output="stale_rate"></output></label><div class="table-scroll" tabindex="0" role="region" aria-label="${t("availabilityCaption")}"><table><caption>${t("availabilityCaption")}</caption><thead><tr><th>${t("channel")}</th>${NOISE_FIELDS.map(field => `<th>${esc(store.t(field))}</th>`).join("")}</tr></thead><tbody>${availabilityRows}</tbody></table></div></details>
       <details id="query-controls"><summary>${t("queryMixTuning")}</summary><p>${t("queryMixHelp")}</p><div class="table-scroll" tabindex="0" role="region" aria-label="${t("queryScenario")}"><table><thead><tr><th>${t("queryScenario")}</th><th>${t("share")}</th></tr></thead><tbody>${queryRows}</tbody></table></div><p id="query-total" class="members"></p></details>
       <details id="training-controls"><summary>${t("trainingTuning")}</summary><div class="field-grid">
-        <label>${t("modelFamily")} ${select("tr-family", model.state.profile.model_families, "off")}</label><label>${t("device")} ${select("tr-device", model.state.profile.devices, "mps")}</label>
-        <label>${t("threads")} <input id="tr-threads" type="number" min="1" max="32" value="${model.state.profile.threads_default}"></label><label>${t("maxRecords")} <input id="tr-max" type="number" min="1000" value="700000"></label>
-        <label>${t("trainingSeed")} <input id="tr-seed" type="number" min="0" value="42"></label><label>${t("candidateCap")} <input id="tr-cap" type="number" min="0" value="0"></label>
+        <label>${t("modelFamily")} ${select("tr-family", model.state.profile.model_families, family)}</label><label>${t("device")} ${select("tr-device", model.state.profile.devices, device)}</label>
+        <label>${t("threads")} <input id="tr-threads" type="number" min="1" max="32" value="${threads}"></label><label>${t("maxRecords")} <input id="tr-max" type="number" min="1000" value="${maxRecords}"></label>
+        <label>${t("trainingSeed")} <input id="tr-seed" type="number" min="0" value="${trainingSeed}"></label><label>${t("candidateCap")} <input id="tr-cap" type="number" min="0" value="${candidateCap}"></label>
       </div><div class="toolbar"><button id="tr-go" class="more" type="button" ${model.busy ? "disabled" : ""}>${t("runTrain")}</button></div><p id="tr-job" role="status" aria-live="polite" class="members"></p></details>`;
 }
 function renderRuntime(model, store) {
@@ -68,6 +107,7 @@ function renderRuntime(model, store) {
 export function renderAdminPage(model, store) {
     const t = (key) => esc(store.t(key));
     return `<div class="panel"><nav class="crumbs" aria-label="${t("crumbs")}">${t("admin")}</nav>
+    ${renderConfiguration(model.config, store)}
     <div class="admin-workbench" data-panel-layout="admin-workbench">
       <section class="card admin-controls"><h2>${t("dataTrain")}</h2><p>${t("adminHelp")}</p>${renderGenerationControls(model, store)}</section>
       <div id="gen-preview-resizer" class="admin-resizer" data-panel-resizer="preview" role="separator" aria-label="${t("resizePreview")}" aria-orientation="vertical" aria-valuemin="352" aria-valuemax="640" aria-valuenow="420" aria-valuetext="420px" tabindex="0"></div>

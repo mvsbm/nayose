@@ -33,6 +33,15 @@ function adaptEntityGraph(data) {
     }
     return graph;
 }
+function adaptAdminConfig(data) {
+    if (!isObject(data) || typeof data.schema_version !== "number" || typeof data.config_hash !== "string" || typeof data.source !== "string" || data.editable !== false || !isObject(data.sections)) {
+        throw new ApiError("admin_config_schema_mismatch");
+    }
+    const sections = data.sections;
+    if (Object.values(sections).some(section => !isObject(section)))
+        throw new ApiError("admin_config_schema_mismatch");
+    return data;
+}
 function adaptGenerationPreview(data) {
     if (!data || typeof data !== "object")
         throw new ApiError("preview_schema_mismatch");
@@ -52,6 +61,9 @@ export class ApiAdapter {
     }
     adminCapability() {
         return fetchJson("/api/admin/capable").then(d => d);
+    }
+    adminConfig() {
+        return fetchJson("/api/admin/config").then(adaptAdminConfig);
     }
     adminState() {
         return fetchJson("/api/admin/state").then(d => d);
@@ -232,6 +244,9 @@ export class MemoProxy {
     }
     adminCapability() {
         return this.memo("adminCapability", "", () => this.inner.adminCapability());
+    }
+    adminConfig() {
+        return this.memo("adminConfig", "", () => this.inner.adminConfig());
     }
     adminState() {
         // mutation-adjacent read: actions mutate server state, so always refetch

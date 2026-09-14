@@ -1,5 +1,6 @@
 // Admin workspace composition root: transport, view state, renderers, and commands.
 import type {
+  AdminConfig,
   AdminPort,
   AdminState,
   GenerationCatalog,
@@ -18,6 +19,7 @@ import { bindDatasetExplorer, createDatasetExplorerState, refreshDatasetGenerati
 
 interface AdminUi {
   state: AdminState;
+  config: AdminConfig | null;
   catalog: GenerationCatalog;
   controls: GenerationControls;
   preview: PreviewViewState;
@@ -46,6 +48,13 @@ export async function mountAdmin(el: HTMLElement, port: AdminPort, store: Store,
     el.replaceChildren(unavailableCard(store));
     return;
   }
+  let config: AdminConfig | null = null;
+  try {
+    config = await port.adminConfig();
+    if (lifetime?.isDisposed) return;
+  } catch {
+    config = null;
+  }
   let generations: Awaited<ReturnType<AdminPort["adminGenerations"]>> = [];
   try {
     generations = await port.adminGenerations();
@@ -55,6 +64,7 @@ export async function mountAdmin(el: HTMLElement, port: AdminPort, store: Store,
   }
   const ui: AdminUi = {
     state,
+    config,
     catalog,
     controls: cloneGenerationControls(catalog.defaults),
     preview: { preview: null, pending: false, error: "", sampleQuality: "average", sampleChannel: "paper_ocr" },
@@ -189,7 +199,7 @@ export async function mountAdmin(el: HTMLElement, port: AdminPort, store: Store,
     if (lifetime?.isDisposed) return;
     const previousDetails = new Set([...el.querySelectorAll<HTMLDetailsElement>("details[id]")].filter(details => details.open).map(details => details.id));
     const preserveDetails = el.querySelector("details[id]") !== null;
-    el.innerHTML = renderAdminPage({ state: ui.state, catalog: ui.catalog, controls: ui.controls, preview: ui.preview, busy: ui.busy, note: ui.note, jobStatus: ui.jobStatus, dataset: ui.dataset }, store);
+    el.innerHTML = renderAdminPage({ state: ui.state, config: ui.config, catalog: ui.catalog, controls: ui.controls, preview: ui.preview, busy: ui.busy, note: ui.note, jobStatus: ui.jobStatus, dataset: ui.dataset }, store);
     if (preserveDetails) {
       el.querySelectorAll<HTMLDetailsElement>("details[id]").forEach(details => { details.open = previousDetails.has(details.id); });
     }

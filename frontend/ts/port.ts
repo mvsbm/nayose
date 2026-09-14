@@ -324,6 +324,7 @@ export interface GenerationPreview {
   estimate_note: { ja: string; en: string };
 }
 
+export interface AdminConfig { schema_version: number; config_hash: string; source: string; editable: false; sections: Record<string, Record<string, unknown>>; }
 export interface AdminState {
   profile: {
     profiles: string[];
@@ -403,6 +404,7 @@ export interface DatasetPort {
 }
 
 export interface AdminPort extends DatasetPort {
+  adminConfig(): Promise<AdminConfig>;
   adminState(): Promise<AdminState>;
   adminGenerationConfig(): Promise<GenerationCatalog>;
   adminGenerationPreview(controls: GenerationControls): Promise<GenerationPreview>;

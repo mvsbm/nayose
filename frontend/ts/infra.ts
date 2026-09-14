@@ -4,6 +4,7 @@
 // NAYOSE_DEBUG_SQL.
 import {
   AdminCapability,
+  AdminConfig,
   AdminState,
   ConfusionData,
   DecisionSnapshot,
@@ -66,6 +67,15 @@ function adaptEntityGraph(data: unknown): EntityGraph {
   return graph as EntityGraph;
 }
 
+function adaptAdminConfig(data: unknown): AdminConfig {
+  if (!isObject(data) || typeof data.schema_version !== "number" || typeof data.config_hash !== "string" || typeof data.source !== "string" || data.editable !== false || !isObject(data.sections)) {
+    throw new ApiError("admin_config_schema_mismatch");
+  }
+  const sections = data.sections as Record<string, unknown>;
+  if (Object.values(sections).some(section => !isObject(section))) throw new ApiError("admin_config_schema_mismatch");
+  return data as unknown as AdminConfig;
+}
+
 function adaptGenerationPreview(data: unknown): GenerationPreview {
   if (!data || typeof data !== "object") throw new ApiError("preview_schema_mismatch");
   const preview = data as Partial<GenerationPreview>;
@@ -87,6 +97,9 @@ export class ApiAdapter implements WorkbenchPort {
   }
   adminCapability(): Promise<AdminCapability> {
     return fetchJson("/api/admin/capable").then(d => d as AdminCapability);
+  }
+  adminConfig(): Promise<AdminConfig> {
+    return fetchJson("/api/admin/config").then(adaptAdminConfig);
   }
   adminState(): Promise<AdminState> {
     return fetchJson("/api/admin/state").then(d => d as AdminState);
@@ -284,6 +297,9 @@ export class MemoProxy implements WorkbenchPort {
   }
   adminCapability(): Promise<AdminCapability> {
     return this.memo("adminCapability", "", () => this.inner.adminCapability());
+  }
+  adminConfig(): Promise<AdminConfig> {
+    return this.memo("adminConfig", "", () => this.inner.adminConfig());
   }
   adminState(): Promise<AdminState> {
     // mutation-adjacent read: actions mutate server state, so always refetch

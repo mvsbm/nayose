@@ -85,9 +85,12 @@ const mockPort = {
   adminCapability() {
     return Promise.resolve({ capable: true });
   },
+  adminConfig() {
+    return Promise.resolve({ schema_version: 1, config_hash: "config123", source: "nayose.toml + environment overrides", editable: false, sections: { paths: { data_dir: "data/current" }, serving: { port: 8000, exact_mode: "hybrid" }, embedding: { model_id: "F2LLM" }, performance: { model_threads: null }, retrieval: {}, inference: {}, training: { model_family: "off", device: "mps", seed: 42, max_full_match_records: 100000, candidate_cap_per_record: 80 }, generation: { profile: "smoke" }, sources: {}, release: {}, tooling: {} } });
+  },
   adminState() {
     return Promise.resolve({
-      profile: { profiles: ["smoke", "mac"], difficulties: ["realistic"], model_families: ["off"], devices: ["cpu"], exact_modes: ["hybrid", "exact_only", "fuzzy_only"], threads_default: 2 },
+      profile: { profiles: ["smoke", "mac"], difficulties: ["realistic"], model_families: ["off"], devices: ["mps"], exact_modes: ["hybrid", "exact_only", "fuzzy_only"], threads_default: 2 },
       settings: { exact_mode: "hybrid", warm_embed: false, engine_warm: true },
       runs: [{ id: "run_fake", manifest: true, current: true }],
       manual_count: 0,
@@ -725,7 +728,17 @@ test("admin workspace: open nav, presets, settings apply + audit rows render", a
   window.location.hash = "#/admin";
   await wait(120);
   assert.ok(document.querySelector("#gen-profile"), "profile presets rendered");
+  assert.ok(document.querySelector("#admin-configuration"), "canonical configuration read model rendered");
+  assert.equal(document.querySelector("#admin-configuration .configuration-readonly").textContent, "読み取り専用");
+  assert.ok(document.querySelector("#config-section-serving"), "serving config section rendered");
+  const configuration = document.querySelector("#admin-configuration");
+  assert.equal(configuration.open, false, "configuration details should be collapsed by default");
+  configuration.querySelector("summary").click();
+  assert.equal(configuration.open, true, "configuration details did not expand");
+  assert.match(configuration.textContent, /config123/);
   assert.ok(document.querySelector("#set-exact"), "serving settings rendered");
+  assert.equal(document.querySelector("#tr-max").value, "100000", "training defaults did not come from canonical config");
+  assert.equal(document.querySelector("#tr-cap").value, "80", "candidate cap did not come from canonical config");
   assert.match(document.querySelector("#view").textContent, /監査ログ|Audit log/);
   await wait(80);
   assert.ok(document.querySelector("#dataset-explorer"), "dataset explorer did not render");
@@ -933,6 +946,17 @@ test("ApiAdapter is the sole transport and attaches the bearer token", async () 
   } finally {
     globalThis.fetch = realFetch;
     localStorage.removeItem("nayose.token");
+  }
+});
+
+test("ApiAdapter rejects malformed admin configuration clearly", async () => {
+  const { ApiAdapter } = await import(join(ROOT, "js/infra.js") + "?admin-config-schema=" + Date.now());
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: true, json: async () => ({ editable: true, sections: {} }) });
+  try {
+    await assert.rejects(() => new ApiAdapter().adminConfig(), /admin_config_schema_mismatch/);
+  } finally {
+    globalThis.fetch = realFetch;
   }
 });
 

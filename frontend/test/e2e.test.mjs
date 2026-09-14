@@ -3,7 +3,7 @@
 // server-side decision persistence. Opt-in: NAYOSE_E2E=1 (a browser + a
 // trained bundle are required).
 //
-// Authoring rules (enforced by tests/test_arch_contract.py):
+// Authoring rules (enforced by tests/test_architecture_contract.py):
 //  - journeys get their page from runJourney() ONLY — every journey runs in a
 //    fresh context (no state can leak between journeys)
 //  - navigation/waits go through navigateFresh/waitVisible/waitBodyText/waitCount

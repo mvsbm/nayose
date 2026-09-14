@@ -24,6 +24,15 @@ export async function mountAdmin(el, port, store, scope) {
         el.replaceChildren(unavailableCard(store));
         return;
     }
+    let config = null;
+    try {
+        config = await port.adminConfig();
+        if (lifetime?.isDisposed)
+            return;
+    }
+    catch {
+        config = null;
+    }
     let generations = [];
     try {
         generations = await port.adminGenerations();
@@ -35,6 +44,7 @@ export async function mountAdmin(el, port, store, scope) {
     }
     const ui = {
         state,
+        config,
         catalog,
         controls: cloneGenerationControls(catalog.defaults),
         preview: { preview: null, pending: false, error: "", sampleQuality: "average", sampleChannel: "paper_ocr" },
@@ -182,7 +192,7 @@ export async function mountAdmin(el, port, store, scope) {
             return;
         const previousDetails = new Set([...el.querySelectorAll("details[id]")].filter(details => details.open).map(details => details.id));
         const preserveDetails = el.querySelector("details[id]") !== null;
-        el.innerHTML = renderAdminPage({ state: ui.state, catalog: ui.catalog, controls: ui.controls, preview: ui.preview, busy: ui.busy, note: ui.note, jobStatus: ui.jobStatus, dataset: ui.dataset }, store);
+        el.innerHTML = renderAdminPage({ state: ui.state, config: ui.config, catalog: ui.catalog, controls: ui.controls, preview: ui.preview, busy: ui.busy, note: ui.note, jobStatus: ui.jobStatus, dataset: ui.dataset }, store);
         if (preserveDetails) {
             el.querySelectorAll("details[id]").forEach(details => { details.open = previousDetails.has(details.id); });
         }
