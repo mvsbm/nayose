@@ -4,6 +4,7 @@ import datetime as dt
 import hashlib
 import json
 import os
+import subprocess
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -300,6 +301,10 @@ class RunBundleWriter:
             "schema_version": "4.0",
             "created_at_utc": dt.datetime.now(dt.UTC).isoformat(),
             "training_algorithm_version": "modular-v1",
+            "code": {
+                "git_commit": _git_commit(),
+                "pipeline_sha256": _pipeline_sha256(),
+            },
             "data_fingerprint": fingerprint,
             "config_hash": self.identity.config_hash,
             "config": self.config.payload(),
@@ -385,6 +390,28 @@ class RunBundleWriter:
                 with path.open("rb") as handle:
                     os.fsync(handle.fileno())
         _fsync_directory(root)
+
+
+def _git_commit() -> str:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=Path(__file__).resolve().parents[2],
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+    except OSError:
+        return "unknown"
+    return result.stdout.strip() if result.returncode == 0 else "unknown"
+
+
+def _pipeline_sha256() -> str:
+    digest = hashlib.sha256()
+    for path in sorted(Path(__file__).resolve().parent.glob("*.py")):
+        digest.update(path.name.encode("utf-8"))
+        digest.update(path.read_bytes())
+    return digest.hexdigest()
 
 
 def _lineage_summary(lineage: pd.DataFrame, mapping: pd.DataFrame) -> pd.DataFrame:
