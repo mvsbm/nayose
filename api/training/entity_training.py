@@ -50,7 +50,7 @@ class EntityTrainer:
     truth: TruthSnapshot
 
     def fit(self) -> EntityTrainingResult:
-        record_scores, entity_features = self._score_queries()
+        entity_features = self._score_queries()
         examples = self._build_examples(entity_features)
         train = examples.loc[examples.query_split.eq("train")]
         calibration = examples.loc[examples.query_split.eq("calibration")]
@@ -98,16 +98,14 @@ class EntityTrainer:
             scaler,
             model,
             calibrator,
-            examples,
             entity_features,
-            record_scores,
             threshold,
             max(0.0, review),
             status,
             {},
         )
 
-    def _score_queries(self) -> tuple[dict[str, pd.DataFrame], dict[str, pd.DataFrame]]:
+    def _score_queries(self) -> dict[str, pd.DataFrame]:
         queries = self.corpus.incoming.reset_index(drop=True)
         retrievals = _retrieve_many(self.index, queries)
         retrieval_rows: list[dict[str, object]] = []
@@ -115,13 +113,12 @@ class EntityTrainer:
             query_id = str(query["query_id"])
             for item in retrievals[query_id].to_dict("records"):
                 retrieval_rows.append({"query_position": position, "query_id": query_id, **item})
-        records = {str(query_id): pd.DataFrame() for query_id in queries.query_id}
         entities = {
             str(query_id): pd.DataFrame(columns=["nayose_id", *ENTITY_FEATURES])
             for query_id in queries.query_id
         }
         if not retrieval_rows:
-            return records, entities
+            return entities
         retrieval_long = pd.DataFrame(retrieval_rows).reset_index(drop=True)
         left = queries.iloc[retrieval_long.query_position.to_numpy()].reset_index(drop=True)
         candidates = self.corpus.reference.iloc[
@@ -178,11 +175,10 @@ class EntityTrainer:
         scored["nayose_id"] = scored.record_id.map(mapping)
         for query_id, group in scored.groupby("query_id", sort=False):
             ordered = group.sort_values("pair_probability", ascending=False).reset_index(drop=True)
-            records[str(query_id)] = ordered
             entities[str(query_id)] = _aggregate_entities(
                 ordered, self.clusters.canonical_entities, self.pair.review_threshold
             )
-        return records, entities
+        return entities
 
     def _reranker_name(self) -> str | None:
         return self.config.model_spec()["reranker"]
@@ -314,10 +310,6 @@ def _retrieval_frame(
         .head(index.config.candidate_cap_per_record)
         .reset_index(drop=True)
     )
-
-
-def _retrieve_one(index: TrainingCandidateIndex, query: pd.Series) -> pd.DataFrame:
-    return _retrieve_many(index, pd.DataFrame([query.to_dict()]))[str(query.query_id)]
 
 
 def _merge_retrieval(

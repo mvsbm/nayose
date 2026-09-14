@@ -96,9 +96,9 @@ def build_clusters(
     history = build_attribute_history(clustered)
     canonical = build_canonical_entities(clustered, history)
     diagnostics = build_cluster_diagnostics(
-        clustered, pairs, mapping, canonical, auto_threshold, review_threshold
+        pairs, mapping, canonical, auto_threshold, review_threshold
     )
-    review_queue = _review_queue(pairs, mapping, review_threshold)
+    review_queue = _review_queue(pairs, mapping)
     truth_sets = _truth_sets(mapping, truth.record_truth)
     metrics = cluster_metrics(mapping, truth.record_truth, canonical, truth_sets)
     return ClusterResult(
@@ -195,7 +195,6 @@ def build_canonical_entities(clustered: pd.DataFrame, history: pd.DataFrame) -> 
 
 
 def build_cluster_diagnostics(
-    clustered: pd.DataFrame,
     pairs: pd.DataFrame,
     mapping: pd.DataFrame,
     canonical: pd.DataFrame,
@@ -234,7 +233,7 @@ def build_cluster_diagnostics(
     return result
 
 
-def _review_queue(pairs: pd.DataFrame, mapping: pd.DataFrame, threshold: float) -> pd.DataFrame:
+def _review_queue(pairs: pd.DataFrame, mapping: pd.DataFrame) -> pd.DataFrame:
     queue = pairs.loc[pairs.edge_action.eq("REVIEW_EDGE")].copy()
     queue = queue.merge(
         mapping.rename(columns={"record_id": "left_record_id", "nayose_id": "left_nayose_id"}),

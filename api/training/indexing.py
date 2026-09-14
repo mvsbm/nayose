@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import gc
+import json
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -216,6 +218,21 @@ def _load_or_encode_embeddings(
     model_id = config.model_spec()["embedding"]
     if not model_id:
         return None, None
+    vector_path, metadata_path = cache_paths(config.data_dir, model_id, "reference")
+    if not config.strict_backends:
+        cached = _load_legacy_cache(
+            vector_path, metadata_path, model_id, fingerprint, len(corpus.reference)
+        )
+        if cached is None:
+            legacy_vector = config.data_dir / f"reference_embeddings_{Path(model_id).name}.npy"
+            legacy_metadata = (
+                config.data_dir / f"reference_embeddings_{Path(model_id).name}_meta.json"
+            )
+            cached = _load_legacy_cache(
+                legacy_vector, legacy_metadata, model_id, fingerprint, len(corpus.reference)
+            )
+        if cached is not None:
+            return cached, None
     model = _load_embedding_model(config, runtime.device)
     dimensions = int(model.get_embedding_dimension())
     texts = corpus.reference.retrieval_text.astype(str).tolist()
@@ -232,7 +249,6 @@ def _load_or_encode_embeddings(
         "torch_dtype": config.torch_dtype,
         "batch_size": config.neural_batch_size,
     }
-    vector_path, metadata_path = cache_paths(config.data_dir, model_id, "reference")
     cached = load_embedding_cache(vector_path, metadata_path, provenance)
     if cached is None:
         values: np.ndarray = np.empty((len(texts), dimensions), dtype=np.float32)
@@ -244,6 +260,29 @@ def _load_or_encode_embeddings(
     del model
     _release_accelerator()
     return np.asarray(cached), str(provenance["model_revision"])
+
+
+def _load_legacy_cache(
+    vector_path: Path,
+    metadata_path: Path,
+    model_id: str,
+    fingerprint: str,
+    rows: int,
+) -> np.ndarray | None:
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        if (
+            metadata.get("model_id") != model_id
+            or metadata.get("data_fingerprint") != fingerprint
+            or metadata.get("rows") != rows
+        ):
+            return None
+        values = np.load(vector_path, mmap_mode="r", allow_pickle=False)
+        if values.ndim != 2 or values.shape[0] != rows or not np.isfinite(values).all():
+            return None
+        return np.asarray(values)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return None
 
 
 def build_index(

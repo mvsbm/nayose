@@ -21,12 +21,10 @@ def test_cli_shared_artifact_work_is_not_script_to_script() -> None:
     assert "from api.bundle_materialization import materialize_runtime_artifacts" in train
 
 
-def test_training_pipeline_is_a_compatibility_shim() -> None:
-    source = (REPO / "api" / "training_pipeline.py").read_text(encoding="utf-8")
-
-    assert len(source.splitlines()) <= 40
-    assert "runpy" not in source
-    assert "NAYOSE_PROMOTE" not in source
+def test_training_has_one_canonical_worker_entrypoint() -> None:
+    assert not (REPO / "api" / "training_pipeline.py").exists()
+    assert not (REPO / "api" / "training" / "ports.py").exists()
+    assert (REPO / "api" / "training" / "worker.py").is_file()
 
 
 def test_training_application_is_split_into_stages() -> None:
@@ -42,7 +40,6 @@ def test_training_application_is_split_into_stages() -> None:
         "evaluation.py",
         "indexing.py",
         "pair_training.py",
-        "ports.py",
         "preflight.py",
         "stages.py",
         "worker.py",

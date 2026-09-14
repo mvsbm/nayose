@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
-from typing import Any
 
 import pandas as pd
 
@@ -88,7 +88,7 @@ def _require_columns(frame: pd.DataFrame, required: tuple[str, ...], name: str) 
 
 def load_visible_snapshot(config: TrainingConfig) -> VisibleSnapshot:
     root = config.data_dir.resolve()
-    manifest = read_json(root / "generation_manifest.json")
+    manifest = json.loads((root / "generation_manifest.json").read_text(encoding="utf-8"))
     reference = read_table(root, "reference_records")
     incoming = read_table(root, "incoming_queries")
     _require_columns(reference, REFERENCE_REQUIRED, "reference_records")
@@ -140,9 +140,3 @@ def load_truth(root: Path, incoming: pd.DataFrame, reference: pd.DataFrame) -> T
         relation_truth,
         field_lineage,
     )
-
-
-def read_json(path: Path) -> dict[str, Any]:
-    import json
-
-    return json.loads(path.read_text(encoding="utf-8"))

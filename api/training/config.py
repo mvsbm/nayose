@@ -19,35 +19,30 @@ MODEL_SPECS: dict[str, ModelSpec] = {
     "off": {
         "embedding": None,
         "reranker": None,
-        "dimension": None,
         "query_prefix": "",
         "document_prefix": "",
     },
     "f2llm": {
         "embedding": F2LLM_330M_MODEL_ID,
         "reranker": None,
-        "dimension": None,
         "query_prefix": "",
         "document_prefix": "",
     },
     "f2llm_0.6b": {
         "embedding": "codefuse-ai/F2LLM-v2-0.6B",
         "reranker": None,
-        "dimension": None,
         "query_prefix": "",
         "document_prefix": "",
     },
     "ruri": {
         "embedding": "cl-nagoya/ruri-v3-130m",
         "reranker": "cl-nagoya/ruri-v3-reranker-310m",
-        "dimension": 512,
         "query_prefix": "",
         "document_prefix": "",
     },
     "qwen": {
         "embedding": "Qwen/Qwen3-Embedding-0.6B",
         "reranker": "Qwen/Qwen3-Reranker-0.6B",
-        "dimension": 256,
         "query_prefix": (
             "Instruct: Match this Japanese insurance customer to an existing party.\nQuery: "
         ),

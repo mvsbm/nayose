@@ -18,7 +18,7 @@ from api.training.contracts import (
 from api.training.data import load_truth, load_visible_snapshot, normalize_corpus
 from api.training.entity_training import EntityTrainer
 from api.training.evaluation import Evaluator
-from api.training.indexing import build_graph, build_index
+from api.training.indexing import TrainingCandidateIndex, build_graph, build_index
 from api.training.pair_training import PairTrainer
 from api.training.preflight import Preflight
 from api.training.stages import StageReporter
@@ -57,7 +57,12 @@ class TrainingApplication:
             "LOAD HIDDEN TRUTH AND AUDIT CANDIDATE RECALL",
             lambda: load_truth(self.config.data_dir.resolve(), corpus.incoming, corpus.reference),
         )
-        graph_result = self._graph_result(graph, truth, corpus.reference)
+        graph_result = self._graph_result(graph, truth, index)
+        print(
+            f"DATASET HARDNESS (mode-independent): {100.0 * graph_result.hardness:.1f}% "
+            f"of TRUE pairs share ZERO exact-block anchors (fuzzy-only needed); "
+            f"mode={self.config.exact_mode}"
+        )
         pair = reporter.run(
             "TRAIN ENTITY-DISJOINT PAIR VERIFIER",
             lambda: PairTrainer(self.config, runtime, corpus.reference, corpus.value_frequency).fit(
@@ -109,7 +114,6 @@ class TrainingApplication:
         ledger.counter("reference_records", len(corpus.reference))
         ledger.counter("incoming_queries", len(corpus.incoming))
         ledger.counter("candidate_pairs", len(pair.candidate_pairs))
-        ledger.counter("artifact_tables", 0)
         ledger.metadata("data_fingerprint", visible.data_fingerprint)
         ledger.metadata("embedding_model_revision", embedding_revision or "")
         ledger.write(output / "workflow_metrics.json")
@@ -121,7 +125,9 @@ class TrainingApplication:
 
     @staticmethod
     def _graph_result(
-        graph: pd.DataFrame, truth: TruthSnapshot, reference: pd.DataFrame
+        graph: pd.DataFrame,
+        truth: TruthSnapshot,
+        index: TrainingCandidateIndex,
     ) -> CandidateGraphResult:
         truth_frame = truth.record_truth
         truth_by_record = truth_frame.set_index("record_id")["truth_id"]
@@ -133,9 +139,36 @@ class TrainingApplication:
         entities = set(true_groups[true_groups > 1].index)
         retrieved_entities = set(left_truth[left_truth.eq(right_truth)])
         entity_recall = len(entities & retrieved_entities) / max(len(entities), 1)
-        possible = len(reference) * (len(reference) - 1) // 2
-        hardness = 1.0 - len(graph) / max(possible, 1)
-        return CandidateGraphResult(graph, retrieved / max(total_pairs, 1), entity_recall, hardness)
+        hardness = _dataset_hardness(index, truth)
+        return CandidateGraphResult(retrieved / max(total_pairs, 1), entity_recall, hardness)
+
+
+def _dataset_hardness(index: TrainingCandidateIndex, truth: TruthSnapshot) -> float:
+    anchors: dict[int, set[str]] = {}
+    for name, groups in index.block_indexes.items():
+        for key, anchor_positions in groups.items():
+            tag = f"{name}:{key}"
+            for position in anchor_positions:
+                anchors.setdefault(int(position), set()).add(tag)
+    position_by_record = {
+        str(record_id): position
+        for position, record_id in enumerate(index.reference.record_id.astype(str))
+    }
+    unanchored = 0
+    total = 0
+    for _, group in truth.record_truth.groupby("truth_id", sort=False):
+        record_positions = [
+            position_by_record.get(str(record_id), -1) for record_id in group.record_id[:6]
+        ]
+        record_positions = [position for position in record_positions if position >= 0]
+        for left in range(len(record_positions)):
+            for right in range(left + 1, len(record_positions)):
+                total += 1
+                if not anchors.get(record_positions[left], set()) & anchors.get(
+                    record_positions[right], set()
+                ):
+                    unanchored += 1
+    return unanchored / max(total, 1)
 
 
 def run_from_environment() -> TrainingRunResult:

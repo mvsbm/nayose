@@ -1,6 +1,6 @@
 """Pair features + calibrator helper — shared by training-adjacent engine code
-and the API matching worker. Extracted so new serving code does not depend on
-the legacy inference module (single source of truth; engine re-exports)."""
+and the API matching worker. This module is the single source of truth for
+pair and entity feature definitions (the engine re-exports them)."""
 
 from __future__ import annotations
 

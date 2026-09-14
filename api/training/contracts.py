@@ -4,14 +4,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TypedDict
 
-import numpy as np
 import pandas as pd
 
 
 class ModelSpec(TypedDict):
     embedding: str | None
     reranker: str | None
-    dimension: int | None
     query_prefix: str
     document_prefix: str
 
@@ -52,7 +50,6 @@ class RuntimeInfo:
 
 @dataclass(frozen=True, slots=True)
 class CandidateGraphResult:
-    pairs: pd.DataFrame
     candidate_pair_recall: float
     entity_candidate_recall: float
     hardness: float
@@ -89,9 +86,7 @@ class EntityTrainingResult:
     scaler: Any
     model: Any
     calibrator: Any
-    examples: pd.DataFrame
     entity_features: dict[str, pd.DataFrame]
-    record_scores: dict[str, pd.DataFrame]
     auto_threshold: float
     review_threshold: float
     threshold_status: str
@@ -136,6 +131,3 @@ class ArtifactRecord(TypedDict):
     format: str
     rows: int
     sha256: str
-
-
-Array = np.ndarray

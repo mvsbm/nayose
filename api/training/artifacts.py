@@ -81,7 +81,7 @@ class RunBundleWriter:
         truth: TruthSnapshot,
     ) -> Path:
         records: list[ArtifactRecord] = []
-        frames = self._frames(pair, clusters, entity, evaluation, stages, truth)
+        frames = self._frames(pair, clusters, evaluation, stages, truth)
         if self.config.save_all_candidate_pairs:
             frames["all_candidate_pairs"] = pair.candidate_pairs
         for name, frame in frames.items():
@@ -129,7 +129,6 @@ class RunBundleWriter:
     def _frames(
         pair: PairTrainingResult,
         clusters: ClusterResult,
-        entity: EntityTrainingResult,
         evaluation: EvaluationResult,
         stages: list[StageRecord],
         truth: TruthSnapshot,

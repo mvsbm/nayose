@@ -1,6 +1,6 @@
 """Record normalization — canonical preprocessing shared by matching, retrieval
-and serving. Moved out of the legacy inference module so new code does not
-depend on it; the inference engine re-exports these (single source of truth)."""
+and serving. This module is the single source of truth for normalization; the
+inference engine re-exports these helpers."""
 
 from __future__ import annotations
 
