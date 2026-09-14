@@ -23,7 +23,7 @@ following invariants remain mandatory in every phase:
 - Frontend views use `frontend/ts` ports and stores; generated `frontend/js` is
   updated by TypeScript compilation.
 - `python -m api.cli` is the only batch entry point; implementation belongs in
-  `api/`, `synthetic/`, or `api/commands/`.
+  `src/api/`, `src/data_generation/`, or `src/api/commands/`.
 - No new dependency is added without a `pyproject.toml` or
   `frontend/package.json` entry and a security/licensing review.
 - Every change is independently testable and reversible.
@@ -71,16 +71,16 @@ New modules must have one responsibility and follow the current layout:
 
 | Concern | Primary owner | Planned additions or evolution |
 |---|---|---|
-| Runtime configuration | `api/infrastructure/runtime/performance.py`, new `api/runtime_config.py` if needed | Typed, validated configuration object; derive data root/snapshot consistently |
-| Release and snapshots | `api/infrastructure/bundles/release.py`, `api/infrastructure/bundles/repositories.py` | `ReleaseCatalog` / `SnapshotResolver`; request-scoped snapshot value object |
-| Read access | `api/infrastructure/read_model/bundle_reader.py`, `api/application/queries.py`, `api/infrastructure/read_model/*.py` | Read-only connection adapter and snapshot-bound query context |
-| Search | `api/application/search.py`, `api/infrastructure/retrieval/entity_index.py`, `api/infrastructure/read_model/entity.py` | Offline exact/fuzzy indexes, typed candidate edges, cursor pagination |
-| Matching lifecycle | `api/application/matching_runtime.py`, `api/application/matching.py`, `api/infrastructure/runtime/engine.py` | Warm engine handles, safe swap, bounded concurrency |
-| Decisions | `api/infrastructure/persistence/decisions.py` | Transactional revisions, optimistic concurrency, manifest binding |
-| Jobs | `api/infrastructure/process/admin_jobs.py`, `api/application/matching_runtime.py` | Durable job repository, worker protocol, retries and heartbeats |
-| Audit | `api/application/admin.py` initially; extract `api/infrastructure/persistence/audit.py` when needed | Durable, tamper-evident, PII-safe audit events |
-| API composition | `api/composition.py`, `api/http/app.py`, `api/main.py` | Dependency wiring, app factory, lifespan ownership, and process entrypoint |
-| Batch workflows | `api/cli.py`, `api/commands/` | lifecycle, release, audit, and benchmark command families |
+| Runtime configuration | `src/api/infrastructure/runtime/performance.py`, new `src/api/runtime_config.py` if needed | Typed, validated configuration object; derive data root/snapshot consistently |
+| Release and snapshots | `src/api/infrastructure/bundles/release.py`, `src/api/infrastructure/bundles/repositories.py` | `ReleaseCatalog` / `SnapshotResolver`; request-scoped snapshot value object |
+| Read access | `src/api/infrastructure/read_model/bundle_reader.py`, `src/api/application/queries.py`, `src/api/infrastructure/read_model/*.py` | Read-only connection adapter and snapshot-bound query context |
+| Search | `src/api/application/search.py`, `src/api/infrastructure/retrieval/entity_index.py`, `src/api/infrastructure/read_model/entity.py` | Offline exact/fuzzy indexes, typed candidate edges, cursor pagination |
+| Matching lifecycle | `src/api/application/matching_runtime.py`, `src/api/application/matching.py`, `src/api/infrastructure/runtime/engine.py` | Warm engine handles, safe swap, bounded concurrency |
+| Decisions | `src/api/infrastructure/persistence/decisions.py` | Transactional revisions, optimistic concurrency, manifest binding |
+| Jobs | `src/api/infrastructure/process/admin_jobs.py`, `src/api/application/matching_runtime.py` | Durable job repository, worker protocol, retries and heartbeats |
+| Audit | `src/api/application/admin.py` initially; extract `src/api/infrastructure/persistence/audit.py` when needed | Durable, tamper-evident, PII-safe audit events |
+| API composition | `src/api/composition.py`, `src/api/http/app.py`, `src/api/main.py` | Dependency wiring, app factory, lifespan ownership, and process entrypoint |
+| Batch workflows | `src/api/cli.py`, `src/api/commands/` | lifecycle, release, audit, and benchmark command families |
 | Tests | `tests/` | Unit and fixture-backed integration tests; no external downloads |
 | Operations docs | `docs/` | Update `OPERATIONS.md`, `CLOUD.md`, and this roadmap together |
 

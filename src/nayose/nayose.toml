@@ -1,0 +1,357 @@
+schema_version = 1
+
+[paths]
+data_root = "data"
+data_dir = "data/current"
+models_dir = "models"
+frontend_dir = "frontend"
+operational_db = "data/operational.sqlite3"
+
+[serving]
+bind_host = "127.0.0.1"
+port = 8000
+auth_mode = "local_bearer"
+trusted_auth_subject_header = "X-Authenticated-User"
+trusted_auth_scopes_header = "X-Authenticated-Scopes"
+debug_sql = false
+warm_embed = false
+default_reviewer = "web"
+device = "mps"
+exact_mode = "hybrid"
+
+[embedding]
+model_id = "codefuse-ai/F2LLM-v2-330M"
+device = "mps"
+batch_size = 32
+process_workers = 1
+torch_dtype = "float16"
+revision = ""
+
+[performance]
+process_workers = 1
+cpu_threads = 0
+model_threads = 0
+native_thread_cap = 0
+
+[retrieval]
+use_dense = true
+dense_views = true
+index_backend = "polars"
+sparse_query_feature_cap = 64
+sparse_batch_size = 32
+inverted_memory_budget = 1000000000
+encode_chunk_size = 1024
+
+[inference]
+sparse_top_k = 16
+exact_block_cap = 50
+candidate_cap = 50
+pair_auto_threshold = 0.105
+entity_auto_threshold = 0.016
+entity_review_threshold = 0.016
+entity_margin_threshold = 0.06
+minimum_evidence_families = 2
+minimum_reference_density = 0.0
+dense_profile = "record_hybrid"
+entity_override = false
+
+[training]
+seed = 42
+model_family = "off"
+use_dense = true
+exact_mode = "hybrid"
+strict_backends = false
+decision_profile = "audit"
+allow_svd_dense_fallback = true
+svd_dimensions = 32
+low_memory_models = true
+pair_model_backend = "auto"
+exact_block_cap = 80
+sparse_top_k = 24
+dense_top_k = 16
+candidate_cap_per_record = 80
+sparse_batch_size = 512
+neural_batch_size = 32
+rerank_top_k = 5
+rerank_pair_limit = 12000
+embedding_dim = 256
+training_negatives_per_positive = 6
+pair_auto_precision_target = 0.985
+pair_review_precision_target = 0.80
+entity_auto_precision_target = 0.97
+entity_review_threshold = 0.20
+entity_margin_threshold = 0.06
+minimum_evidence_families = 2
+minimum_reference_density = 0.0
+max_full_match_records = 100000
+pair_feature_batch = 100000
+save_all_candidate_pairs = false
+entity_scoring_mode = "logistic_v1"
+
+[training.model_specs.off]
+embedding = ""
+reranker = ""
+query_prefix = ""
+document_prefix = ""
+
+[training.model_specs.f2llm]
+embedding = "codefuse-ai/F2LLM-v2-330M"
+reranker = ""
+query_prefix = ""
+document_prefix = ""
+
+[training.model_specs.f2llm_0_6b]
+embedding = "codefuse-ai/F2LLM-v2-0.6B"
+reranker = ""
+query_prefix = ""
+document_prefix = ""
+
+[training.model_specs.ruri]
+embedding = "cl-nagoya/ruri-v3-130m"
+reranker = "cl-nagoya/ruri-v3-reranker-310m"
+query_prefix = ""
+document_prefix = ""
+
+[training.model_specs.qwen]
+embedding = "Qwen/Qwen3-Embedding-0.6B"
+reranker = "Qwen/Qwen3-Reranker-0.6B"
+query_prefix = "Instruct: Match this Japanese insurance customer to an existing party.\nQuery: "
+document_prefix = "Document: "
+
+[release]
+min_top1_gain = 0.01
+min_recall5_gain = 0.01
+min_hard_recall5_gain = 0.01
+
+[tooling]
+metrics_dir = ""
+architecture_ledger = ""
+e2e = false
+
+[generation]
+seed = 42
+max_entity_seeds = 2000000
+default_stale_rate = 0.09
+default_landline_share = 0.12
+snapshot_date = "2025-12-31"
+query_date = "2026-08-25"
+profile = "generate_only"
+default_difficulty = "realistic"
+n_agencies = 18
+person_share = 0.90
+query_share = 0.16
+twin_rate = 0.15
+lineage_mode = "changed_plus_queries"
+
+[generation.profiles.preflight]
+n_parties = 300
+mean_records = 2.4
+[generation.profiles.smoke]
+n_parties = 700
+mean_records = 2.5
+[generation.profiles.mac]
+n_parties = 6000
+mean_records = 2.7
+[generation.profiles.large_mac]
+n_parties = 20000
+mean_records = 2.5
+[generation.profiles.generate_only]
+n_parties = 100000
+mean_records = 2.2
+
+[generation.difficulty.debug]
+poor = 0.10
+catastrophic = 0.005
+copy = 0.02
+stale = 0.12
+[generation.difficulty.realistic]
+poor = 0.42
+catastrophic = 0.10
+copy = 0.14
+stale = 0.46
+[generation.difficulty.severe]
+poor = 0.58
+catastrophic = 0.20
+copy = 0.20
+stale = 0.65
+[generation.difficulty.challenge]
+poor = 0.68
+catastrophic = 0.32
+copy = 0.28
+stale = 0.82
+
+[generation.query_difficulty.debug]
+changed_blocks = 1
+changed_minimum = 1
+damaged_blocks = 2
+damaged_minimum = 3
+stale_snapshot_rate = 0.05
+[generation.query_difficulty.realistic]
+changed_blocks = 2
+changed_minimum = 3
+damaged_blocks = 4
+damaged_minimum = 6
+stale_snapshot_rate = 0.15
+[generation.query_difficulty.severe]
+changed_blocks = 3
+changed_minimum = 5
+damaged_blocks = 4
+damaged_minimum = 7
+stale_snapshot_rate = 0.30
+[generation.query_difficulty.challenge]
+changed_blocks = 4
+changed_minimum = 6
+damaged_blocks = 4
+damaged_minimum = 8
+stale_snapshot_rate = 0.45
+
+[generation.query_mix]
+existing_stable = 0.10
+existing_changed = 0.30
+existing_damaged = 0.30
+new_customer = 0.10
+related_only = 0.15
+insufficient = 0.05
+
+[generation.event_rates]
+rename_stale = 0.12
+move_stale = 0.12
+contact_change = 0.12
+full_snapshot = 0.10
+contact_omission = 0.10
+paper_ocr = 0.18
+legacy_format = 0.12
+doc_damage = 0.08
+wrong_party_type = 0.05
+alpha_in_kana = 0.08
+combined_kana = 0.07
+kana_in_romaji = 0.07
+homophone_kanji = 0.18
+kana_form = 0.14
+digit_transpose = 0.12
+email_typo = 0.10
+shared_contact = 0.22
+
+[generation.email_domains]
+modern = ["gmail.com", "yahoo.co.jp", "i.softbank.jp", "ezweb.ne.jp", "outlook.jp", "icloud.com"]
+isp = ["ocn.ne.jp", "biglobe.ne.jp", "so-net.ne.jp", "plala.or.jp", "nifty.com", "au.com"]
+
+[generation.product_profiles.auto]
+weight = 0.62
+renew_p = 0.78
+claim_rate = 0.20
+cancel_rate = 0.16
+lapse_rate = 0.07
+reinstatement_rate = 0.45
+term_years = 1
+risk_kind = "vehicle"
+risk_fields = ["vehicle_id", "garaging_address", "driver_truth_ids"]
+property_types = ["house", "condominium", "commercial"]
+occupancies = ["owner", "tenant", "mixed_use"]
+family_role = "additional_driver"
+family_rate = 0.42
+[generation.product_profiles.property_casualty]
+weight = 0.28
+renew_p = 0.64
+claim_rate = 0.24
+cancel_rate = 0.11
+lapse_rate = 0.04
+reinstatement_rate = 0.30
+term_years = 1
+risk_kind = "property"
+risk_fields = ["risk_address", "property_type", "occupancy"]
+property_types = ["house", "condominium", "commercial"]
+occupancies = ["owner", "tenant", "mixed_use"]
+family_role = "additional_insured"
+family_rate = 0.28
+[generation.product_profiles.personal_liability]
+weight = 0.10
+renew_p = 0.58
+claim_rate = 0.08
+cancel_rate = 0.09
+lapse_rate = 0.03
+reinstatement_rate = 0.25
+term_years = 1
+risk_kind = "household"
+risk_fields = ["household_address", "liability_scope"]
+property_types = ["house", "condominium", "commercial"]
+occupancies = ["owner", "tenant", "mixed_use"]
+family_role = "additional_insured"
+family_rate = 0.35
+
+[generation.policy_params]
+mean_policies = 1.45
+product_mix = ["auto", "property_casualty", "personal_liability"]
+start_range = [1985, 2022]
+household_size_probs = [0.72, 0.22, 0.06]
+history_rate = 0.60
+claim_close_years = [1, 4]
+cancellation_reasons = ["customer_request", "nonpayment", "vehicle_sold", "risk_change", "replacement_policy"]
+lapse_reasons = ["nonpayment", "administrative_lapse"]
+
+[generation.policy_params.household_sharing]
+postal_address = 0.85
+phone = 0.55
+email = 0.18
+
+[generation.channel_contact_profile.web]
+email_family = 0.0
+landline_share = 0.02
+[generation.channel_contact_profile.agent_pc]
+email_family = 0.0
+landline_share = 0.06
+[generation.channel_contact_profile.paper_ocr]
+email_family = 1.0
+landline_share = 0.20
+[generation.channel_contact_profile.legacy_migration]
+email_family = 1.0
+landline_share = 0.35
+
+[generation.noise.field_availability.web]
+[generation.noise.field_availability.agent_pc]
+email = 0.92
+name_romaji = 0.95
+[generation.noise.field_availability.paper_ocr]
+email = 0.45
+name_romaji = 0.70
+[generation.noise.field_availability.legacy_migration]
+email = 0.0
+name_romaji = 0.15
+
+[generation.noise.channel_events]
+web = ["email_typo", "digit_transpose"]
+agent_pc = ["homophone_kanji", "digit_transpose"]
+paper_ocr = ["paper_ocr", "kana_form"]
+legacy_migration = ["legacy_format"]
+
+[generation.noise.band_scale]
+average = 0.55
+poor = 1.05
+catastrophic = 1.80
+[generation.noise.missing_rates]
+average = 0.10
+poor = 0.30
+catastrophic = 0.65
+[generation.noise.channel_family]
+web = "modern"
+agent_pc = "modern"
+paper_ocr = "ocr"
+legacy_migration = "legacy"
+[generation.noise.vintage.web]
+values = [2010, 2024]
+[generation.noise.vintage.agent_pc]
+values = [2005, 2024]
+[generation.noise.vintage.paper_ocr]
+values = [1995, 2016]
+[generation.noise.vintage.legacy_migration]
+values = [1980, 2005]
+
+[sources]
+persona_dataset = "nvidia/Nemotron-Personas-Japan"
+persona_split = "train"
+persona_cache = "persona_names.parquet"
+edinet_dataset = "kawagoshi-llm-team/edinet2023"
+edinet_split = "train"
+japan_post_zip_url = "https://www.post.japanpost.jp/service/search/zipcode/download/kogaki/zip/ken_all.zip"
+postal_zip_name = "ken_all.zip"
+postal_csv_name = "ken_all.csv"

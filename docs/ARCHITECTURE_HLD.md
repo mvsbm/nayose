@@ -201,14 +201,14 @@ the release validator/publisher after the complete pair passes validation.
 
 | Boundary | Single responsibility | Target owner |
 |---|---|---|
-| Build pipeline | generate, train, materialize, validate artifacts | `synthetic/`, `api/commands/` |
-| Release catalog | resolve and publish complete releases | `api/infrastructure/bundles/release.py` / focused catalog module |
-| Artifact repository | locate immutable files and verify manifests | `api/infrastructure/bundles/repositories.py` and snapshot-bound context |
-| Read repositories | execute server-owned bounded DuckDB/index queries | `api/infrastructure/read_model/*.py` |
-| Search service | interpret, retrieve, merge, rank, and build search response | `api/application/search.py` |
-| Match service | load an `EngineHandle` and perform safe matching | `api/application/matching.py`, `api/infrastructure/runtime/engine.py` |
+| Build pipeline | generate, train, materialize, validate artifacts | `src/data_generation/`, `src/api/commands/` |
+| Release catalog | resolve and publish complete releases | `src/api/infrastructure/bundles/release.py` / focused catalog module |
+| Artifact repository | locate immutable files and verify manifests | `src/api/infrastructure/bundles/repositories.py` and snapshot-bound context |
+| Read repositories | execute server-owned bounded DuckDB/index queries | `src/api/infrastructure/read_model/*.py` |
+| Search service | interpret, retrieve, merge, rank, and build search response | `src/api/application/search.py` |
+| Match service | load an `EngineHandle` and perform safe matching | `src/api/application/matching.py`, `src/api/infrastructure/runtime/engine.py` |
 | Operational repository | transactional decisions, jobs, audit, and staging | focused SQLite-backed module |
-| API routes | authentication, validation, mapping, status codes | thin modules under `api/http/routers/` |
+| API routes | authentication, validation, mapping, status codes | thin modules under `src/api/http/routers/` |
 | Frontend transport | HTTP and serialization only | `frontend/ts/infra.ts` |
 | Frontend state/views | commands, undo, rendering, navigation | `frontend/ts/store.ts` and feature modules |
 

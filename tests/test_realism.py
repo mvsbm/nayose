@@ -5,15 +5,15 @@ import re
 import numpy as np
 import pandas as pd
 
-from synthetic.config import (
+from data_generation.config import (
     EMAIL_DOMAINS,
     POLICY_PARAMS,
     PRODUCT_PROFILES,
     NoiseConfig,
     SyntheticConfig,
 )
-from synthetic.noise import RecordCorruptor
-from synthetic.realism import (
+from data_generation.corruption import RecordCorruptor
+from data_generation.realism import (
     channel_family,
     channel_landline_share,
     default_phone,
@@ -81,7 +81,7 @@ def test_shared_contact_uses_agency_lines():
 
 def test_company_kana_is_katakana(monkeypatch):
     """P1: company kana must be katakana, not Latin romaji."""
-    from synthetic.providers import CompanySource
+    from data_generation.sources import CompanySource
 
     monkeypatch.setattr(
         CompanySource, "_load", staticmethod(lambda sources: ["株式会社東京商事", "有限会社桜井"])
@@ -95,7 +95,7 @@ def test_company_kana_is_katakana(monkeypatch):
 def test_policies_are_aggregate_roots_and_events_anchor_dates():
     """G1: policies group records (shared policy_id across renewals) and
     pick_policy_event respects the channel era (never future-dates a record)."""
-    from synthetic.policy import build_policies, pick_policy_event
+    from data_generation.policies import build_policies, pick_policy_event
 
     rng = np.random.default_rng(42)
     parties = pd.DataFrame({"party_type": ["person", "person"], "name_kanji": ["佐藤", "鈴木"]})
@@ -116,8 +116,8 @@ def test_policies_are_aggregate_roots_and_events_anchor_dates():
 
 
 def test_policy_lifecycle_and_roles_are_clean_truth(monkeypatch):
-    from synthetic.policy import build_policies, policy_status_at, unique_policies
-    from synthetic.truth import build_policy_truth
+    from data_generation.ground_truth import build_policy_truth
+    from data_generation.policies import build_policies, policy_status_at, unique_policies
 
     for name, profile in PRODUCT_PROFILES.items():
         monkeypatch.setitem(profile, "weight", 1.0 if name == "auto" else 0.0)
@@ -150,7 +150,7 @@ def test_policy_lifecycle_and_roles_are_clean_truth(monkeypatch):
 def test_temporal_snapshot_is_monotonic_and_validation_catches_drift():
     """G4: snapshot_at folds states effective <= year; validate_temporal flags
     a record whose stale value is NOT the state true at its observed_at."""
-    from synthetic.policy import HistoryState, snapshot_at, validate_temporal
+    from data_generation.policies import HistoryState, snapshot_at, validate_temporal
 
     history = [
         HistoryState(
@@ -200,7 +200,7 @@ def test_temporal_snapshot_is_monotonic_and_validation_catches_drift():
 def test_agency_knobs_and_typo_profiles_are_consumed():
     """G3: every agency carries a personal typo profile + severity knobs, and
     the corruptor's OCR family reads the agency context (not just globals)."""
-    from synthetic.engine import generate_agencies
+    from data_generation.generator import generate_agencies
 
     rng = np.random.default_rng(7)
     agencies = generate_agencies(SyntheticConfig(profile="smoke"), rng)

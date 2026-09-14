@@ -7,7 +7,7 @@
   "features": {
     "ghcr.io/devcontainers/features/node:1": { "version": "20" }
   },
-  "postCreateCommand": "python -m pip install -U pip && pip install -e '.[matcher,neural,train,serve,dev]' && npm --prefix frontend install",
+  "postCreateCommand": "python -m pip install -U pip && pip install -e '.[matcher,neural,performance,serve,dev]' && npm --prefix frontend install",
   "remoteUser": "root",
   "customizations": {
     "vscode": {

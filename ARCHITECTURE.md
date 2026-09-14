@@ -7,28 +7,34 @@ rules, `README.md` the usage.
 ## The stack
 
 ```
-data/raw/...  generations/gen_*/  current↙       immutable data products
-synthetic/    engine + providers + noise + truth  generation application
-api/commands/                                       canonical CLI commands
-api/training/                                       isolated training application
-models/runs/run_*/  current↙ + registry.json       fingerprint-bound bundles
-data/operational.sqlite3                            jobs, decisions, audit, staging
-frontend/                                           typed no-build dashboard
-api/                                               serving package
+src/                                                  installable Python packages
+  api/                                                serving, CLI, and training package
+  data_generation/                                    data-generation package
+frontend/                                              typed no-build dashboard
+tests/                                                 unit, integration, and contract tests
+ci/                                                    quality and budget configuration
+docs/                                                  architecture and operations
+data/                                                  runtime data products (gitignored)
+  raw/                                                immutable source cache
+  generations/                                        immutable generated snapshots
+  current -> generations/gen_<timestamp>_<hash>/      active data alias
+models/                                                runtime model products (gitignored)
+  runs/                                               immutable model bundles
+  current -> runs/run_<timestamp>_<hash>/             active model alias
 ```
 
 ## Server package boundaries
 
 ```
-api/main.py                         process entrypoint and compatibility exports
-api/composition.py                  composition root; wires concrete services/adapters
-api/http/                           inbound HTTP adapter
+src/api/main.py                         process entrypoint and compatibility exports
+src/api/composition.py                  composition root; wires concrete services/adapters
+src/api/http/                           inbound HTTP adapter
   app.py                             FastAPI factory, middleware, lifespan
   routers/                          endpoint modules grouped by URL capability
   schemas.py/contracts.py            transport input/output types
-api/application/                    use-case facades and orchestration
-api/domain/                         pure identity, normalization, evidence, and scoring rules
-api/infrastructure/                 outbound adapters
+src/api/application/                    use-case facades and orchestration
+src/api/domain/                         pure identity, normalization, evidence, and scoring rules
+src/api/infrastructure/                 outbound adapters
   bundles/                          model/data bundle catalog and publication
   matching/                         engine-bound scoring and decision adapters
   read_model/                       DuckDB bundle queries and projections
@@ -37,7 +43,7 @@ api/infrastructure/                 outbound adapters
   runtime/                          engine, embeddings, model/device adapters
   process/                           bounded jobs and workflow persistence
   observability/                     endpoint and runtime telemetry
-api/training/                       batch-training functional core and worker shell
+src/api/training/                       batch-training functional core and worker shell
 ```
 
 Dependency direction is one-way:
@@ -51,7 +57,7 @@ composition root → wires all concrete implementations
 Routers parse HTTP, invoke one application operation, and translate domain
 errors into HTTP responses. They do not contain SQL, filesystem, Torch, or
 bundle-selection logic. The explicit router registry in
-`api/http/routers/__init__.py` is the transport composition boundary; new routes
+`src/api/http/routers/__init__.py` is the transport composition boundary; new routes
 are added there deliberately rather than discovered dynamically.
 
 The entity routes own both `/api/entities...` search and `/api/entity/...`
@@ -77,12 +83,12 @@ All queries are typed endpoints (`/api/entities`, `/api/entities/explorer`,
 ## Frontend boundaries
 
 ```
-frontend/ts/   schema.ts (contract) · core.ts (pure logic)      ← no DOM, no fetch
-port.ts        typed capability ports + Storage                   ← view boundary
-infra/         ApiAdapter + memo cache; LocalStorage
-store.ts       observable state + reversible decision commands
-features/      one module per view
-app.ts         composition root: boot({port, store, runs})
+frontend/ts/   schema.ts/core.ts (contracts and pure logic)     ← no DOM, no fetch
+frontend/ts/port.ts      typed capability ports + storage boundary
+frontend/ts/infra.ts    ApiAdapter + memo cache; HTTP adapter only
+frontend/ts/store.ts    observable state + reversible decision commands
+frontend/ts/*-view.ts   one module per view
+frontend/ts/app.ts      composition root: boot({port, store, runs})
 ```
 
 Views never call `fetch`, SQL, or `localStorage`; they use focused ports. New
@@ -91,7 +97,7 @@ data follows `port` method → server endpoint → `ApiAdapter` → mock/API tes
 ## Data flow (one loop)
 
 ```
-generate (synthetic/) → train (api/training/) → immutable bundle + field_lineage
+generate (src/data_generation/) → train (src/api/training/) → immutable bundle + field_lineage
 → API serves fingerprint-bound bundle via DuckDB → dashboard review/search
 → decisions are persisted in operational SQLite → next audit reads them
 ```

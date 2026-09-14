@@ -359,7 +359,7 @@ def test_svd_bundle_uses_saved_transform_not_neural_encoder(tmp_path, monkeypatc
 
 
 def test_normalization_and_pair_features_are_shared_with_engine():
-    """The engine re-exports api/* primitives — identity, not a copy."""
+    """The engine re-exports src/api/* primitives — identity, not a copy."""
     import api.domain.features as features
     import api.domain.normalize as normalize
     import api.infrastructure.runtime.engine as engine

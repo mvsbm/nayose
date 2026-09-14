@@ -4,11 +4,11 @@
 
 ```bash
 source .venv/bin/activate
-uv pip install -e '.[matcher,performance,serve]'  # reproducible fast serving/training extras
-python -m pytest tests/ -q           # unit tests (fast, no external data)
+uv pip install -e '.[matcher,performance,serve,dev]'  # reproducible local environment
+python -m pytest tests/ -q           # unit, integration, and contract tests (no external data)
 ruff check .                          # lint (config in pyproject.toml)
 ruff format --check .                 # formatting
-mypy synthetic tests                  # type check (engine + tests only)
+mypy src/api src/data_generation tests # type check (application, generation, and tests)
 python -m api.cli data generate --profile smoke   # headless generation CLI contract
 python -m api.cli model train --data-dir data/current --models-dir models --seed 42 --device mps --model-family f2llm_330m   # locked headless training + target-platform artifacts
 python -m api.cli benchmark runtime --iterations 20                         # cold/warm latency benchmark
@@ -21,16 +21,16 @@ curl http://127.0.0.1:8000/api/health            # readiness probe (auth-exempt)
 
 | Path | Responsibility |
 |---|---|
-| `synthetic/` | Engine: `config.py` (presets/rates/data incl. email domains, channel contact profiles, POLICY_PARAMS), `providers.py` (real data sources; persona Han-initial sanitizer), `realism.py` (phone styles + email domains), `policy.py` (policy aggregate roots + truth timeline states + temporal validation), `noise.py` (correlated dirty events + lineage; agent profiles consumed), `truth.py` (party, relationship, policy, and query ground-truth tables), `engine.py` (orchestration), `pipeline.py` (generate + single save contract) |
-| `api/http/` | FastAPI factory, auth, transport schemas, dependencies, and routers grouped by endpoint capability. |
-| `api/application/` | Use-case facades for matching, search, entity queries, administration, and service-graph ownership. |
-| `api/domain/` | Pure identity, normalization, evidence, blocking, feature, search-filter, and scoring rules. |
-| `api/infrastructure/` | Bundle publication/read models, persistence, retrieval, runtime/model adapters, bounded jobs, and telemetry. |
-| `api/training/` | Isolated modular training application and worker boundary. |
-| `api/composition.py` + `api/main.py` | Concrete dependency wiring and the serving process entrypoint. |
+| `src/data_generation/` | Data generation: `config.py` (presets/rates/data), `sources.py` (real data sources), `realism.py` (phone/email formats), `policies.py` (policy lifecycle rules), `corruption.py` (coherent dirty events + lineage), `ground_truth.py` (truth tables), `generator.py` (record orchestration), `workflow.py` (generate + save contract) |
+| `src/api/http/` | FastAPI factory, auth, transport schemas, dependencies, and routers grouped by endpoint capability. |
+| `src/api/application/` | Use-case facades for matching, search, entity queries, administration, and service-graph ownership. |
+| `src/api/domain/` | Pure identity, normalization, evidence, blocking, feature, search-filter, and scoring rules. |
+| `src/api/infrastructure/` | Bundle publication/read models, persistence, retrieval, runtime/model adapters, bounded jobs, and telemetry. |
+| `src/api/training/` | Isolated modular training application and worker boundary. |
+| `src/api/composition.py` + `src/api/main.py` | Concrete dependency wiring and the serving process entrypoint. |
 | `tests/` | Unit tests only — must never require external data or downloads |
-| `api/cli.py` + `api/commands/data.py` | Headless generation CLI; writes the generation tables |
-| `api/commands/lifecycle.py` / `api/training/` | Training, evaluation, and immutable bundle publication |
+| `src/api/cli.py` + `src/api/commands/data.py` | Headless generation CLI; writes the generation tables |
+| `src/api/commands/lifecycle.py` / `src/api/training/` | Training, evaluation, and immutable bundle publication |
 | `data/raw` | Immutable reference-data cache (ken_all, personas, EDINET) — never mutate |
 | `data/generations/gen_*` + `data/current` | Immutable sabotaged dataset products; `current` is the matcher consumer alias |
 | `data/clean_generations/clean_*` + `data/clean_current` | Immutable streamable canonical entity products; clean-only source layer |
@@ -59,7 +59,7 @@ curl http://127.0.0.1:8000/api/health            # readiness probe (auth-exempt)
 - Every record/query field must have a lineage row
   (`field_lineage`: item_id × field, canonical vs observed, owner, transformation).
 - The preflight invariants and `tests/` enforce this; run them before changing the schema.
-- `tests/test_arch_contract.py` checks frontend port parity, the CSS class
+- `tests/test_architecture_contract.py` checks frontend port parity, the CSS class
   dictionary, no layout/stacking on bare element selectors, and no sticky table
   cells. It ships with the suite — drift fails `pytest`, never the browser.
 
@@ -67,9 +67,9 @@ curl http://127.0.0.1:8000/api/health            # readiness probe (auth-exempt)
 
 New VIEW (#/route):
 1. `port.ts`: add the focused capability method(s) the view needs.
-2. `api/http/routers/`: add the typed endpoint and call the relevant
-   application service (`api/application/queries.py` for bundle reads); wrap with
-   `op("name", lambda: ...)`; add a fixture-backed test in `tests/test_api.py`.
+2. `src/api/http/routers/`: add the typed endpoint and call the relevant
+   application service (`src/api/application/queries.py` for bundle reads); wrap with
+   `op("name", lambda: ...)`; add a fixture-backed test in `tests/test_http_api.py`.
 3. `ts/infra.ts`: implement the port method on `ApiAdapter` (+ memo key).
 4. `ts/features.ts`: new `mountX(el, port, store)`; register in `app.ts` VIEWS +
    palette nav; add the sidebar link in `index.html`.
@@ -91,7 +91,7 @@ Definition of done (EVERY change):
 
 ## Do not
 
-- Keep `api/cli.py` thin; implementation belongs in the appropriate `api/application/`, `api/domain/`, `api/infrastructure/`, `api/commands/`, or `synthetic/` package.
+- Keep `src/api/cli.py` thin; implementation belongs in the appropriate `src/api/application/`, `src/api/domain/`, `src/api/infrastructure/`, `src/api/commands/`, or `src/data_generation/` package.
 - Testing pyramid: unit (pure) + jsdom view tests are the workhorse; Playwright
   E2E (`frontend/test/e2e.test.mjs`, opt-in `NAYOSE_E2E=1`) is for stories that
   cross the real server⇄browser⇄persistence seam. `e2e-util.mjs` copies the
@@ -101,8 +101,8 @@ Definition of done (EVERY change):
   spans the server) an E2E journey. E2E selectors use ids and semantic
   `data-*` hooks (e.g. `data-entity`), never `.class` chains.
 - Bilingual labels go through `frontend/ts/i18n.ts` with BOTH locales; every
-  matching/admin job `Stage` in `api/http/contracts.py` must have a label.
-  `tests/test_arch_contract.py` enforces dictionary completeness and stage
+  matching/admin job `Stage` in `src/api/http/contracts.py` must have a label.
+  `tests/test_architecture_contract.py` enforces dictionary completeness and stage
   parity (drift fails the gate).
 - Admin workspace (`#/admin`) and data entry (`#/data-entry`) are always OPEN
   as local-first surfaces; they have no separate admin credential. If the
@@ -113,30 +113,30 @@ Definition of done (EVERY change):
   are labeled un-trained — they must never break the fingerprint contract.
 - `MemoProxy` caches reads; MUTATION-ADJACENT reads (manualList, adminState,
   loadDecisions) are pass-through — never cache state that an action mutates.
-- E2E authoring (enforced by `tests/test_arch_contract.py`): journeys call only
+- E2E authoring (enforced by `tests/test_architecture_contract.py`): journeys call only
   harness primitives from `frontend/test/e2e-util.mjs` — never raw
   `waitForFunction`/`reload`/context creation; every journey runs in its own
   fresh context via `runJourney`; selectors use ids and semantic `data-*`
   hooks, never structural paths under `#view`; assert domain semantics (e.g.
   an entity item exists), not incidental artifact counts.
 - The repo-root engine (`nayose_inference.py`) and CLI (`nayose_cli.py`) are
-  RETIRED: the engine lives at `api/infrastructure/runtime/engine.py`, the CLI is deleted. `api/` must
+  RETIRED: the engine lives at `src/api/infrastructure/runtime/engine.py`, the CLI is deleted. `src/api/` must
   never reference root-level legacy modules; shared normalization/features
-  live in `api/domain/normalize.py`/`api/domain/features.py` and the runtime engine re-exports them.
-  `tests/test_arch_contract.py` enforces this boundary.
+  live in `src/api/domain/normalize.py`/`src/api/domain/features.py` and the runtime engine re-exports them.
+  `tests/test_architecture_contract.py` enforces this boundary.
 - Evidence-first UI: match results must show actual scored records, per-field
   comparisons, thresholds and the decision reason — never invented explanations
   or hidden synthetic labels. UI labels go through `frontend/ts/i18n.ts` (ja/en
   dictionary), never hardcoded Japanese strings; the language toggle must not
   translate customer data.
-- Do not hardcode datasets/rates in engine code — extend `config.py`/providers.
+- Do not hardcode datasets/rates in generation code — extend `config.py`/`sources.py`.
 - Do not commit `data/`, `models/`, or environment files.
 - Do not install new deps into the shared `.venv` without adding them to
   `pyproject.toml` first.
 - Do not change random-seed defaults silently — outputs must be seed-reproducible.
 - Dirtying must stay **truth-driven and logical** (coherent events, exact
   lineage); never add label noise — truth tables are the ground truth.
-- New corruption must register as an event in `noise.py` + `config.py` rates
+- New corruption must register as an event in `corruption.py` + `config.py` rates
   (OCP), and be explainable from the entity's truth values.
 - Name realism: reading (kana) is identity; observed kanji may diverge through
   the data-driven homophone pools (`build_homophone_map`) and kana-form events.
@@ -144,7 +144,7 @@ Definition of done (EVERY change):
   no email (keep=0.0). Keep `channel_events` as the source-document bundles.
 - Frontend is strict-TS only: edit `frontend/ts/`, run `npm --prefix frontend run
   typecheck`, keep `frontend/js/` generated (build & commit). Keep
-  `frontend/ts/schema.ts` in sync with `api/http/contracts.py REQUIRED_COLUMNS`
+  `frontend/ts/schema.ts` in sync with `src/api/http/contracts.py REQUIRED_COLUMNS`
   (test_schema_contract.py enforces).
 - Frontend boundaries are explicit: views depend only on `port.ts` interfaces;
   state flows through `store.ts` reversible commands; `app.ts` assembles
@@ -160,7 +160,7 @@ Definition of done (EVERY change):
   only for debugging). Every endpoint records stats; keep the fake-bundle API
   tests green for new endpoints. Run `npm test` (tsc + node:test) — pytest's
   frontend gate enforces it.
-- The web dashboard (`frontend/` + `api/main.py`) must keep the F1-F5 views,
+- The web dashboard (`frontend/` + `src/api/main.py`) must keep the F1-F5 views,
   validate inputs, and stay no-build (vanilla ESM). DuckDB queries are
   SELECT/WITH-only over 'bundle/' and 'data/' roots with a row cap; the data
   adapter may move to DuckDB-WASM by swapping one function. URL-as-state and
@@ -175,8 +175,8 @@ Definition of done (EVERY change):
 ## Retired (do not reintroduce)
 
 - `nayose_cli.py` — obsolete CLI app layer, deleted. The engine moved from
-  `nayose_inference.py` to `api/infrastructure/runtime/engine.py` (artifact loading + fingerprint
-  guard). `api/infrastructure/runtime/engine.py` carries historical long lines/defensive
+  `nayose_inference.py` to `src/api/infrastructure/runtime/engine.py` (artifact loading + fingerprint
+  guard). `src/api/infrastructure/runtime/engine.py` carries historical long lines/defensive
   naming; it is excluded from mypy and gets `E501/E402/B905/B007` per-file
-  ruff ignores in pyproject.toml — new logic goes into `api/` + `frontend/` +
-  `synthetic/`, and the arch contract forbids root-level legacy references.
+  ruff ignores in pyproject.toml — new logic goes into `src/api/` + `frontend/` +
+  `src/data_generation/`, and the arch contract forbids root-level legacy references.

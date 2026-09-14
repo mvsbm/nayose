@@ -12,8 +12,8 @@ python -m api.cli audit repo       # ruff, mypy, tsc, npm test, pytest (+ E2E op
 ```
 
 The original root-level app layer (`nayose_cli.py`) was retired and the engine
-migrated to `api/infrastructure/runtime/engine.py`; all behavior lives in `api/`, `frontend/`,
-`synthetic/`.
+migrated to `src/api/infrastructure/runtime/engine.py`; all behavior lives in `src/api/`, `frontend/`,
+`src/data_generation/`.
 
 ## Quick Start
 
@@ -64,7 +64,7 @@ python -m api.cli model train --data-dir data/current --models-dir models \
 
 ### 3. Run Inference
 
-`nayose model train` runs the isolated `api.training.worker`, which delegates to the modular `api/training/` application, then writes a model bundle
+`nayose model train` runs the isolated `api.training.worker`, which delegates to the modular `src/api/training/` application, then writes a model bundle
 (portable indexes + target-platform ANN + run_manifest) into its output
 directory. `NayoseEngine.load` **fingerprint-checks the bundle against
 the
@@ -89,18 +89,17 @@ NAYOSE_DASH_PORT=8899 NAYOSE_WARM_EMBED=1 python -m api.main
 ## Project Structure
 
 ```
-├── api/cli.py                  # Canonical data/model/audit/benchmark CLI facade
-├── api/commands/               # Focused command implementations
-├── api/                        # Serving package
-│   ├── main.py                 #   process entrypoint
-│   ├── composition.py          #   dependency composition root
-│   ├── http/routers/           #   typed FastAPI endpoint adapters
-│   ├── application/            #   matching, search, query, and admin use cases
-│   ├── domain/                 #   normalization, evidence, and identity rules
-│   ├── infrastructure/         #   bundle, storage, retrieval, and runtime adapters
-│   └── training/               #   isolated modular training application
+├── src/                        # Installable Python packages
+│   ├── api/cli.py              #   canonical data/model/audit/benchmark CLI facade
+│   ├── api/commands/           #   focused command implementations
+│   ├── api/http/routers/        #   typed FastAPI endpoint adapters
+│   ├── api/application/        #   matching, search, query, and admin use cases
+│   ├── api/domain/              #   normalization, evidence, and identity rules
+│   ├── api/infrastructure/     #   bundle, storage, retrieval, and runtime adapters
+│   ├── api/training/            #   isolated modular training application
+│   └── data_generation/        #   sources, generator, corruption, truth, and workflow
 │
-├── data/                       # Training data (gitignored)
+├── data/                       # Runtime data products (gitignored)
 │   ├── raw/                        # immutable reference data (ken_all, personas, EDINET)
 │   ├── generations/gen_<ts>_<hash>/   # one immutable dataset product per run
 │   │   ├── reference_records.parquet / incoming_queries.parquet / agencies.parquet
@@ -179,7 +178,7 @@ Reading (kana) is the identity; observed kanji may diverge realistically:
   channel's characteristic disorders together (web: email+digit typos;
   agent_pc: homophone+digit; paper_ocr: OCR+kana-form; legacy: era+width+no email).
 
-Tuning: every rate/table lives in `NoiseConfig` in `synthetic/config.py`
+Tuning: every rate/table lives in `NoiseConfig` in `src/data_generation/config.py`
 (`event_rates`, `field_availability`, `channel_events`, `band_scale`,
 `missing_rates`) and the twin rate via `NAYOSE_TWIN_RATE`. Truth stays
 canonical (party_truth) and lineage-exact; records are explainable derivations.
@@ -192,7 +191,7 @@ entity (name renames, moves, re-contacts, pre-update snapshots, OCR scans,
 legacy era formats), and the truth tables + `field_lineage` remain the exact
 answer for each value.
 
-Hardness levers (all in `synthetic/noise.py` / `engine.py`):
+Hardness levers (all in `src/data_generation/corruption.py` / `generator.py`):
 
 - **Coherent events**: `rename_stale`, `move_stale`, `contact_change`,
   `full_snapshot` (pre-move/pre-re-contact record using the entity's old
@@ -264,7 +263,7 @@ the MPS-serving alternative.
 
 ## Web dashboard (F1-F5, modern frontend)
 
-A no-build modern frontend (`frontend/`) + thin API (`api/main.py`), served
+A no-build modern frontend (`frontend/`) + thin API (`src/api/main.py`), served
 locally by one process. DuckDB executes read-only SQL over the run bundle
 parquets (single local process; swap the data adapter to DuckDB-WASM later).
 The interface uses progressive disclosure and shows verdict uncertainty with
@@ -330,7 +329,7 @@ Frontend is **strict TypeScript** compiled to ESM (`tsc`), no bundler:
 ```
 
 Contracts are Rust-disciplined: `frontend/ts/schema.ts` mirrors
-`api/http/contracts.py REQUIRED_COLUMNS`, and `tests/test_schema_contract.py` fails CI
+`src/api/http/contracts.py REQUIRED_COLUMNS`, and `tests/test_schema_contract.py` fails CI
 if they drift; the data adapter validates shapes at runtime before render.
 Never hand-edit `frontend/js/` (generated).
 
@@ -375,9 +374,13 @@ ranking/robustness layer; keep them on by default.
 ## Structure (surface)
 
 ```
-frontend/            no-build ESM app (index.html, styles.css, js/app.js)
-api/composition.py   FastAPI dependency composition; api/http/routers exposes typed search, matching, data, and admin APIs
-tests/test_api.py    API contract tests (self-contained fake bundle)
+src/api/              installable serving, application, domain, and CLI package
+src/data_generation/  installable data-generation package
+frontend/             no-build ESM app (index.html, styles.css, js/app.js)
+tests/                unit, integration, and architecture/contract tests
+ci/                   quality and resource-budget configuration
+docs/                 architecture, operations, and deployment guides
+data/, models/        gitignored runtime products; never source code
 ```
 
 ## Model saving / inference (run bundles)
@@ -416,10 +419,10 @@ numpy pandas scipy scikit-learn rapidfuzz lightgbm joblib
 pykakasi phonenumbers jaconv pyarrow faker(optional legacy) datasets
 ```
 
-## Engine package & tests
+## Data-generation package & tests
 
-The generator logic lives in `synthetic/` (providers / noise / truth / engine;
-data-driven config in `synthetic/config.py`), with `nayose data generate` as
+The generator logic lives in `src/data_generation/` (sources / corruption / ground truth / generator;
+data-driven config in `src/data_generation/config.py`), with `nayose data generate` as
 its thin CLI.
 
 ```bash

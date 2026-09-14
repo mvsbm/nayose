@@ -17,14 +17,14 @@ The current bundle does not export historical merge paths. Entity detail states 
 
 ## Backend boundaries
 
-- `api/domain/evidence.py`: visible-field whitelist and field comparison, reusing existing normalization.
-- `api/infrastructure/retrieval/bundle_retrieval.py`: bundle-aware query encoding and retrieval. SVD bundles use their saved `dense_svd.joblib`; neural bundles use their recorded model ID. Embedding dimensions are checked before ANN search. `NAYOSE_EXACT_MODE` and `NAYOSE_USE_DENSE` remain effective.
-- `api/infrastructure/retrieval/entity_search.py`: entity search ranking from the loaded engine's embeddings
+- `src/api/domain/evidence.py`: visible-field whitelist and field comparison, reusing existing normalization.
+- `src/api/infrastructure/retrieval/bundle_retrieval.py`: bundle-aware query encoding and retrieval. SVD bundles use their saved `dense_svd.joblib`; neural bundles use their recorded model ID. Embedding dimensions are checked before ANN search. `NAYOSE_EXACT_MODE` and `NAYOSE_USE_DENSE` remain effective.
+- `src/api/infrastructure/retrieval/entity_search.py`: entity search ranking from the loaded engine's embeddings
   (entity centroids over per-record vectors); typed-search hybrid — exact LIKE
   hits are always preserved, semantic similarity scores/order added once the
   engine is loaded (`NAYOSE_WARM_EMBED=1` or after a match request).
-- `api/application/matching.py`: scoring orchestration and bounded background request lifecycle, using `api/infrastructure/runtime/engine.py.load_engine` (which performs the corpus fingerprint guard).
-- `api/http/contracts.py`: response schemas.
+- `src/api/application/matching.py`: scoring orchestration and bounded background request lifecycle, using `src/api/infrastructure/runtime/engine.py.load_engine` (which performs the corpus fingerprint guard).
+- `src/api/http/contracts.py`: response schemas.
 - `frontend/ts/port.ts` / `infra.ts`: typed ports and transport; views contain no SQL or network calls.
 - `frontend/ts/matching-state.ts`: matching lifecycle, polling and stale-run protection.
 - `frontend/ts/i18n.ts`: bilingual message dictionary, independent of source data.
@@ -43,6 +43,6 @@ The job registry is **in-memory, single-process**, with one background worker an
 
 ## Verification
 
-Focused tests: `tests/test_api.py`, `tests/test_matching.py`, `tests/test_arch_contract.py`, and `frontend/test/view.test.mjs`. Type-check with `npm --prefix frontend run typecheck`. Regenerate committed browser assets with `npm --prefix frontend run build` before serving the updated UI; then run `python -m api.cli audit repo` and the relevant browser tests.
+Focused tests: `tests/test_http_api.py`, `tests/test_matching.py`, `tests/test_architecture_contract.py`, and `frontend/test/view.test.mjs`. Type-check with `npm --prefix frontend run typecheck`. Regenerate committed browser assets with `npm --prefix frontend run build` before serving the updated UI; then run `python -m api.cli audit repo` and the relevant browser tests.
 
 The promoted 374,677-record F2LLM bundle was exercised through the backend and passed fingerprint verification, serving load, and dense-view restoration. The local MPS benchmark measured 7.0 s cold bundle load, 110.6 ms warm recommendation p50, 113.5 ms p95, and 2.93 GiB peak RSS; these are target-machine observations, not latency guarantees. Linux, CUDA, ARM64/x86_64 portability, multi-user capacity, and 2M serving remain uncertified.

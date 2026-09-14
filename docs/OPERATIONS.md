@@ -94,10 +94,17 @@ NAYOSE_DASH_PORT=8899 python -m api.main
 - `GET /api/health/details` — authenticated operational details: release identity,
   fingerprints, runtime, engine state, run count, and endpoint telemetry.
   Every response includes `X-Request-ID`; clients may provide a bounded ASCII ID for correlation.
+- `GET /api/admin/config` — redacted, section-shaped effective configuration
+  from `nayose.toml` plus environment overrides. It is read-only and includes
+  a stable configuration hash.
 - `GET /api/admin/generation-config` — server-owned profiles, difficulties,
   corruption catalog, channel rules, and defaults.
 - `POST /api/admin/generation-preview` — validates controls and returns a
   side-effect-free deterministic estimate; it never creates a generation.
+  The browser never writes `nayose.toml`: generation controls are a
+  run-scoped draft sent to the validated preview/job API, while serving changes
+  are audited process overrides. Change persistent deployment defaults through
+  versioned configuration and environment injection, then restart the process.
 - Reviewer identity: `PUT /api/decisions` accepts `X-Reviewer` only for unauthenticated loopback use. Authenticated bearer and trusted-proxy requests use the authenticated subject, so a client cannot impersonate a reviewer. Review mutations require the `review` scope; admin/data-entry mutations require `admin`. Decisions are stored in the configured operational SQLite database and bound to the model fingerprint and manifest hash.
 - `trusted_proxy` is valid only behind a reverse proxy that strips the configured identity headers before adding verified OIDC/JWT claims. Do not expose the application directly in this mode.
 
@@ -115,7 +122,7 @@ does not consume it automatically. Truth is read-only; nothing is mutated.
 ## 5. Retrain & drift
 
 - Append a new query batch (or regenerate) → new fingerprint → new immutable
-  generation → `train.py` against it → new bundle.
+  generation → `python -m api.cli model train` against it → new bundle.
 - Compare runs in the UI: `#/compare-runs` (metrics deltas), and inspect the
   manifest's `candidate/pair/query_metrics` in each `run_manifest.json`.
 - `GET /api/stats` exposes per-endpoint timing/hits for exploitation noise.

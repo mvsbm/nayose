@@ -12,8 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY pyproject.toml README.md uv.lock ./
-COPY synthetic/ synthetic/
-COPY api/ api/
+COPY src/ src/
 COPY frontend/ frontend/
 RUN python -m venv /opt/venv \
     && /opt/venv/bin/pip install -U pip "uv==0.9.27" \
@@ -33,9 +32,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 curl s
     && useradd -m -u 10001 nayose
 WORKDIR /app
 COPY --from=builder /opt/venv /opt/venv
-COPY --from=builder /src/api ./api
+COPY --from=builder /src/src/api ./api
 COPY --from=builder /src/frontend ./frontend
-COPY --from=builder /src/synthetic ./synthetic
+COPY --from=builder /src/src/data_generation ./data_generation
 COPY --from=builder /src/pyproject.toml ./
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
