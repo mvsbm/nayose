@@ -1,3 +1,4 @@
+import { checkedKey } from "./core.js";
 import { translate } from "./i18n.js";
 import { MatchingState } from "./matching-state.js";
 import { readPreferences, writePreferences } from "./preferences.js";
@@ -25,6 +26,8 @@ export class Store {
     searchQuery = "";
     entitySelection = { id: "", records: [] };
     thresholdOverride = null;
+    decisionRevision = 0;
+    decisionConflict = false;
     runs = [];
     listeners = new Map();
     history = [];
@@ -45,6 +48,22 @@ export class Store {
     emit(key) {
         this.listeners.get(key)?.forEach((fn) => fn());
     }
+    setDecisionSnapshot(snapshot, notify = true) {
+        this.decisionRevision = snapshot.revision;
+        this.decisionConflict = false;
+        this.checked = new Set(snapshot.items.map((item) => checkedKey(this.run, item.left, item.right)));
+        if (notify) {
+            this.emit("checked");
+            this.emit("decisionConflict");
+        }
+    }
+    setDecisionConflict(conflict) {
+        this.decisionConflict = conflict;
+        this.emit("decisionConflict");
+    }
+    setDecisionRevision(revision) {
+        this.decisionRevision = revision;
+    }
     setThresholdOverride(overrides) {
         this.thresholdOverride = overrides;
         this.emit("thresholdOverride");
@@ -60,6 +79,8 @@ export class Store {
             this.entitySelection = { id: "", records: [] };
             this.searchQuery = "";
             this.thresholdOverride = null;
+            this.decisionRevision = 0;
+            this.decisionConflict = false;
         }
         this.run = id;
         this.emit("run");

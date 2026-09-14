@@ -71,12 +71,12 @@ export class MatchingState {
     this.changed();
     try {
       for (let attempt = 0; attempt < 300; attempt++) {
-        if (this.job.stage === "complete" || this.job.stage === "failed") return;
+        if (this.job.stage === "complete" || this.job.stage === "failed" || this.job.stage === "cancelled") return;
         const job = await port.recommendation(this.job.id);
         if (epoch !== this.epoch) return;
         this.job = job;
         this.changed();
-        if (job.stage === "complete" || job.stage === "failed") return;
+        if (job.stage === "complete" || job.stage === "failed" || job.stage === "cancelled") return;
         await new Promise((resolve) => setTimeout(resolve, 1000));
         if (epoch !== this.epoch) return;
       }

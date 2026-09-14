@@ -147,11 +147,15 @@ const mockPort = {
     return Promise.resolve({ kpis: [["candidate recall", run === "runB" ? 0.95 : 0.99], ["B3 F1", 0.96]], extras: {} });
   },
   savedDecisions: [],
+  decisionRevision: 0,
   loadDecisions() {
-    return Promise.resolve(this.savedDecisions);
+    return Promise.resolve({ items: this.savedDecisions, revision: this.decisionRevision });
   },
-  async saveDecisions(items) {
+  async saveDecisions(items, revision = this.decisionRevision) {
+    if (revision !== this.decisionRevision) throw new Error("decision_conflict");
     this.savedDecisions = items;
+    this.decisionRevision += 1;
+    return this.decisionRevision;
   },
   confusion() {
     return Promise.resolve({
@@ -446,6 +450,24 @@ test("server decisions restore checked state at boot (cross-machine persistence)
   await wait(100);
   const firstRow = document.querySelector("#view tbody tr");
   assert.ok(firstRow.classList.contains("checked"), "restored decision marked checked");
+});
+
+test("decision conflicts are visible and can reload the server revision", async () => {
+  mockPort.savedDecisions = [];
+  mockPort.decisionRevision = 0;
+  await boot();
+  window.location.hash = "#/review";
+  await wait(100);
+  mockPort.decisionRevision = 1;
+  document.querySelector("#view tbody button.check").click();
+  await wait(700);
+  assert.ok(document.querySelector("#decision-conflict"), "conflict notice was not rendered");
+  document.querySelector("#decision-reload").click();
+  await wait(100);
+  assert.equal(document.querySelector("#decision-conflict"), null, "reload did not clear conflict");
+  await wait(600);
+  mockPort.decisionRevision = 0;
+  mockPort.savedDecisions = [];
 });
 
 test("cross-run diff view renders metrics delta table", async () => {

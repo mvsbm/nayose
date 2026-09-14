@@ -88,7 +88,7 @@ export interface JobProgress {
 export interface MatchJob {
   id: string;
   run_id: string;
-  stage: "queued" | "validating" | "loading" | "retrieving" | "scoring" | "aggregating" | "complete" | "failed";
+  stage: "queued" | "validating" | "loading" | "retrieving" | "scoring" | "aggregating" | "complete" | "failed" | "cancelled";
   elapsed_ms: number;
   timeline: Array<{ stage: string; elapsed_ms: number }>;
   progress?: JobProgress | null;
@@ -421,9 +421,14 @@ export interface SystemPort {
   health(): Promise<HealthInfo>;
 }
 
+export interface DecisionSnapshot {
+  items: Array<{ left: string; right: string; ts?: string; reviewer?: string }>;
+  revision: number;
+}
+
 export interface DecisionPort {
-  loadDecisions(): Promise<Array<{ left: string; right: string }>>;
-  saveDecisions(items: Array<{ left: string; right: string; ts: string; reviewer?: string }>): Promise<void>;
+  loadDecisions(): Promise<DecisionSnapshot>;
+  saveDecisions(items: Array<{ left: string; right: string; ts: string; reviewer?: string }>, revision: number): Promise<number>;
 }
 
 export interface RecommendationPort {

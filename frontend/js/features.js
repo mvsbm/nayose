@@ -4,7 +4,7 @@ import { mountEntityDetail } from "./entity-view.js";
 import { asNumber, checkedKey, clamp01, diffFields } from "./core.js";
 import { esc, str } from "./schema.js";
 import { createFlipAnimator } from "./shared.js";
-import { createViewScope } from "./lifecycle.js";
+import { createViewScope, disposable } from "./lifecycle.js";
 import { bindPanelSplit } from "./panel-layout.js";
 const COMPARE_SPLIT_DEFAULT = 440;
 const COMPARE_SPLIT_MIN = 280;
@@ -31,7 +31,7 @@ async function mountView(el, spec) {
 export async function mountSearch(el, port, store, scope) {
     await mountMatchingSearch(el, port, store, scope);
 }
-export async function mountReview(el, port, store) {
+export async function mountReview(el, port, store, viewScope) {
     let offset = 0;
     let minP = 0;
     let pageSize = 200;
@@ -71,6 +71,7 @@ export async function mountReview(el, port, store) {
         <button type="button" class="more" id="undo">${esc(store.t("undo"))}</button>
         <button type="button" class="more" id="more">${esc(store.t("next200"))}</button></div>
       <p class="members" id="review-record-help">${esc(store.t("reviewRecordHelp"))}</p>
+      ${store.decisionConflict ? `<div class="notice" id="decision-conflict" role="alert"><strong>${esc(store.t("decisionConflict"))}</strong><p>${esc(store.t("decisionConflictHelp"))}</p><button type="button" class="more" id="decision-reload">${esc(store.t("decisionReload"))}</button></div>` : ""}
       <p>${esc(store.t("reviewHelp"))}</p>
       ${histogramHtml(page)}
       <table><caption class="members">${esc(store.t("reviewHelp"))}</caption><thead><tr><th>${esc(store.t("recorded"))}</th><th>${esc(store.t("leftRecord"))}</th><th>${esc(store.t("rightRecord"))}</th><th>${esc(store.t("score"))}</th><th>exact</th></tr></thead>
@@ -138,8 +139,22 @@ export async function mountReview(el, port, store) {
                 filterEntity = "";
                 location.hash = "#/review";
             });
+            el.querySelector("#decision-reload")?.addEventListener("click", async () => {
+                const button = el.querySelector("#decision-reload");
+                if (button)
+                    button.disabled = true;
+                try {
+                    store.setDecisionSnapshot(await port.loadDecisions());
+                    await refresh(false);
+                }
+                catch {
+                    if (button)
+                        button.disabled = false;
+                }
+            });
         },
     });
+    viewScope?.add(disposable(store.on("decisionConflict", () => void refresh(false))));
     await refresh(true);
 }
 export async function mountConfusion(el, port, store) {
@@ -194,7 +209,7 @@ export async function mountMetrics(el, port, store) {
         const fmt = (v) => (unit === "percent" ? `${(v * 100).toFixed(1)}%` : v.toFixed(4));
         return `<div class="panel">${crumb(store, "#/metrics", store.t("metrics"))}
     <div class="card toolbar"><label class="members">${esc(store.t("units"))}<select id="met-unit"><option value="percent" ${unit === "percent" ? "selected" : ""}>%</option><option value="ratio" ${unit === "ratio" ? "selected" : ""}>0–1</option></select></label></div>
-    <div class="kpi">${data.kpis.map(([l, v]) => `<div class="card"><div class="v">${fmt(v)}</div><div class="l">${esc(l)}</div>${bar(v)}</div>`).join("")}</div>
+    <div class="kpi" id="metrics-kpis">${data.kpis.map(([l, v]) => `<div class="card"><div class="v">${fmt(v)}</div><div class="l">${esc(l)}</div>${bar(v)}</div>`).join("")}</div>
     <div class="card"><h3>${esc(store.t("entities"))}</h3><div class="v" style="font-size:1.4rem">${(data.extras.entities ?? 0).toLocaleString()}</div>
       <div class="members">${esc(store.t("edgesSummary", { n: data.extras.edges ?? 0, rate: `${((data.extras.singleton ?? 0) * 100).toFixed(1)}%` }))}</div></div></div>`;
     };

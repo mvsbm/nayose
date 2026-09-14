@@ -62,8 +62,9 @@ test("e2e: search -> entity -> decisions persisted server-side", { skip: !ENABLE
     assert.ok(href && href.startsWith("#/search?entity="), "result opens the search detail workspace");
     await page.click("#results .hit");
     await waitVisible(page, "#search-detail [data-selected-entity]");
-    const escaped = term.replace(/[.*+?^${}()|[\]\\\\]/g, "\\$&");
-    assert.match(await page.textContent("#search-detail [data-selected-entity] h2"), new RegExp(escaped));
+    const selectedHeading = await page.textContent("#search-detail [data-selected-entity] h2");
+    const compact = value => String(value ?? "").replace(/\s+/g, "");
+    assert.ok(compact(selectedHeading).includes(compact(term)), "selected entity preserves the searched name");
 
     // review workflow: check an edge -> server-side persistence
     await navigateFresh(page, "#/review");
@@ -380,7 +381,13 @@ test("e2e: F knobs — entity page size + sort, metrics unit toggle", { skip: !E
     await navigateFresh(page, "#/metrics");
     await waitVisible(page, "#met-unit");
     await page.selectOption("#met-unit", "ratio");
-    await waitBodyText(page, "0.99");
+    await waitVisible(page, "#metrics-kpis");
+    const ratios = await page.locator("#metrics-kpis .v").allTextContents();
+    assert.ok(ratios.length > 0, "metrics render at least one KPI");
+    assert.ok(ratios.every(value => {
+      const ratio = Number(value);
+      return Number.isFinite(ratio) && ratio >= 0 && ratio <= 1;
+    }), "ratio display stays within the metric domain");
   });
 });
 

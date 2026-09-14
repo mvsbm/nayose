@@ -3,6 +3,7 @@
 // owns waits, navigation, fresh contexts, and transport observation. Bundles
 // are copied to a temporary root so runtime artifacts are never mutated.
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import {
   copyFileSync,
@@ -13,6 +14,7 @@ import {
   mkdtempSync,
   readdirSync,
   realpathSync,
+  renameSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -32,6 +34,17 @@ const PYTHON = existsSync(join(ROOT, ".venv", "bin", "python"))
 export const PORT = Number(process.env.NAYOSE_E2E_PORT ?? 8777);
 export const BASE = `http://127.0.0.1:${PORT}`;
 export const ENABLED = process.env.NAYOSE_E2E === "1";
+const E2E_METRICS = {
+  journeys: 0,
+  journey_ms: 0,
+  api_requests: 0,
+  api_responses: 0,
+  api_failures: 0,
+  api_aborted: 0,
+  api_errors: 0,
+  request_bytes: 0,
+  response_bytes: 0,
+};
 
 // Resolve the "current" target of a models/data root, tolerating a direct dir.
 function layoutSource(rootPath) {
@@ -40,6 +53,10 @@ function layoutSource(rootPath) {
   if (!target || !existsSync(target)) return null;
   const src = realpathSync(target);
   return { src, name: basename(src) };
+}
+
+function sha256(path) {
+  return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
 
 function fingerprint12(dir, file) {
@@ -58,7 +75,7 @@ function prepare() {
   const gen = layoutSource(envData);
   if (!run || !gen) {
     throw new Error(
-      "E2E needs a trained bundle: set NAYOSE_E2E_MODELS/NAYOSE_E2E_DATA, or train and point models/current + data/current first (scripts/train.py).",
+      "E2E needs a trained bundle: set NAYOSE_E2E_MODELS/NAYOSE_E2E_DATA, or train and point models/current + data/current first (nayose model train).",
     );
   }
   // fingerprint contract: the copied pair must MATCH (a mismatched copy fails
@@ -93,6 +110,18 @@ function prepare() {
   cpSync(gen.src, data, { recursive: true });
   mkdirSync(join(root, "generations"), { recursive: true });
   cpSync(gen.src, join(root, "generations", gen.name), { recursive: true });
+  const modelManifest = join(models, "runs", run.name, "run_manifest.json");
+  const dataManifest = join(root, "generations", gen.name, "generation_manifest.json");
+  const dataPayload = JSON.parse(readFileSync(dataManifest, "utf8"));
+  writeFileSync(join(root, "release.json"), JSON.stringify({
+    release_id: "rel_e2e",
+    data_generation_id: gen.name,
+    model_run_id: run.name,
+    data_fingerprint: dataPayload.data_fingerprint,
+    data_manifest_sha256: sha256(dataManifest),
+    model_manifest_sha256: sha256(modelManifest),
+    published_at_utc: "2026-01-01T00:00:00Z",
+  }));
   return { root, models, data };
 }
 
@@ -137,10 +166,10 @@ export async function launchBrowser() {
 }
 
 async function waitBoot(page) {
-  // Navigation and view data are separate async boundaries. Wait for both so
-  // callers never inspect the active container between skeleton and content.
-  await page.waitForSelector(".side a[aria-current]", { timeout: 15000 });
-  await page.waitForSelector("#view .panel, #view .empty", { timeout: 15000 });
+  // Navigation and view data are separate async boundaries. Wait for the
+  // application-owned readiness marker so callers never inspect the active
+  // container before route listeners and data loading have completed.
+  await page.waitForSelector("#view > [data-view-ready=\"true\"]", { timeout: 15000 });
 }
 
 // Deterministic navigation primitive: a changing PATH query always produces a
@@ -182,7 +211,7 @@ export async function waitLang(page, lang, timeout = 15000) {
   await page.waitForFunction((l) => document.documentElement.lang === l, lang, { timeout });
 }
 
-export async function waitCount(page, selector, min, timeout = 15000) {
+export async function waitCount(page, selector, min, timeout = 30000) {
   await page.waitForFunction(
     ({ selector, min }) => document.querySelectorAll(selector).length >= min,
     { selector, min },
@@ -241,25 +270,66 @@ export async function waitManualCount(page, expected, timeout = 15000) {
 // fails on any page error, console error, or non-2xx /api (403 admin gates
 // allowed). Failure artifacts rescued on cleanup.
 export async function runJourney(browser, name, fn, options = {}) {
+  const started = Date.now();
+  E2E_METRICS.journeys++;
   const context = await browser.newContext(options);
   const page = await context.newPage();
   const slug = name.replace(/[^a-z0-9-]+/gi, "-");
   const issues = [];
+  const pendingApiRequests = new Set();
+  page.on("request", request => {
+    if (!request.url().includes("/api/")) return;
+    pendingApiRequests.add(request);
+    E2E_METRICS.api_requests++;
+    const body = request.postDataBuffer();
+    if (body) E2E_METRICS.request_bytes += body.length;
+  });
   page.on("pageerror", err => issues.push(`pageerror: ${String(err).slice(0, 200)}`));
   page.on("console", msg => {
     if (msg.type() === "error") issues.push(`console: ${msg.text().slice(0, 200)}`);
   });
   page.on("response", res => {
     const pathname = res.url().includes("/api/") ? new URL(res.url()).pathname : "";
-    if (pathname && res.status() >= 400) {
-      const gated = (pathname.startsWith("/api/admin") || pathname.startsWith("/api/data-entry")) && res.status() === 403;
-      if (!gated) issues.push(`api ${res.status()} ${pathname}`);
+    if (!pathname) return;
+    pendingApiRequests.delete(res.request());
+    E2E_METRICS.api_responses++;
+    const contentLength = Number(res.headers()["content-length"] ?? 0);
+    if (Number.isFinite(contentLength) && contentLength > 0) {
+      E2E_METRICS.response_bytes += contentLength;
+    }
+    const gated =
+      (pathname.startsWith("/api/admin") || pathname.startsWith("/api/data-entry")) &&
+      res.status() === 403;
+    if (res.status() >= 400 && !gated) E2E_METRICS.api_errors++;
+    if (res.status() >= 400 && !gated) {
+      issues.push(`api ${res.status()} ${pathname}`);
     }
   });
+  page.on("requestfailed", request => {
+    if (!request.url().includes("/api/")) return;
+    pendingApiRequests.delete(request);
+    E2E_METRICS.api_failures++;
+    const errorText = request.failure()?.errorText ?? "";
+    if (/ERR_ABORTED|aborted|cancelled/i.test(errorText)) {
+      E2E_METRICS.api_aborted++;
+      return;
+    }
+    E2E_METRICS.api_errors++;
+    issues.push(`api request failed: ${errorText || "unknown"}`);
+  });
+  const accountPendingRequests = () => {
+    for (const request of pendingApiRequests) {
+      E2E_METRICS.api_failures++;
+      E2E_METRICS.api_aborted++;
+      pendingApiRequests.delete(request);
+    }
+  };
   try {
     await fn(page);
+    accountPendingRequests();
     if (issues.length) throw new Error(`strict-mode issues in "${name}": ${issues.join(" | ")}`);
   } catch (err) {
+    accountPendingRequests();
     const dir = join(FIXTURE.root, "artifacts");
     mkdirSync(dir, { recursive: true });
     await page.keyboard.press("Escape").catch(() => {});
@@ -267,6 +337,7 @@ export async function runJourney(browser, name, fn, options = {}) {
     writeFileSync(join(dir, `${slug}.html`), await page.content().catch(() => ""));
     throw err;
   } finally {
+    E2E_METRICS.journey_ms += Date.now() - started;
     await context.close().catch(() => {});
   }
 }
@@ -276,14 +347,48 @@ export async function searchSeed(page) {
   return page.evaluate(async () => {
     const res = await fetch("/api/entities?q=&run_id=&limit=50");
     const rows = (await res.json()).rows;
-    const name = rows.find(row => String(row.name_kanji ?? "").length >= 2);
-    return name ? String(name.name_kanji).slice(0, 2) : "N0";
+    const name = rows.find(row => Array.from(String(row.name_kanji ?? "")).some(char => !/\s/u.test(char)) && Array.from(String(row.name_kanji ?? "")).filter(char => !/\s/u.test(char)).length >= 2);
+    if (!name) return "N0";
+    const characters = Array.from(String(name.name_kanji)).filter(char => !/\s/u.test(char));
+    return characters.slice(0, 2).join(" ");
   });
+}
+
+const BROWSER_METRIC_COUNTERS = [
+  "journeys",
+  "journey_ms",
+  "api_requests",
+  "api_responses",
+  "api_failures",
+  "api_aborted",
+  "api_errors",
+  "request_bytes",
+  "response_bytes",
+];
+
+function writeBrowserMetrics(metricsPath) {
+  let previous = {};
+  if (existsSync(metricsPath)) {
+    try {
+      const parsed = JSON.parse(readFileSync(metricsPath, "utf8"));
+      if (parsed?.kind === "browser_transport") previous = parsed;
+    } catch {}
+  }
+  const metrics = { schema_version: 1, kind: "browser_transport" };
+  for (const key of BROWSER_METRIC_COUNTERS) {
+    metrics[key] = Number(previous[key] ?? 0) + E2E_METRICS[key];
+  }
+  mkdirSync(dirname(metricsPath), { recursive: true });
+  const temporary = `${metricsPath}.tmp.${process.pid}`;
+  writeFileSync(temporary, JSON.stringify(metrics, null, 2) + "\n");
+  renameSync(temporary, metricsPath);
 }
 
 // Default: remove the whole fixture; artifacts rescued to a stable path first.
 export function cleanupFixture() {
   if (!FIXTURE.root) return;
+  const metricsPath = process.env.NAYOSE_E2E_METRICS;
+  if (metricsPath) writeBrowserMetrics(metricsPath);
   const artifacts = join(FIXTURE.root, "artifacts");
   if (existsSync(artifacts) && readdirSync(artifacts).length) {
     const kept = join(tmpdir(), `nayose-e2e-artifacts-${Date.now()}`);

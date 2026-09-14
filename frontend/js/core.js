@@ -23,13 +23,13 @@ export async function pollJob(getStatus, initial, timeoutSec = 300, onUpdate, si
     const deadline = Date.now() + timeoutSec * 1000;
     onUpdate?.(job);
     while (Date.now() < deadline && !signal?.aborted) {
-        if (job.stage === "complete" || job.stage === "failed")
+        if (job.stage === "complete" || job.stage === "failed" || job.stage === "cancelled")
             return job;
         job = await getStatus();
         if (signal?.aborted)
             return job;
         onUpdate?.(job);
-        if (job.stage === "complete" || job.stage === "failed")
+        if (job.stage === "complete" || job.stage === "failed" || job.stage === "cancelled")
             return job;
         await waitForPoll(signal);
     }

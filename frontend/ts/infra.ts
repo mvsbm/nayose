@@ -6,6 +6,7 @@ import {
   AdminCapability,
   AdminState,
   ConfusionData,
+  DecisionSnapshot,
   DatasetGeneration,
   DatasetRows,
   DatasetSummary,
@@ -30,6 +31,7 @@ import {
 } from "./port.js";
 import { adaptDatasetRows } from "./dataset-adapter.js";
 import { ApiError } from "./api-error.js";
+import { fetchJson } from "./http.js";
 
 function adaptSearchResult(data: unknown): SearchResult {
   if (!data || typeof data !== "object" || !Array.isArray((data as { rows?: unknown }).rows)) throw new ApiError("search_schema_mismatch");
@@ -71,36 +73,6 @@ function adaptGenerationPreview(data: unknown): GenerationPreview {
     throw new ApiError("preview_schema_mismatch");
   }
   return preview as GenerationPreview;
-}
-
-async function fetchJson(path: string, init?: RequestInit): Promise<unknown> {
-  const controller = new AbortController();
-  const externalSignal = init?.signal;
-  const abortFromCaller = (): void => controller.abort();
-  if (externalSignal?.aborted) controller.abort();
-  else externalSignal?.addEventListener("abort", abortFromCaller, { once: true });
-  const timeout = setTimeout(() => controller.abort(), 20000);
-  const headers = new Headers(init?.headers ?? {});
-  // Attach the deployment token when present. Views do not handle auth.
-  try {
-    const token = localStorage.getItem("nayose.token");
-    if (token) headers.set("Authorization", `Bearer ${token}`);
-  } catch { /* storage unavailable: request stays unauthenticated */ }
-  try {
-    const res = await fetch(path, { ...init, headers, signal: controller.signal });
-    if (!res.ok) {
-      const detail = await res.json().catch(() => null);
-      throw new ApiError(typeof detail?.detail === "string" ? detail.detail : `HTTP ${res.status}`);
-    }
-    return await res.json();
-  } catch (err) {
-    if (externalSignal?.aborted) throw new ApiError("request_cancelled");
-    if (controller.signal.aborted) throw new ApiError("request_timeout");
-    throw err;
-  } finally {
-    clearTimeout(timeout);
-    externalSignal?.removeEventListener("abort", abortFromCaller);
-  }
 }
 
 export class ApiAdapter implements WorkbenchPort {
@@ -225,7 +197,7 @@ export class ApiAdapter implements WorkbenchPort {
     );
   }
   health(): Promise<HealthInfo> {
-    return fetchJson("/api/health").then(d => d as HealthInfo);
+    return fetchJson("/api/health/details").then(d => d as HealthInfo);
   }
   matchSample(): Promise<{ record: Record<string, string> }> {
     return fetchJson(`/api/match-sample?run_id=${encodeURIComponent(this.runId)}`).then(d => d as { record: Record<string, string> });
@@ -270,22 +242,25 @@ export class ApiAdapter implements WorkbenchPort {
       body: JSON.stringify({ run_id: this.runId, record }),
     }).then((d) => d as RecommendResult);
   }
-  loadDecisions(): Promise<Array<{ left: string; right: string }>> {
+  loadDecisions(): Promise<DecisionSnapshot> {
     return fetchJson(`/api/decisions?run_id=${encodeURIComponent(this.runId)}`).then(
-      (d) => (d as { items: Array<{ left: string; right: string }> }).items,
+      (d) => d as DecisionSnapshot,
     );
   }
-  async saveDecisions(items: Array<{ left: string; right: string; ts: string; reviewer?: string }>): Promise<void> {
+  saveDecisions(
+    items: Array<{ left: string; right: string; ts: string; reviewer?: string }>,
+    revision: number,
+  ): Promise<number> {
     const reviewer = items.find((i) => i.reviewer)?.reviewer ?? "";
-    const res = await fetch("/api/decisions", {
+    return fetchJson("/api/decisions", {
       method: "PUT",
       headers: { "Content-Type": "application/json", ...(reviewer ? { "X-Reviewer": reviewer } : {}) },
-      body: JSON.stringify({ run_id: this.runId, items }),
+      body: JSON.stringify({ run_id: this.runId, items, revision }),
+    }).then((data) => {
+      const detail = data as { revision?: number };
+      if (typeof detail.revision !== "number") throw new ApiError("invalid_decision_revision");
+      return detail.revision;
     });
-    if (!res.ok) {
-      const detail = await res.json().catch(() => null);
-      throw new ApiError((detail && detail.detail) || res.statusText);
-    }
   }
 }
 
@@ -433,11 +408,14 @@ export class MemoProxy implements WorkbenchPort {
   recommend(record: Record<string, string>): Promise<RecommendResult> {
     return this.inner.recommend(record);
   }
-  loadDecisions(): Promise<Array<{ left: string; right: string }>> {
+  loadDecisions(): Promise<DecisionSnapshot> {
     return this.inner.loadDecisions();
   }
-  saveDecisions(items: Array<{ left: string; right: string; ts: string; reviewer?: string }>): Promise<void> {
-    return this.inner.saveDecisions(items);
+  saveDecisions(
+    items: Array<{ left: string; right: string; ts: string; reviewer?: string }>,
+    revision: number,
+  ): Promise<number> {
+    return this.inner.saveDecisions(items, revision);
   }
 }
 

@@ -1,6 +1,8 @@
 // Minimal observable store with reversible decision updates.
 // Views subscribe; mutations are the only writers of shared state.
 import { Storage } from "./port.js";
+import type { DecisionSnapshot } from "./port.js";
+import { checkedKey } from "./core.js";
 import { Locale, translate } from "./i18n.js";
 import { MatchingState } from "./matching-state.js";
 import { readPreferences, writePreferences, type Preferences } from "./preferences.js";
@@ -29,6 +31,7 @@ export interface StoreEvents {
   matching: void;
   entitySelection: void;
   thresholdOverride: void;
+  decisionConflict: void;
 }
 
 type Listener = () => void;
@@ -52,6 +55,8 @@ export class Store implements Storage {
   searchQuery = "";
   entitySelection: { id: string; records: string[] } = { id: "", records: [] };
   thresholdOverride: { auto: number; review: number } | null = null;
+  decisionRevision = 0;
+  decisionConflict = false;
   runs: Array<{ id: string; current?: boolean; fingerprint?: string }> = [];
 
   private listeners = new Map<keyof StoreEvents, Set<Listener>>();
@@ -75,6 +80,23 @@ export class Store implements Storage {
     this.listeners.get(key)?.forEach((fn) => fn());
   }
 
+  setDecisionSnapshot(snapshot: DecisionSnapshot, notify = true): void {
+    this.decisionRevision = snapshot.revision;
+    this.decisionConflict = false;
+    this.checked = new Set(snapshot.items.map((item) => checkedKey(this.run, item.left, item.right)));
+    if (notify) {
+      this.emit("checked");
+      this.emit("decisionConflict");
+    }
+  }
+  setDecisionConflict(conflict: boolean): void {
+    this.decisionConflict = conflict;
+    this.emit("decisionConflict");
+  }
+  setDecisionRevision(revision: number): void {
+    this.decisionRevision = revision;
+  }
+
   setThresholdOverride(overrides: { auto: number; review: number } | null): void {
     this.thresholdOverride = overrides;
     this.emit("thresholdOverride");
@@ -90,6 +112,8 @@ export class Store implements Storage {
       this.entitySelection = { id: "", records: [] };
       this.searchQuery = "";
       this.thresholdOverride = null;
+      this.decisionRevision = 0;
+      this.decisionConflict = false;
     }
     this.run = id;
     this.emit("run");

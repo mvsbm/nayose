@@ -5,7 +5,7 @@ import { Store } from "./store.js";
 import type { Density, Theme } from "./store.js";
 import { applyAppearance } from "./appearance.js";
 import { WorkbenchPort } from "./port.js";
-import { checkedKey, parseRoute } from "./core.js";
+import { parseRoute } from "./core.js";
 import { RunInfo } from "./shared.js";
 import {
   mountCompare,
@@ -34,7 +34,7 @@ export interface BootOptions {
 type ViewRenderer = (view: HTMLElement, port: WorkbenchPort, store: Store, args: string[], scope: ViewScope) => Promise<void>;
 const VIEWS: Partial<Record<RouteName, ViewRenderer>> = {
   search: (v, p, s, _args, scope) => mountSearch(v, p, s, scope),
-  review: (v, p, s) => mountReview(v, p, s),
+  review: (v, p, s, _args, scope) => mountReview(v, p, s, scope),
   confusion: (v, p, s) => mountConfusion(v, p, s),
   metrics: (v, p, s) => mountMetrics(v, p, s),
   entities: (v, p, s, _args, scope) => mountEntities(v, p, s, scope),
@@ -115,6 +115,7 @@ export async function boot(opts: BootOptions = {}): Promise<{ destroy: () => voi
     view.replaceChildren(target);
     if (!store.runs.length) {
       await paint(`<div class="empty"><h2>${esc(store.t("noRun"))}</h2><p>${esc(store.t("noRunHelp"))}</p></div>`);
+      target.dataset.viewReady = "true";
       return;
     }
     const route = parseRoute(location.hash);
@@ -133,10 +134,12 @@ export async function boot(opts: BootOptions = {}): Promise<{ destroy: () => voi
     const render = VIEWS[route.name];
     try {
       await (render ? render(target, port, store, route.args, activeViewScope!) : mountSearch(target, port, store, activeViewScope!));
+      if (!lifetime.isDisposed && ticket === navigation) target.dataset.viewReady = "true";
     } catch (err) {
       if (lifetime.isDisposed || ticket !== navigation) return;
       target.innerHTML = `<div class="empty"><p>${esc(store.t("error"))}: ${esc(store.t(String((err as Error).message ?? err)))}</p><button class="more" id="retry">${esc(store.t("retry"))}</button></div>`;
       target.querySelector("#retry")?.addEventListener("click", () => void navigate());
+      target.dataset.viewReady = "true";
     }
   };
   const onHashChange = (): void => { void navigate(); };
@@ -216,9 +219,8 @@ export async function boot(opts: BootOptions = {}): Promise<{ destroy: () => voi
   const persistChecked = (): void => store.write("nayose.checked", JSON.stringify([...store.checked]));
   try {
     const remote = await port.loadDecisions();
-    if (remote.length) {
-      store.checked = new Set(remote.map((d) => checkedKey(store.run, d.left, d.right)));
-    }
+    store.setDecisionRevision(remote.revision);
+    if (remote.items.length) store.setDecisionSnapshot(remote, false);
   } catch {
     /* server unreachable -> keep localStorage state */
   }
@@ -233,10 +235,17 @@ export async function boot(opts: BootOptions = {}): Promise<{ destroy: () => voi
         const parts = key.split("|");
         return { left: parts[1] ?? "", right: parts[2] ?? "", ts: now, reviewer: store.reviewer };
       });
+      if (store.decisionConflict) return;
       decisionSave = decisionSave
         .catch(() => {})
-        .then(() => port.saveDecisions(items))
-        .catch(() => {});
+        .then(() => port.saveDecisions(items, store.decisionRevision))
+        .then((revision) => { store.setDecisionRevision(revision); })
+        .catch((error: unknown) => {
+          if (error instanceof Error && error.message === "decision_conflict") {
+            store.setDecisionConflict(true);
+            console.error("Decision update rejected because the review changed elsewhere");
+          }
+        });
     }, 500);
   };
   lifetime.add(disposable(store.on("checked", persistDecisions)));

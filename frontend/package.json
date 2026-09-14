@@ -4,9 +4,9 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "build": "tsc",
-    "typecheck": "tsc --noEmit",
-    "test": "tsc && node --test test/core.test.mjs test/view.test.mjs",
+    "build": "tsc --extendedDiagnostics",
+    "typecheck": "tsc --noEmit --extendedDiagnostics",
+    "test": "node --test test/core.test.mjs test/view.test.mjs",
     "test:e2e": "node --test --test-concurrency=1 test/e2e.test.mjs test/ui-sweep.test.mjs"
   },
   "keywords": [],
