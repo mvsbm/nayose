@@ -20,7 +20,9 @@ from api.matching_components import (
     empty_result,
 )
 from api.normalize import normalize_record
+from api.operational_store import OperationalStore
 from api.retrieval import BundleRetriever
+from api.telemetry import Stats
 
 LOGGER = logging.getLogger(__name__)
 
@@ -39,6 +41,11 @@ class ExplainedMatcher:
         engine = load_engine(model_dir=str(run_dir), data_dir=str(data_dir))
         manifest = json.loads((run_dir / "run_manifest.json").read_text(encoding="utf-8"))
         return cls(engine, BundleRetriever(engine, manifest, run_dir))
+
+    def set_exact_mode(self, mode: str) -> None:
+        setter = getattr(self.retriever, "set_exact_mode", None)
+        if setter is not None:
+            setter(mode)
 
     def close(self) -> None:
         close = getattr(self.retriever, "close", None)
@@ -126,11 +133,26 @@ class ExplainedMatcher:
 class RecommendationService:
     """Coordinate the engine session and bounded recommendation jobs."""
 
-    def __init__(self, repo: Any, data_dir: Path, loader: Callable = ExplainedMatcher.load):
+    def __init__(
+        self,
+        repo: Any,
+        data_dir: Path,
+        loader: Callable = ExplainedMatcher.load,
+        exact_mode: str = "hybrid",
+        operational_store: OperationalStore | None = None,
+        stats: Stats | None = None,
+    ):
         from api.matching_runtime import EngineSession, MatchingJobRunner
 
-        self.session = EngineSession(repo, data_dir, loader)
-        self.jobs = MatchingJobRunner(self.session)
+        self.session = EngineSession(
+            repo,
+            data_dir,
+            loader,
+            exact_mode=exact_mode,
+            operational_store=operational_store,
+            stats=stats,
+        )
+        self.jobs = MatchingJobRunner(self.session, operational_store=operational_store)
 
     @property
     def loader(self) -> Callable:
@@ -145,6 +167,9 @@ class RecommendationService:
 
     def reset_engine(self) -> None:
         self.session.reset_engine()
+
+    def set_exact_mode(self, mode: str) -> None:
+        self.session.set_exact_mode(mode)
 
     def search_entities(
         self, run_id: str, text: str, limit: int = 20
@@ -163,6 +188,9 @@ class RecommendationService:
 
     def status(self, job_id: str) -> dict[str, Any]:
         return self.jobs.status(job_id)
+
+    def cancel(self, job_id: str) -> dict[str, Any]:
+        return self.jobs.cancel(job_id)
 
     def wait(self, job_id: str, timeout: float) -> None:
         self.jobs.wait(job_id, timeout)

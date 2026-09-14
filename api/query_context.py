@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -11,8 +12,17 @@ from typing import Any
 
 import duckdb
 
-from api.release import data_generation_for_fingerprint, manifest_fingerprint
+from api.operational_store import OperationalStore
+from api.release import (
+    ReleaseError,
+    SnapshotResolver,
+    data_generation_for_fingerprint,
+    manifest_fingerprint,
+)
 from api.repositories import RunRepository
+from api.request_context import bind_snapshot
+from api.request_context import snapshot_for as request_snapshot_for
+from api.telemetry import Stats
 
 MAX_ROWS = 10_000
 MAX_CACHE = 96
@@ -46,6 +56,16 @@ ENTITY_SEARCH_COLUMNS = (
     "email",
     "nayose_id",
 )
+_DANGEROUS_SQL = re.compile(
+    r"\b(?:attach|copy|create|delete|drop|export|import|install|insert|load|pragma|update)\b",
+    re.IGNORECASE,
+)
+_TABLE_PATH = re.compile(
+    r"(?:\bfrom\s+|\bjoin\s+|\bread_parquet\s*\(\s*)['\"]([^'\"]+)['\"]",
+    re.IGNORECASE,
+)
+_READ_FUNCTION = re.compile(r"\bread_([a-z_][a-z0-9_]*)\s*\(", re.IGNORECASE)
+
 SEARCH_STOPWORDS = frozenset(
     {
         "a",
@@ -68,6 +88,28 @@ SEARCH_STOPWORDS = frozenset(
 )
 
 
+def validate_debug_sql(sql: str) -> None:
+    statement = sql.strip()
+    if not statement or len(statement) > 8_000:
+        raise ValueError("debug SQL is empty or too long")
+    if ";" in statement:
+        raise ValueError("debug SQL must contain one statement")
+    if not re.match(r"^(?:select|with)\b", statement, re.IGNORECASE):
+        raise ValueError("debug SQL must be a SELECT or WITH query")
+    if _DANGEROUS_SQL.search(statement):
+        raise ValueError("debug SQL contains a disabled operation")
+    read_functions = {name.casefold() for name in _READ_FUNCTION.findall(statement)}
+    if read_functions - {"parquet"}:
+        raise ValueError("debug SQL may read parquet only")
+    if "read_parquet" in statement.casefold() and not _TABLE_PATH.search(statement):
+        raise ValueError("debug SQL parquet paths must be literal bundle/ or data/ paths")
+    for path in _TABLE_PATH.findall(statement):
+        if not (path.startswith("bundle/") or path.startswith("data/")):
+            raise ValueError("debug SQL paths must use bundle/ or data/ roots")
+        if ".." in Path(path).parts:
+            raise ValueError("debug SQL paths may not contain parent traversal")
+
+
 class BundleSnapshotError(RuntimeError):
     """Raised when a model run cannot be paired with an immutable data generation."""
 
@@ -80,14 +122,28 @@ class BundleSnapshot:
     run_dir: Path
     data_dir: Path
     data_fingerprint: str
+    release_id: str = ""
+    data_manifest_sha256: str = ""
+    model_manifest_sha256: str = ""
 
 
 class BundleReader:
     """Resolve bundles and provide bounded, thread-safe read caching."""
 
-    def __init__(self, repo: RunRepository, data_dir: Path):
+    def __init__(
+        self,
+        repo: RunRepository,
+        data_dir: Path,
+        operational_store: OperationalStore | None = None,
+        stats: Stats | None = None,
+    ):
         self.repo = repo
         self.data_dir = data_dir
+        self._stats = stats
+        catalog = getattr(repo, "release_catalog", None)
+        self._resolver = (
+            SnapshotResolver(catalog, operational_store) if catalog is not None else None
+        )
         self._cache: dict[str, tuple[float, Any]] = {}
         self._cache_errors: dict[str, tuple[float, BaseException]] = {}
         self._cache_inflight: dict[str, Event] = {}
@@ -135,7 +191,34 @@ class BundleReader:
         return value
 
     def snapshot(self, run_id: str) -> BundleSnapshot:
-        run_dir = self.repo.resolve(run_id)
+        requested = run_id.strip()
+        cached = request_snapshot_for(requested)
+        if cached is not None:
+            return BundleSnapshot(
+                cached.model_run_id,
+                cached.model_dir,
+                cached.data_dir,
+                cached.data_fingerprint,
+                cached.release_id,
+                cached.data_manifest_sha256,
+                cached.model_manifest_sha256,
+            )
+        if self._resolver is not None:
+            try:
+                release = self._resolver.resolve(requested)
+            except ReleaseError as exc:
+                raise BundleSnapshotError(str(exc)) from exc
+            bind_snapshot(requested, release)
+            return BundleSnapshot(
+                release.model_run_id,
+                release.model_dir,
+                release.data_dir,
+                release.data_fingerprint,
+                release.release_id,
+                release.data_manifest_sha256,
+                release.model_manifest_sha256,
+            )
+        run_dir = self.repo.resolve(requested)
         fingerprint = manifest_fingerprint(run_dir)
         if not fingerprint:
             raise BundleSnapshotError("run manifest with data fingerprint is required")
@@ -151,22 +234,43 @@ class BundleReader:
 
     def open(self, run_id: str) -> tuple[Any, BundleSnapshot]:
         snapshot = self.snapshot(run_id)
-        return duckdb.connect(), snapshot
+        started = time.perf_counter()
+        try:
+            connection = duckdb.connect()
+        except BaseException:
+            self._record("duckdb.connect", started, error=True)
+            raise
+        self._record("duckdb.connect", started)
+        return connection, snapshot
+
+    def _record(self, name: str, started: float, *, error: bool = False) -> None:
+        if self._stats is not None:
+            self._stats.record(name, time.perf_counter() - started, error=error)
 
     def run_sql(self, run_id: str, sql: str) -> dict[str, Any]:
+        validate_debug_sql(sql)
+        started = time.perf_counter()
         connection, snapshot = self.open(run_id)
+        error = False
         try:
+            run_path = str(snapshot.run_dir).replace("'", "''")
+            data_path = str(snapshot.data_dir).replace("'", "''")
             resolved = (
-                sql.replace("'bundle/", f"'{snapshot.run_dir}/")
-                .replace('"bundle/', f'"{snapshot.run_dir}/')
-                .replace("'data/", f"'{snapshot.data_dir}/")
-                .replace('"data/', f'"{snapshot.data_dir}/')
+                sql.replace("'bundle/", f"'{run_path}/")
+                .replace('"bundle/', f'"{run_path}/')
+                .replace("'data/", f"'{data_path}/")
+                .replace('"data/', f'"{data_path}/')
             )
             frame = connection.execute(resolved).fetchdf().head(MAX_ROWS)
-            return {
+            result = {
                 "columns": [str(column) for column in frame.columns],
                 "rows": frame.where(frame.notna(), None).astype(object).values.tolist(),
                 "row_count": len(frame),
             }
+        except BaseException:
+            error = True
+            raise
         finally:
             connection.close()
+            self._record("duckdb.debug_sql", started, error=error)
+        return result

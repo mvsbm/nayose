@@ -54,6 +54,7 @@ Stage = Literal[
     "aggregating",
     "complete",
     "failed",
+    "cancelled",
     "generating",
     "training",
 ]

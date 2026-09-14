@@ -1,36 +1,48 @@
-"""Transactional storage for operator-entered records."""
+"""Operator-entered records backed by the operational store."""
 
 from __future__ import annotations
 
+import json
+import sqlite3
 import time
 from pathlib import Path
-from threading import Lock
 from typing import Any
+from uuid import uuid4
 
 import duckdb
-import pandas as pd
 from fastapi import HTTPException
+
+from api.operational_store import OperationalStore
 
 
 class ManualStore:
-    def __init__(self, manual_dir: Path, data_root: Path, fields: tuple[str, ...]):
-        self.manual_dir = manual_dir.resolve()
-        self.data_root = data_root.resolve()
-        self.fields = fields
-        self._lock = Lock()
+    """Own manual-record validation while SQLite owns durable storage."""
 
-    def _path(self) -> Path:
-        return self.manual_dir / "records.parquet"
+    def __init__(
+        self,
+        store_or_dir: OperationalStore | Path,
+        data_root: Path,
+        fields: tuple[str, ...],
+    ):
+        self.data_root = Path(data_root).resolve()
+        self.fields = fields
+        self.store = (
+            store_or_dir
+            if isinstance(store_or_dir, OperationalStore)
+            else OperationalStore(Path(store_or_dir).resolve().parent / "operational.sqlite3")
+        )
 
     def count(self) -> int:
-        return len(self.rows())
+        with self.store.read_connection() as connection:
+            row = connection.execute("SELECT count(*) FROM manual_records").fetchone()
+        return int(row[0]) if row else 0
 
     def rows(self) -> list[dict[str, Any]]:
-        with self._lock:
-            path = self._path()
-            if not path.exists():
-                return []
-            return pd.read_parquet(path).to_dict("records")
+        with self.store.read_connection() as connection:
+            rows = connection.execute(
+                "SELECT payload_json FROM manual_records ORDER BY created_at ASC, record_id ASC"
+            ).fetchall()
+        return [json.loads(str(row[0])) for row in rows]
 
     def _validate(self, record: dict[str, Any]) -> dict[str, str]:
         cleaned = {key: str(value).strip() for key, value in record.items() if key in self.fields}
@@ -44,40 +56,44 @@ class ManualStore:
         cleaned.setdefault("name_romaji", "")
         return cleaned
 
-    def _append(self, rows: list[dict[str, str]]) -> list[str]:
-        with self._lock:
-            self.manual_dir.mkdir(parents=True, exist_ok=True)
-            path = self._path()
-            existing = (
-                pd.read_parquet(path)
-                if path.exists()
-                else pd.DataFrame(columns=["record_id", *self.fields])
-            )
-            stamp = int(time.time() * 1000)
-            rows_with_id: list[dict[str, Any]] = [
-                {
-                    **row,
-                    "record_id": f"M{stamp + index:010d}",
-                    "observed_at": time.strftime("%Y-%m-%d", time.gmtime()),
-                    "channel": "manual",
-                }
-                for index, row in enumerate(rows)
-            ]
-            frame = pd.concat([existing, pd.DataFrame(rows_with_id)], ignore_index=True)
-            self._write_atomic(frame)
-            return [row["record_id"] for row in rows_with_id]
+    def _append(
+        self, rows: list[dict[str, str]], connection: sqlite3.Connection | None = None
+    ) -> list[str]:
+        now = time.time()
+        observed_at = time.strftime("%Y-%m-%d", time.gmtime())
+        prepared = []
+        for row in rows:
+            record_id = f"M{time.time_ns():016d}{uuid4().hex[:8]}"
+            payload = {
+                **row,
+                "record_id": record_id,
+                "observed_at": observed_at,
+                "channel": "manual",
+            }
+            prepared.append((record_id, json.dumps(payload, ensure_ascii=False), now))
+        if connection is None:
+            with self.store.transaction() as transaction:
+                self._insert(transaction, prepared)
+        else:
+            self._insert(connection, prepared)
+        return [row[0] for row in prepared]
 
-    def _write_atomic(self, frame: pd.DataFrame) -> None:
-        self.manual_dir.mkdir(parents=True, exist_ok=True)
-        target = self._path()
-        temporary = target.with_name(f".{target.name}.tmp.{time.time_ns()}")
-        frame.to_parquet(temporary, index=False)
-        temporary.replace(target)
+    @staticmethod
+    def _insert(connection: sqlite3.Connection, rows: list[tuple[str, str, float]]) -> None:
+        connection.executemany(
+            "INSERT INTO manual_records(record_id, payload_json, created_at) VALUES (?, ?, ?)",
+            rows,
+        )
 
-    def register(self, record: dict[str, Any]) -> str:
-        return self._append([self._validate(record)])[0]
+    def register(self, record: dict[str, Any], connection: sqlite3.Connection | None = None) -> str:
+        return self._append([self._validate(record)], connection)[0]
 
-    def import_rows(self, rows: list[dict[str, Any]], dry_run: bool) -> dict[str, Any]:
+    def import_rows(
+        self,
+        rows: list[dict[str, Any]],
+        dry_run: bool,
+        connection: sqlite3.Connection | None = None,
+    ) -> dict[str, Any]:
         if not rows or len(rows) > 500:
             raise HTTPException(422, "import must have 1..500 rows")
         cleaned: list[dict[str, str]] = []
@@ -100,7 +116,7 @@ class ManualStore:
             }
         if errors:
             raise HTTPException(422, f"import rows invalid: {errors[:5]}")
-        self._append(cleaned)
+        self._append(cleaned, connection)
         return {"ok": True, "imported": len(cleaned), "duplicates": duplicates}
 
     def _duplicate_indexes(self, rows: list[dict[str, str]]) -> list[int]:
@@ -108,7 +124,9 @@ class ManualStore:
         try:
             connection = duckdb.connect()
             try:
-                reference = self.data_root / "current" / "reference_records.parquet"
+                reference = str(self.data_root / "current" / "reference_records.parquet").replace(
+                    "'", "''"
+                )
                 query = f"select distinct phone from read_parquet('{reference}') where phone != ''"
                 corpus = {
                     str(value[0]).replace("-", "").replace(" ", "")
@@ -124,14 +142,17 @@ class ManualStore:
             if row["phone"] and row["phone"].replace("-", "").replace(" ", "") in corpus
         ]
 
-    def undo(self, record_ids: list[str]) -> int:
-        with self._lock:
-            path = self._path()
-            if not path.exists():
-                return 0
-            frame = pd.read_parquet(path)
-            keep = frame[~frame["record_id"].isin(record_ids)]
-            removed = int(frame.shape[0] - keep.shape[0])
-            if removed:
-                self._write_atomic(keep)
-            return removed
+    def undo(self, record_ids: list[str], connection: sqlite3.Connection | None = None) -> int:
+        if not record_ids:
+            return 0
+        placeholders = ", ".join("?" for _ in record_ids)
+        if connection is None:
+            with self.store.transaction() as transaction:
+                cursor = transaction.execute(
+                    f"DELETE FROM manual_records WHERE record_id IN ({placeholders})", record_ids
+                )
+        else:
+            cursor = connection.execute(
+                f"DELETE FROM manual_records WHERE record_id IN ({placeholders})", record_ids
+            )
+        return cursor.rowcount

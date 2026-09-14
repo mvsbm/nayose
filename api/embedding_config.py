@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 F2LLM_330M_MODEL_ID = "codefuse-ai/F2LLM-v2-330M"
+F2LLM_MPS_DEVICE = "mps"
+F2LLM_MPS_BATCH_SIZE = 32
+F2LLM_MPS_PROCESS_WORKERS = 1
+F2LLM_MPS_TORCH_DTYPE = "float16"
 
 SUPPORTED_MODEL_FAMILIES = (
     "off",
@@ -13,13 +17,17 @@ SUPPORTED_MODEL_FAMILIES = (
     "qwen",
 )
 
-_NOTEBOOK_MODEL_FAMILY = {"f2llm_330m": "f2llm"}
+_PIPELINE_MODEL_FAMILY = {"f2llm_330m": "f2llm"}
 
 
-def notebook_model_family(family: str) -> str:
-    """Return the model-family name understood by the legacy notebook driver."""
+def is_f2llm_model(model_id: str) -> bool:
+    return model_id.startswith("codefuse-ai/F2LLM-v2-")
+
+
+def pipeline_model_family(family: str) -> str:
+    """Return the model-family name understood by the training pipeline."""
     try:
-        return _NOTEBOOK_MODEL_FAMILY[family]
+        return _PIPELINE_MODEL_FAMILY[family]
     except KeyError:
         if family not in SUPPORTED_MODEL_FAMILIES:
             raise ValueError(f"unsupported model family {family!r}") from None
@@ -30,6 +38,6 @@ def embedding_model_id(family: str, explicit: str | None = None) -> str | None:
     """Resolve an explicit model override without silently changing profiles."""
     if explicit:
         return explicit
-    if family == "f2llm_330m":
+    if family in {"f2llm", "f2llm_330m"}:
         return F2LLM_330M_MODEL_ID
     return None

@@ -1,8 +1,7 @@
-#!/usr/bin/env python3
-"""Headless synthetic-data generation (same engine + save contract as the notebook).
+"""Headless synthetic-data generation with the shared engine/save contract.
 
 Usage:
-    python scripts/generate_data.py --profile smoke --data-dir tmp_smoke --seed 42
+    nayose data generate --profile smoke --data-dir tmp_smoke --seed 42
 
 Profiles: preflight | smoke | mac | large_mac | generate_only (default).
 Use --clean-only to stream a canonical entity layer without sabotage or policy context.
@@ -12,20 +11,18 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 import time
 from dataclasses import replace
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root (no install needed)
-
-from synthetic import SyntheticConfig  # noqa: E402 (sys.path bootstrap above)
-from synthetic.clean import write_clean_entities  # noqa: E402
-from synthetic.generation_preview import config_from_controls  # noqa: E402
+from api.work_ledger import WorkflowLedger
+from synthetic import SyntheticConfig
+from synthetic.clean import write_clean_entities
+from synthetic.generation_preview import config_from_controls
 from synthetic.pipeline import generate, save_all
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--profile",
@@ -58,11 +55,11 @@ def parse_args() -> argparse.Namespace:
         default=50_000,
         help="rows per output chunk for --clean-only (default: 50,000)",
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
-def main() -> None:
-    args = parse_args()
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
     if args.controls_json:
         try:
             controls = json.loads(args.controls_json)
@@ -86,20 +83,41 @@ def main() -> None:
         if args.n_parties:
             kwargs["n_parties_override"] = args.n_parties
         cfg = SyntheticConfig(**kwargs)  # type: ignore[arg-type]
+    ledger = WorkflowLedger(
+        "generation",
+        metadata={"profile": cfg.profile, "seed": cfg.seed},
+    )
     t0 = time.perf_counter()
     if args.clean_only:
-        clean_result = write_clean_entities(cfg, chunk_size=args.chunk_size)
+        with ledger.span("clean_generation", "pipeline"):
+            clean_result = write_clean_entities(cfg, chunk_size=args.chunk_size)
+        clean_dir = Path(str(clean_result["generation_dir"]))
+        clean_counts = clean_result["counts"]
+        if not isinstance(clean_counts, dict):
+            raise RuntimeError("clean generation returned invalid counts")
+        ledger.counter("entities", int(clean_counts["entities"]))
+        ledger.write(clean_dir / "workflow_metrics.json")
         print(f"Wrote {clean_result['counts']} clean entities in {time.perf_counter() - t0:.1f}s")
-        return
-    result = generate(cfg)
+        return 0
+    with ledger.span("generate", "pipeline"):
+        result = generate(cfg)
+    for name, amount in result.counts.items():
+        ledger.counter(name, amount)
     print(f"Generated {result.counts} in {time.perf_counter() - t0:.1f}s; saving...")
-    paths = save_all(cfg, result)
+    with ledger.span("save_generation", "file"):
+        paths = save_all(cfg, result)
+    generation_dir = paths[0].parent
+    manifest = json.loads(paths[-1].read_text(encoding="utf-8"))
+    ledger.metadata("data_fingerprint", str(manifest.get("data_fingerprint", "")))
+    ledger.counter("artifacts", len(paths))
+    ledger.write(generation_dir / "workflow_metrics.json")
     print(f"Wrote {len(paths)} artifacts under {cfg.output_dir}")
     print(
         f"Done: run the matcher with `NAYOSE_DATA_DIR={cfg.output_dir} "
-        "jupyter nbconvert --to notebook --execute nayose.ipynb`"
+        "nayose model train --data-dir <generation> --models-dir models`"
     )
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

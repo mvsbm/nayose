@@ -1,8 +1,8 @@
 """Shared pipeline orchestration and the canonical save contract.
 
-One function each for "generate" and "save" keeps the notebook driver and
-`scripts/generate_data.py` CLI on the same output contract. Outputs match the
-nayose.ipynb contract exactly.
+One function each for "generate" and "save" keeps the generation CLI and
+`nayose data generate` CLI on the same output contract. Outputs match the
+training pipeline contract exactly.
 
 Storage layout (Decision A/B of the repo design):
     <output_dir>/raw/            immutable reference-data cache (ken_all, personas, EDINET)
@@ -79,7 +79,7 @@ class PipelineResult:
 
 
 def data_fingerprint(reference: pd.DataFrame) -> str:
-    """Canonical fingerprint shared with nayose.ipynb / api.engine.py."""
+    """Canonical fingerprint shared with the training pipeline and api.engine.py."""
     return hashlib.sha256(
         pd.util.hash_pandas_object(reference[REFERENCE_COLS], index=False).values.tobytes()
     ).hexdigest()
@@ -193,7 +193,7 @@ def _git_revision() -> str:
 def build_manifest(
     cfg: SyntheticConfig, counts: dict[str, int], sources: dict[str, str] | None = None
 ) -> dict:
-    """Reproducibility manifest; mirrors what the notebook writes."""
+    """Reproducibility manifest shared by generation and training."""
     cfg_json = asdict(cfg)
     cfg_json["output_dir"] = _portable_path(cfg.output_dir or default_data_dir())
     cfg_json["raw_dir"] = _portable_path(cfg.raw_dir or default_data_dir() / "raw")

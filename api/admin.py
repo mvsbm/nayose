@@ -8,35 +8,39 @@ Design notes
 - Generate/train run as SUBPROCESSES of this same interpreter: the API process
   stays responsive, resource churn is isolated, and a crash can't take the API
   down.
-- Every mutation is append-only audited (models/admin_audit.jsonl).
+- Every mutation is append-only audited in the operational SQLite store.
 - Manual entries (data entry) live OUTSIDE the immutable generation corpus
-  (data/manual) so the fingerprint guard is never broken; they become part of
+  so the fingerprint guard is never broken; they become part of
   a trained corpus only after the next generation.
 """
 
 from __future__ import annotations
 
-import hashlib
-import json
 import logging
 import os
-import time
+import sqlite3
 from collections.abc import Callable
 from pathlib import Path
-from threading import Lock
 from typing import Any
-from uuid import uuid4
 
 from fastapi import HTTPException
 
 from api.admin_jobs import AdminJobRunner
+from api.audit import AuditLog
 from api.embedding_config import SUPPORTED_MODEL_FAMILIES
 from api.evidence import VISIBLE_FIELDS
 from api.manual_store import ManualStore
-from api.operational_lock import advisory_file_lock
+from api.operational_store import OperationalStore
+from api.performance import model_thread_budget
 from api.progress import ProgressUpdate
 from api.progress import parse as parse_progress
-from api.release import atomic_directory_alias, safe_run_id, validate_model_for_data
+from api.release import (
+    data_generation_for_fingerprint,
+    safe_run_id,
+    validate_model_for_data,
+)
+from api.runtime_config import EXACT_MODES
+from api.telemetry import Stats
 from synthetic.config import DIFFICULTY as GENERATION_DIFFICULTIES
 from synthetic.config import PROFILES as GENERATION_PROFILES
 from synthetic.generation_preview import catalog as generation_catalog
@@ -45,104 +49,38 @@ from synthetic.generation_preview import preview as generation_preview
 LOGGER = logging.getLogger(__name__)
 
 ADMIN_ACTIONS = ("reload_engine", "settings", "promote", "prune", "reset_decisions")
-EXACT_MODES = ("hybrid", "exact_only", "fuzzy_only")
 MODEL_FAMILIES = SUPPORTED_MODEL_FAMILIES
-DEVICES = ("auto", "cpu", "mps", "cuda")
+DEVICES = ("mps",)
 PROFILES = tuple(GENERATION_PROFILES)
 DIFFICULTIES = tuple(GENERATION_DIFFICULTIES)
-
-
-def _now() -> str:
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-
-
-class AuditLog:
-    def __init__(self, path: Path):
-        self.path = path
-        self._lock = Lock()
-
-    def record(self, actor: str, action: str, detail: dict[str, Any]) -> dict[str, Any]:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with (
-            self._lock,
-            advisory_file_lock(self.path.with_suffix(".lock")),
-            self.path.open("a", encoding="utf-8") as fh,
-        ):
-            previous_hash = self._last_hash()
-            row = {
-                "ts": _now(),
-                "event_id": uuid4().hex,
-                "actor": actor,
-                "action": action,
-                "prev_hash": previous_hash,
-                **detail,
-            }
-            payload = json.dumps(row, ensure_ascii=False, separators=(",", ":"))
-            row["event_hash"] = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-            fh.write(json.dumps(row, ensure_ascii=False) + "\n")
-            fh.flush()
-            os.fsync(fh.fileno())
-        return row
-
-    def _last_hash(self) -> str:
-        if not self.path.exists():
-            return ""
-        for line in reversed(self.path.read_text(encoding="utf-8").splitlines()):
-            try:
-                value = json.loads(line).get("event_hash")
-            except json.JSONDecodeError:
-                continue
-            if value:
-                return str(value)
-        return ""
-
-    def verify(self) -> bool:
-        with self._lock, advisory_file_lock(self.path.with_suffix(".lock"), shared=True):
-            if not self.path.exists():
-                return True
-            previous_hash = ""
-            for line in self.path.read_text(encoding="utf-8").splitlines():
-                try:
-                    row = json.loads(line)
-                except json.JSONDecodeError:
-                    return False
-                if not isinstance(row, dict):
-                    return False
-                event_hash = row.get("event_hash")
-                if not event_hash:
-                    if previous_hash:
-                        return False
-                    continue
-                if row.get("prev_hash", "") != previous_hash:
-                    return False
-                unsigned = {key: value for key, value in row.items() if key != "event_hash"}
-                payload = json.dumps(unsigned, ensure_ascii=False, separators=(",", ":"))
-                if hashlib.sha256(payload.encode("utf-8")).hexdigest() != event_hash:
-                    return False
-                previous_hash = str(event_hash)
-            return True
-
-    def tail(self, limit: int = 50) -> list[dict[str, Any]]:
-        if not self.path.exists():
-            return []
-        rows = []
-        for line in self.path.read_text(encoding="utf-8").splitlines()[-limit:]:
-            try:
-                rows.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
-        return rows
 
 
 class AdminService:
     """One worker executes long ops (generate/train) serially; everything else
     is quick, synchronous and audited."""
 
-    def __init__(self, data_root: Path, models_dir: Path, manual_dir: Path):
+    def __init__(
+        self,
+        data_root: Path,
+        models_dir: Path,
+        engine_reset: Callable[[], None] | None = None,
+        exact_mode_set: Callable[[str], None] | None = None,
+        exact_mode: str = "hybrid",
+        release_publish: Callable[[str, str], Any] | None = None,
+        decisions_clear: Callable[[str, sqlite3.Connection | None, str], int] | None = None,
+        operational_store: OperationalStore | None = None,
+        audit: AuditLog | None = None,
+        stats: Stats | None = None,
+    ):
+        if exact_mode not in EXACT_MODES:
+            raise ValueError(f"exact_mode must be one of {EXACT_MODES}")
         self.data_root = data_root.resolve()
         self.models_dir = models_dir.resolve()
+        self.operational_store = operational_store or OperationalStore(
+            self.models_dir / "operational.sqlite3"
+        )
         self.manual_store = ManualStore(
-            manual_dir,
+            self.operational_store,
             self.data_root,
             tuple(
                 field
@@ -150,9 +88,19 @@ class AdminService:
                 if field not in ("record_id", "observed_at", "policy_id", "agency_id", "channel")
             ),
         )
-        self.audit = AuditLog(self.models_dir / "admin_audit.jsonl")
-        self.jobs = AdminJobRunner(self.data_root, self.models_dir, self.audit)
-        self._engine_reset: Callable[[], None] | None = None
+        self.audit = audit or AuditLog(self.operational_store)
+        self.jobs = AdminJobRunner(
+            self.data_root,
+            self.models_dir,
+            self.audit,
+            operational_store=self.operational_store,
+            stats=stats,
+        )
+        self._engine_reset = engine_reset
+        self._exact_mode_set = exact_mode_set
+        self._exact_mode = exact_mode
+        self._release_publish = release_publish
+        self._decisions_clear = decisions_clear
 
     # ── capability / state ────────────────────────────────────────────────────
     def capable(self) -> bool:
@@ -172,10 +120,10 @@ class AdminService:
                 "model_families": MODEL_FAMILIES,
                 "devices": DEVICES,
                 "exact_modes": EXACT_MODES,
-                "threads_default": int(os.getenv("NAYOSE_MODEL_THREADS", "2")),
+                "threads_default": model_thread_budget(),
             },
             "settings": {
-                "exact_mode": os.getenv("NAYOSE_EXACT_MODE", "hybrid"),
+                "exact_mode": self._exact_mode,
                 "warm_embed": os.getenv("NAYOSE_WARM_EMBED", "0") == "1",
                 "engine_warm": ready(current_run or ""),
                 "engine_backend": "unknown",
@@ -216,6 +164,9 @@ class AdminService:
     def status(self, job_id: str) -> dict[str, Any]:
         return self.jobs.status(job_id)
 
+    def cancel(self, job_id: str, actor: str) -> dict[str, Any]:
+        return self.jobs.cancel(job_id, actor)
+
     def wait(self, job_id: str, timeout: float) -> None:
         self.jobs.wait(job_id, timeout)
 
@@ -225,7 +176,9 @@ class AdminService:
             exact = params.get("exact_mode")
             if exact not in EXACT_MODES:
                 raise HTTPException(400, f"invalid exact_mode {exact!r}")
-            os.environ["NAYOSE_EXACT_MODE"] = exact  # honored by BundleRetriever per call
+            self._exact_mode = exact
+            if self._exact_mode_set is not None:
+                self._exact_mode_set(exact)
             self.audit.record(actor, "settings", {"exact_mode": exact})
             return {"ok": True, "exact_mode": exact}
         if action == "reload_engine":
@@ -245,11 +198,23 @@ class AdminService:
                 raise HTTPException(400, "invalid run")
             try:
                 fingerprint = validate_model_for_data(target, self.data_root)
+                generation = data_generation_for_fingerprint(self.data_root, fingerprint)
+                if generation is None or self._release_publish is None:
+                    raise ValueError("release publication is unavailable")
+                release = self._release_publish(generation.name, run_id)
             except ValueError as exc:
                 raise HTTPException(409, str(exc)) from exc
-            atomic_directory_alias(target, self.models_dir / "current")
-            self.audit.record(actor, "promote", {"run": run_id, "fingerprint": fingerprint[:12]})
-            return {"ok": True, "run": run_id}
+            self.audit.record(
+                actor,
+                "promote",
+                {
+                    "run": run_id,
+                    "generation": generation.name,
+                    "release_id": release.release_id,
+                    "fingerprint": fingerprint[:12],
+                },
+            )
+            return {"ok": True, "run": run_id, "release_id": release.release_id}
         if action == "prune":
             removed = []
             for run in (self.models_dir / "runs").iterdir():
@@ -272,45 +237,50 @@ class AdminService:
                 run_id = safe_run_id(run_id)
             except ValueError as exc:
                 raise HTTPException(400, "invalid run") from exc
-            path = (self.models_dir / "decisions" / f"{run_id}.json").resolve()
-            decisions_root = (self.models_dir / "decisions").resolve()
-            if decisions_root not in path.parents:
-                raise HTTPException(400, "invalid run")
-            for decision_path in (path, path.with_suffix(".meta.json")):
-                if decision_path.exists():
-                    decision_path.unlink()
-            self.audit.record(actor, "reset_decisions", {"run": run_id})
+            if self._decisions_clear is None:
+                raise HTTPException(503, "decision_store_unavailable")
+            try:
+                with self.operational_store.transaction() as connection:
+                    self._decisions_clear(run_id, connection, actor)
+                    self.audit.record(actor, "reset_decisions", {"run": run_id}, connection)
+            except ValueError as exc:
+                raise HTTPException(409, str(exc)) from exc
             return {"ok": True}
         raise HTTPException(400, f"unknown action {action!r}")
 
     # ── manual corpus (D, data entry) ─────────────────────────────────────────
-    def _manual_count(self) -> int:
+    def manual_count(self) -> int:
         return self.manual_store.count()
 
     def manual_list(self) -> list[dict[str, Any]]:
         return self.manual_store.rows()
 
     def manual_register(self, record: dict[str, Any], actor: str) -> dict[str, Any]:
-        record_id = self.manual_store.register(record)
-        self.audit.record(actor, "data_entry_register", {"record_id": record_id})
+        with self.operational_store.transaction() as connection:
+            record_id = self.manual_store.register(record, connection)
+            self.audit.record(actor, "data_entry_register", {"record_id": record_id}, connection)
         return {"ok": True, "record_id": record_id}
 
     def manual_import(
         self, rows: list[dict[str, Any]], dry_run: bool, actor: str
     ) -> dict[str, Any]:
-        result = self.manual_store.import_rows(rows, dry_run)
-        if not dry_run:
+        if dry_run:
+            return self.manual_store.import_rows(rows, dry_run=True)
+        with self.operational_store.transaction() as connection:
+            result = self.manual_store.import_rows(rows, dry_run=False, connection=connection)
             self.audit.record(
                 actor,
                 "data_entry_import",
                 {"rows": result["imported"], "duplicates": len(result["duplicates"])},
+                connection,
             )
         return result
 
     def manual_undo(self, record_ids: list[str], actor: str) -> dict[str, Any]:
-        removed = self.manual_store.undo(record_ids)
-        if removed:
-            self.audit.record(actor, "data_entry_undo", {"removed": removed})
+        with self.operational_store.transaction() as connection:
+            removed = self.manual_store.undo(record_ids, connection)
+            if removed:
+                self.audit.record(actor, "data_entry_undo", {"removed": removed}, connection)
         return {"ok": True, "removed": removed}
 
     def close(self) -> None:

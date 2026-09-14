@@ -1,8 +1,7 @@
 """Configuration and data-driven presets for the synthetic generator.
 
-All knobs live here as data (dataclasses / module dicts) so the notebook and
-engine stay free of magic numbers. Env overrides exactly mirror the original
-notebook's NAYOSE_* interface.
+All knobs live here as data (dataclasses / module dicts) so the engine stays
+free of magic numbers. Environment overrides use the NAYOSE_* interface.
 """
 
 from __future__ import annotations

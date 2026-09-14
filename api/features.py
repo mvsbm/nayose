@@ -66,158 +66,165 @@ def compute_pair_features(
     query: dict[str, str], candidates: pd.DataFrame, retrieval: pd.DataFrame
 ) -> pd.DataFrame:
     """Compute all pair features between a query and each candidate."""
-    rows: list[dict[str, float]] = []
-    for i, (_, cand) in enumerate(candidates.iterrows()):
-        q, c = query, cand
+    if candidates.empty:
+        return pd.DataFrame(columns=PAIR_FEATURE_COLS)
+    left = pd.DataFrame([query] * len(candidates)).reset_index(drop=True)
+    if "n_party_type" not in left:
+        left["n_party_type"] = left["party_type"]
+    if "n_party_type" not in candidates:
+        candidates = candidates.copy()
+        candidates["n_party_type"] = candidates["party_type"]
+    return compute_pair_features_frame(left, candidates, retrieval)
 
-        type_exact = float(
-            bool(q["party_type"] and c["party_type"] and q["party_type"] == c["party_type"])
+
+def compute_pair_features_frame(
+    left: pd.DataFrame,
+    right: pd.DataFrame,
+    retrieval: pd.DataFrame | None = None,
+    frequency_maps: Mapping[str, Mapping[str, int]] | None = None,
+) -> pd.DataFrame:
+    """Compute pair features for aligned normalized record frames."""
+    left, right = left.reset_index(drop=True), right.reset_index(drop=True)
+    if len(left) != len(right):
+        raise ValueError("left and right frames must have equal lengths")
+    out = pd.DataFrame(index=np.arange(len(left)))
+
+    exact_specs = {
+        "type_exact": "n_party_type",
+        "name_strict_exact": "n_name_strict",
+        "name_loose_exact": "n_name_loose",
+        "kana_exact": "n_kana",
+        "romaji_exact": "n_romaji",
+        "dob_exact": "n_dob",
+        "postal_exact": "n_postal",
+        "address_exact": "n_address",
+        "phone_exact": "n_phone",
+        "phone_suffix_exact": "n_phone_suffix8",
+        "email_exact": "n_email",
+    }
+    for feature, column in exact_specs.items():
+        out[feature] = (
+            left[column].ne("") & right[column].ne("") & left[column].eq(right[column])
+        ).astype(np.float32)
+
+    def fuzzy_array(left_values: pd.Series, right_values: pd.Series) -> np.ndarray:
+        return np.fromiter(
+            (_fuzzy(a, b) for a, b in zip(left_values, right_values, strict=True)),
+            dtype=np.float32,
+            count=len(left_values),
         )
-        name_strict_exact = float(
-            bool(
-                q.get("n_name_strict", "")
-                and c.get("n_name_strict", "")
-                and q["n_name_strict"] == c["n_name_strict"]
+
+    out["name_similarity"] = np.maximum(
+        fuzzy_array(left.n_name_loose, right.n_name_loose),
+        fuzzy_array(left.n_name_signature, right.n_name_signature),
+    )
+    out["kana_similarity"] = fuzzy_array(left.n_kana, right.n_kana)
+    out["romaji_similarity"] = fuzzy_array(left.n_romaji, right.n_romaji)
+    out["address_similarity"] = fuzzy_array(left.n_address, right.n_address)
+    out["email_local_similarity"] = fuzzy_array(left.n_email_local, right.n_email_local)
+    out["email_domain_exact"] = (
+        left.n_email_domain.ne("")
+        & right.n_email_domain.ne("")
+        & left.n_email_domain.eq(right.n_email_domain)
+    ).astype(np.float32)
+
+    frequency_maps = frequency_maps or {}
+    for feature, column in (
+        ("name_frequency_weight", "n_name_loose"),
+        ("kana_frequency_weight", "n_kana"),
+        ("phone_frequency_weight", "n_phone"),
+        ("email_frequency_weight", "n_email"),
+    ):
+        frequencies = (
+            left[column].map(frequency_maps.get(column, {}).get).fillna(0).to_numpy(np.float32)
+        )
+        out[feature] = out[column.removeprefix("n_") + "_exact"] / np.log2(frequencies + 2.0)
+
+    agreement_columns = [
+        "name_loose_exact",
+        "kana_exact",
+        "romaji_exact",
+        "dob_exact",
+        "postal_exact",
+        "address_exact",
+        "phone_exact",
+        "email_exact",
+    ]
+    out["agreement_count"] = out[agreement_columns].sum(axis=1)
+    evidence = pd.DataFrame(
+        {
+            "name": np.maximum.reduce(
+                [
+                    out.name_similarity.to_numpy(),
+                    out.kana_similarity.to_numpy(),
+                    out.romaji_similarity.to_numpy(),
+                ]
             )
-        )
-        name_loose_exact = float(
-            bool(q["n_name_loose"] and c["n_name_loose"] and q["n_name_loose"] == c["n_name_loose"])
-        )
-        kana_exact = float(bool(q["n_kana"] and c["n_kana"] and q["n_kana"] == c["n_kana"]))
-        romaji_exact = float(
-            bool(q["n_romaji"] and c["n_romaji"] and q["n_romaji"] == c["n_romaji"])
-        )
-        dob_exact = float(bool(q["n_dob"] and c["n_dob"] and q["n_dob"] == c["n_dob"]))
-        postal_exact = float(
-            bool(q["n_postal"] and c["n_postal"] and q["n_postal"] == c["n_postal"])
-        )
-        address_exact = float(
-            bool(q["n_address"] and c["n_address"] and q["n_address"] == c["n_address"])
-        )
-        phone_exact = float(bool(q["n_phone"] and c["n_phone"] and q["n_phone"] == c["n_phone"]))
-        phone_suffix_exact = float(
-            bool(
-                q["n_phone_suffix8"]
-                and c["n_phone_suffix8"]
-                and q["n_phone_suffix8"] == c["n_phone_suffix8"]
-            )
-        )
-        email_exact = float(bool(q["n_email"] and c["n_email"] and q["n_email"] == c["n_email"]))
+            >= 0.82,
+            "birth": out.dob_exact.eq(1),
+            "address": np.maximum(out.address_similarity, out.postal_exact) >= 0.82,
+            "phone": np.maximum(out.phone_exact, out.phone_suffix_exact) >= 1,
+            "email": np.maximum(out.email_exact, out.email_local_similarity) >= 0.90,
+        }
+    )
+    out["evidence_family_count"] = evidence.sum(axis=1)
 
-        name_sim = max(
-            _fuzzy(q["n_name_loose"], c["n_name_loose"]),
-            _fuzzy(q["n_name_signature"], c["n_name_signature"]),
-        )
-        kana_sim = _fuzzy(q["n_kana"], c["n_kana"])
-        romaji_sim = _fuzzy(q["n_romaji"], c["n_romaji"])
-        addr_sim = _fuzzy(q["n_address"], c["n_address"])
-        email_local_sim = _fuzzy(q["n_email_local"], c["n_email_local"])
-        email_domain_exact = float(
-            bool(
-                q["n_email_domain"]
-                and c["n_email_domain"]
-                and q["n_email_domain"] == c["n_email_domain"]
-            )
-        )
-
-        name_evidence = max(name_sim, kana_sim, romaji_sim) >= 0.82
-        dob_evidence = dob_exact >= 1
-        address_evidence = max(addr_sim, postal_exact) >= 0.82
-        phone_evidence = max(phone_exact, phone_suffix_exact) >= 1
-        email_evidence = max(email_exact, email_local_sim) >= 0.90
-        evidence_family_count = sum(
-            [
-                name_evidence,
-                dob_evidence,
-                address_evidence,
-                phone_evidence,
-                email_evidence,
-            ]
-        )
-
-        agreement_count = sum(
-            [
-                name_loose_exact,
-                kana_exact,
-                romaji_exact,
-                dob_exact,
-                postal_exact,
-                address_exact,
-                phone_exact,
-                email_exact,
-            ]
-        )
-        identity_fields = [
-            "n_name_loose",
-            "n_kana",
-            "n_romaji",
-            "n_dob",
-            "n_postal",
-            "n_address",
-            "n_phone",
-            "n_email",
+    identity_columns = [
+        "n_name_loose",
+        "n_kana",
+        "n_romaji",
+        "n_dob",
+        "n_postal",
+        "n_address",
+        "n_phone",
+        "n_email",
+    ]
+    both_populated = sum(
+        (left[column].ne("") & right[column].ne("")).astype(int) for column in identity_columns
+    )
+    out["both_populated_count"] = both_populated
+    out["missing_fraction"] = 1.0 - both_populated / len(identity_columns)
+    out["type_conflict"] = (
+        left.n_party_type.ne("")
+        & right.n_party_type.ne("")
+        & left.n_party_type.ne(right.n_party_type)
+    ).astype(np.float32)
+    out["dob_conflict"] = (
+        left.n_dob.ne("") & right.n_dob.ne("") & left.n_dob.ne(right.n_dob)
+    ).astype(np.float32)
+    out["postal_conflict"] = (
+        left.n_postal.ne("") & right.n_postal.ne("") & left.n_postal.ne(right.n_postal)
+    ).astype(np.float32)
+    best_name = np.maximum.reduce(
+        [
+            out.name_similarity.to_numpy(),
+            out.kana_similarity.to_numpy(),
+            out.romaji_similarity.to_numpy(),
         ]
-        both_populated = sum(1 for f in identity_fields if q.get(f, "") and c.get(f, ""))
-        missing_fraction = 1.0 - both_populated / len(identity_fields)
-
-        type_conflict = float(
-            bool(q["party_type"] and c["party_type"] and q["party_type"] != c["party_type"])
+    )
+    out["name_dob_evidence"] = best_name * out.dob_exact
+    out["name_address_evidence"] = best_name * np.maximum(out.address_similarity, out.postal_exact)
+    for column in ("sparse_score", "dense_score", "exact_count", "reranker_score"):
+        out[column] = (
+            retrieval[column].to_numpy(np.float32)
+            if retrieval is not None and column in retrieval
+            else 0.0
         )
-        dob_conflict = float(bool(q["n_dob"] and c["n_dob"] and q["n_dob"] != c["n_dob"]))
-        postal_conflict = float(
-            bool(q["n_postal"] and c["n_postal"] and q["n_postal"] != c["n_postal"])
+    if retrieval is not None and "channel_count" in retrieval:
+        out["channel_count"] = retrieval.channel_count.to_numpy(np.float32)
+    else:
+        out["channel_count"] = (
+            out.exact_count.gt(0).astype(np.float32)
+            + out.sparse_score.gt(0).astype(np.float32)
+            + out.dense_score.gt(0).astype(np.float32)
         )
-
-        best_name = max(name_sim, kana_sim, romaji_sim)
-        name_dob_evidence = best_name * dob_exact
-        name_address_evidence = best_name * max(addr_sim, postal_exact)
-
-        ret = retrieval.iloc[i] if i < len(retrieval) else {}
-        sparse = float(ret.get("sparse_score", 0))
-        dense = float(ret.get("dense_score", 0))
-        exact_n = int(ret.get("exact_count", 0))
-
-        rows.append(
-            {
-                "type_exact": type_exact,
-                "name_strict_exact": name_strict_exact,
-                "name_loose_exact": name_loose_exact,
-                "kana_exact": kana_exact,
-                "romaji_exact": romaji_exact,
-                "dob_exact": dob_exact,
-                "postal_exact": postal_exact,
-                "address_exact": address_exact,
-                "phone_exact": phone_exact,
-                "phone_suffix_exact": phone_suffix_exact,
-                "email_exact": email_exact,
-                "name_similarity": name_sim,
-                "kana_similarity": kana_sim,
-                "romaji_similarity": romaji_sim,
-                "address_similarity": addr_sim,
-                "email_local_similarity": email_local_sim,
-                "email_domain_exact": email_domain_exact,
-                "name_frequency_weight": 0.0,
-                "kana_frequency_weight": 0.0,
-                "phone_frequency_weight": 0.0,
-                "email_frequency_weight": 0.0,
-                "agreement_count": agreement_count,
-                "evidence_family_count": evidence_family_count,
-                "both_populated_count": both_populated,
-                "missing_fraction": missing_fraction,
-                "type_conflict": type_conflict,
-                "dob_conflict": dob_conflict,
-                "postal_conflict": postal_conflict,
-                "name_dob_evidence": name_dob_evidence,
-                "name_address_evidence": name_address_evidence,
-                "sparse_score": sparse,
-                "dense_score": dense,
-                "exact_count": exact_n,
-                "channel_count": int(exact_n > 0) + int(sparse > 0) + int(dense > 0),
-                "retrieval_score": max(sparse, dense) + 0.08 * min(exact_n, 3),
-                "reranker_score": 0.0,
-            }
+    if retrieval is not None and "retrieval_score" in retrieval:
+        out["retrieval_score"] = retrieval.retrieval_score.to_numpy(np.float32)
+    else:
+        out["retrieval_score"] = np.maximum(out.sparse_score, out.dense_score) + (
+            0.08 * out.exact_count.clip(upper=3)
         )
-    return pd.DataFrame(rows)
+    return out[PAIR_FEATURE_COLS]
 
 
 def logit_clip(probability: np.ndarray, precision: float = 1e-6) -> np.ndarray:

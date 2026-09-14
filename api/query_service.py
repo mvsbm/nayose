@@ -12,16 +12,24 @@ from api.entity_graph_queries import EntityGraphService
 from api.entity_graph_repository import DuckDbEntityGraphRepository
 from api.entity_queries import EntityQueries
 from api.evaluation_queries import EvaluationQueries
+from api.operational_store import OperationalStore
 from api.query_context import BundleReader, BundleSnapshot
 from api.repositories import RunRepository
 from api.search_service import SearchFilters
+from api.telemetry import Stats
 
 
 class QueryService:
     """Expose the server query surface without owning query implementations."""
 
-    def __init__(self, repo: RunRepository, data_dir: Path):
-        self.context = BundleReader(repo, data_dir)
+    def __init__(
+        self,
+        repo: RunRepository,
+        data_dir: Path,
+        operational_store: OperationalStore | None = None,
+        stats: Stats | None = None,
+    ):
+        self.context = BundleReader(repo, data_dir, operational_store, stats=stats)
         self.entities_query = EntityQueries(self.context)
         self.entity_detail_query = EntityDetailQueries(self.context)
         self.entity_graph_query = EntityGraphService(

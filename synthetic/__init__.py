@@ -3,7 +3,7 @@
 Data-driven generation of realistic Japanese insurance customer data:
 real name frequencies (NVIDIA Nemotron personas), real postal addresses
 (Japan Post ken_all), real company names (EDINET), and a correlated,
-lineage-tracked dirty-data layer compatible with nayose.ipynb's contract.
+lineage-tracked dirty-data layer compatible with the training pipeline's contract.
 """
 
 from .config import DIFFICULTY, PROFILES, NoiseConfig, SyntheticConfig

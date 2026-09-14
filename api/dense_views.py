@@ -6,6 +6,7 @@ import gc
 import hashlib
 import json
 import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -14,11 +15,38 @@ import numpy as np
 import pandas as pd
 
 from api.dense_index import build_dense_index, load_dense_index, save_dense_index
+from api.embedding_cache import (
+    EMBEDDING_FIELD_SCHEMA_VERSION,
+    EMBEDDING_PREPROCESSING_VERSION,
+    model_revision,
+)
+from api.embedding_config import F2LLM_MPS_BATCH_SIZE, is_f2llm_model
 from api.name_variants import alias_texts
 from api.normalize import normalize_record
-from api.performance import resolve_device
+from api.performance import (
+    configure_mps_runtime,
+    configure_torch_threads,
+    model_thread_budget,
+    require_mps_device,
+    resolve_device,
+)
 
 DENSE_VIEW_NAMES = ("name", "address", "alias")
+
+
+def selected_dense_views(query: dict[str, Any], available: dict[str, Any]) -> tuple[str, ...]:
+    """Select views from populated query families, never from a fixed fusion list."""
+    normalized = query if any(key.startswith("n_") for key in query) else normalize_record(query)
+    has_name = any(normalized.get(field, "") for field in ("n_name_loose", "n_kana", "n_romaji"))
+    has_address = any(normalized.get(field, "") for field in ("n_postal", "n_address"))
+    selected: list[str] = []
+    if has_name and "name" in available:
+        selected.append("name")
+    if has_address and "address" in available:
+        selected.append("address")
+    if has_name and "alias" in available:
+        selected.append("alias")
+    return tuple(selected)
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,7 +68,7 @@ def dense_view_text(record: dict[str, Any], view: str) -> str:
     """Build the same labeled text shape for corpus and query records."""
     if view not in DENSE_VIEW_NAMES:
         raise ValueError(f"unsupported dense view {view!r}")
-    normalized = record if "n_name_loose" in record else normalize_record(record)
+    normalized = record if any(key.startswith("n_") for key in record) else normalize_record(record)
     if view == "alias":
         values = (
             normalized.get("n_name_loose", ""),
@@ -71,7 +99,7 @@ def dense_view_text(record: dict[str, Any], view: str) -> str:
 
 def dense_view_queries(record: dict[str, Any], view: str) -> tuple[str, ...]:
     """Return query texts with the same row shape as the selected corpus view."""
-    normalized = record if "n_name_loose" in record else normalize_record(record)
+    normalized = record if any(key.startswith("n_") for key in record) else normalize_record(record)
     if view == "alias":
         values = (
             normalized.get("n_name_loose", ""),
@@ -134,12 +162,16 @@ def _encode_to_cache(
     offset = 0
     try:
         texts = _iter_source_texts(source, view)
+        chunk_size = 1024
+        started = time.perf_counter()
+        report_every = max(chunk_size, len(source) // 20)
+        next_report = report_every
         while offset < len(source):
-            batch = list(next(texts) for _ in range(min(batch_size, len(source) - offset)))
+            batch = list(next(texts) for _ in range(min(chunk_size, len(source) - offset)))
             encoded = np.asarray(
                 model.encode(
                     batch,
-                    batch_size=batch_size,
+                    batch_size=min(batch_size, len(batch)),
                     show_progress_bar=False,
                     normalize_embeddings=True,
                     convert_to_numpy=True,
@@ -157,6 +189,17 @@ def _encode_to_cache(
                 )
             matrix[offset : offset + len(batch)] = encoded
             offset += len(batch)
+            if offset >= next_report or offset == len(source):
+                elapsed = time.perf_counter() - started
+                rate = offset / max(elapsed, 1e-9)
+                eta = int((len(source) - offset) / max(rate, 1e-9))
+                print(
+                    f"  [dense:{view}] {offset:,}/{len(source):,} "
+                    f"({100.0 * offset / len(source):.0f}%) "
+                    f"eta {eta // 60:02d}:{eta % 60:02d}",
+                    flush=True,
+                )
+                next_report += report_every
         if matrix is None:
             raise RuntimeError(f"dense view {view} has no source rows")
         matrix.flush()
@@ -184,14 +227,22 @@ def _write_float16(path: Path, values: np.ndarray) -> None:
 
 
 def _model(model_id: str, device: str) -> Any:
+    import torch
     from sentence_transformers import SentenceTransformer
 
+    configure_torch_threads(model_thread_budget())
     kwargs: dict[str, Any] = {"device": device}
     if device in {"mps", "cuda"}:
-        import torch
-
         kwargs["model_kwargs"] = {"torch_dtype": torch.float16}
     return SentenceTransformer(model_id, **kwargs)
+
+
+def _model_dimensions(model: Any) -> int:
+    for name in ("get_embedding_dimension", "get_sentence_embedding_dimension"):
+        method = getattr(model, name, None)
+        if callable(method):
+            return int(method())
+    return 0
 
 
 def _cache_paths(cache_dir: Path, model_id: str, view: str) -> tuple[Path, Path]:
@@ -217,9 +268,18 @@ def build_dense_view_artifacts(
     """Build immutable name/address ANN artifacts with generation-local caching."""
     cache_dir.mkdir(parents=True, exist_ok=True)
     run_dir.mkdir(parents=True, exist_ok=True)
-    selected_device = resolve_device(device)
+    selected_device = (
+        require_mps_device(device) if is_f2llm_model(model_id) else resolve_device(device)
+    )
+    if is_f2llm_model(model_id):
+        configure_mps_runtime()
+        if batch_size != F2LLM_MPS_BATCH_SIZE:
+            raise ValueError(f"F2LLM-v2-330M requires dense-view batch size {F2LLM_MPS_BATCH_SIZE}")
     artifacts: dict[str, dict[str, Any]] = {}
-    model: Any = None
+    model: Any = _model(model_id, selected_device)
+    model_rev = model_revision(model)
+    dimensions = _model_dimensions(model)
+    torch_dtype = "float16" if selected_device in {"mps", "cuda"} else "float32"
     try:
         for view in DENSE_VIEW_NAMES:
             if view == "alias" and (aliases is None or aliases.empty):
@@ -227,22 +287,53 @@ def build_dense_view_artifacts(
             source = aliases if view == "alias" else reference
             assert source is not None
             cache_vec, cache_meta = _cache_paths(cache_dir, model_id, view)
+            source_columns = (
+                [column for column in ("record_index", "normalized_alias") if column in source]
+                if view == "alias"
+                else [
+                    column
+                    for column in (
+                        "party_type",
+                        "name_kanji",
+                        "name_kana",
+                        "name_romaji",
+                        "postal_code",
+                        "address",
+                    )
+                    if column in source
+                ]
+            )
+            source_fingerprint = hashlib.sha256(
+                pd.util.hash_pandas_object(source[source_columns], index=False).values.tobytes()
+            ).hexdigest()
+            expected_metadata = {
+                "model_id": model_id,
+                "model_revision": model_rev,
+                "data_fingerprint": data_fingerprint,
+                "source_fingerprint": source_fingerprint,
+                "view": view,
+                "preprocessing_version": EMBEDDING_PREPROCESSING_VERSION,
+                "field_schema_version": EMBEDDING_FIELD_SCHEMA_VERSION,
+                "rows": len(source),
+                "dimensions": dimensions,
+                "device": selected_device,
+                "torch_dtype": torch_dtype,
+                "batch_size": batch_size,
+            }
             embeddings: np.ndarray | None = None
+            encoded_dimensions = dimensions
             if cache_vec.exists() and cache_meta.exists():
                 metadata = json.loads(cache_meta.read_text(encoding="utf-8"))
-                if (
-                    metadata.get("model_id") == model_id
-                    and metadata.get("data_fingerprint") == data_fingerprint
-                    and metadata.get("view") == view
-                    and metadata.get("rows") == len(source)
-                ):
+                if all(metadata.get(key) == value for key, value in expected_metadata.items()):
                     candidate = np.load(cache_vec, mmap_mode="r")
-                    if len(candidate.shape) == 2 and candidate.shape[0] == len(source):
+                    if (
+                        len(candidate.shape) == 2
+                        and candidate.shape[0] == len(source)
+                        and (dimensions == 0 or candidate.shape[1] == dimensions)
+                    ):
                         embeddings = candidate
             if embeddings is None:
-                if model is None:
-                    model = _model(model_id, selected_device)
-                row_count, dimensions = _encode_to_cache(
+                row_count, encoded_dimensions = _encode_to_cache(
                     model,
                     source,
                     view,
@@ -251,14 +342,13 @@ def build_dense_view_artifacts(
                     cache_vec,
                     batch_size,
                 )
+                expected_metadata["dimensions"] = encoded_dimensions
                 cache_meta.write_text(
                     json.dumps(
                         {
-                            "model_id": model_id,
-                            "data_fingerprint": data_fingerprint,
-                            "view": view,
+                            **expected_metadata,
                             "rows": row_count,
-                            "shape": [row_count, dimensions],
+                            "shape": [row_count, encoded_dimensions],
                             "dtype": "float32",
                         },
                         ensure_ascii=False,
@@ -273,6 +363,7 @@ def build_dense_view_artifacts(
             output_index = run_dir / f"dense_index_{view}.usearch"
             save_dense_index(output_index, index)
             artifacts[view] = {
+                **expected_metadata,
                 "view": view,
                 "data_fingerprint": data_fingerprint,
                 "embedding_path": output_embeddings.name,

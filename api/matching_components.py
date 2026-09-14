@@ -9,6 +9,7 @@ import pandas as pd
 
 from api.evidence import compare_fields, visible_record
 from api.features import PAIR_FEATURE_COLS, has_safe_identity_anchor, logit_clip
+from api.performance import cpu_thread_limit
 
 
 def empty_result(action: str, reason: str) -> dict[str, Any]:
@@ -33,20 +34,21 @@ class PairScorer:
 
     def score(self, features: pd.DataFrame) -> np.ndarray:
         engine = self.engine
-        base = np.asarray(engine._pair_model.predict_proba(features[PAIR_FEATURE_COLS])[:, 1])
-        inputs = getattr(engine._pair_calibrator, "n_features_in_", 1)
-        if inputs == 3:
-            calibration = np.column_stack(
-                [logit_clip(base), np.zeros(len(base)), np.zeros(len(base))]
-            )
-        elif inputs == 1:
-            calibration = base.reshape(-1, 1)
-        else:
-            raise ValueError("unsupported calibrator input schema")
-        scores = np.asarray(engine._pair_calibrator.predict_proba(calibration)[:, 1])
-        if not np.isfinite(scores).all() or ((scores < 0) | (scores > 1)).any():
-            raise ValueError("invalid calibrated scores")
-        return scores
+        with cpu_thread_limit(getattr(engine.config, "cpu_threads", 1)):
+            base = np.asarray(engine._pair_model.predict_proba(features[PAIR_FEATURE_COLS])[:, 1])
+            inputs = getattr(engine._pair_calibrator, "n_features_in_", 1)
+            if inputs == 3:
+                calibration = np.column_stack(
+                    [logit_clip(base), np.zeros(len(base)), np.zeros(len(base))]
+                )
+            elif inputs == 1:
+                calibration = base.reshape(-1, 1)
+            else:
+                raise ValueError("unsupported calibrator input schema")
+            scores = np.asarray(engine._pair_calibrator.predict_proba(calibration)[:, 1])
+            if not np.isfinite(scores).all() or ((scores < 0) | (scores > 1)).any():
+                raise ValueError("invalid calibrated scores")
+            return scores
 
 
 class CandidateAggregator:
@@ -54,6 +56,11 @@ class CandidateAggregator:
 
     def __init__(self, engine: Any):
         self.engine = engine
+        canonical = engine._canonical
+        self._canonical_names = pd.Series(
+            canonical["name_kanji"].astype(str).to_numpy(copy=False),
+            index=canonical["nayose_id"].astype(str).to_numpy(copy=False),
+        )
 
     def build(
         self,
@@ -109,8 +116,8 @@ class CandidateAggregator:
         candidates: list[dict[str, Any]] = []
         for entity_id, evidence in groups.items():
             evidence.sort(key=lambda e: (-e["score"], e["record"]["record_id"]))
-            canonical = engine._canonical[engine._canonical.nayose_id == entity_id]
-            if canonical.empty:
+            canonical_name = self._canonical_names.get(entity_id)
+            if canonical_name is None:
                 raise ValueError("entity mapping has no canonical record")
             top_evidence = evidence[:3]
             max_evidence_families = max(
@@ -138,16 +145,26 @@ class CandidateAggregator:
                 (int(has_safe_identity_anchor(item["features"])) for item in top_evidence),
                 default=0,
             )
+            dense_similarities = [
+                float(item["retrieval"].get("dense_score", 0.0)) for item in evidence
+            ]
+            dense_similarities.extend(
+                float(score)
+                for item in evidence
+                for score in item["retrieval"].get("dense_view_scores", {}).values()
+            )
             candidates.append(
                 {
                     "nayose_id": entity_id,
-                    "name": str(canonical.iloc[0].get("name_kanji", "")),
+                    "name": str(canonical_name),
                     "probability": float(np.mean([e["score"] for e in top_evidence])),
                     "support": len(evidence),
                     "max_evidence_family_count": max_evidence_families,
                     "hard_conflict_count": hard_conflict_count,
                     "identity_anchor_count": identity_anchor_count,
                     "identity_anchor_safe": identity_anchor_safe,
+                    "reference_density": len(evidence) / max(len(raw), 1),
+                    "max_dense_similarity": max(dense_similarities, default=0.0),
                     "evidence": top_evidence,
                 }
             )
@@ -408,6 +425,10 @@ class DecisionPolicy:
         margin = top["probability"] - (candidates[1]["probability"] if len(candidates) > 1 else 0.0)
         margin_threshold = float(getattr(engine.config, "entity_margin_threshold", 0.0))
         minimum_families = int(getattr(engine.config, "minimum_evidence_families", 1))
+        minimum_density = float(getattr(engine.config, "minimum_reference_density", 0.0))
+        density_weak = (
+            minimum_density > 0 and float(top.get("reference_density", 0.0)) < minimum_density
+        )
         safe_for_auto = (
             top["probability"] >= auto
             and margin >= margin_threshold
@@ -416,7 +437,9 @@ class DecisionPolicy:
             and int(top.get("identity_anchor_safe", 0)) >= 1
         )
         action, reason = (
-            ("AUTO_LINK", "above_auto_threshold")
+            ("NO_MATCH", "reference_density_below_threshold")
+            if density_weak
+            else ("AUTO_LINK", "above_auto_threshold")
             if safe_for_auto
             else ("REVIEW", "evidence_safety_check")
             if top["probability"] >= review
@@ -444,10 +467,16 @@ class DecisionPolicy:
                 "reranker": False,
                 "retrieval_backend": getattr(self.retriever, "active_backend", "unknown"),
                 "exact_mode": getattr(self.retriever, "exact_mode", "unknown"),
+                "reference_density": float(top.get("reference_density", 0.0)),
+                "max_dense_similarity": float(top.get("max_dense_similarity", 0.0)),
+                "minimum_reference_density": minimum_density,
                 "auto_eligibility": {
                     "identity_anchor": bool(top.get("identity_anchor_safe", 0)),
                     "evidence_families": int(top.get("max_evidence_family_count", 0)),
                     "hard_conflicts": int(top.get("hard_conflict_count", 0)),
+                    "reference_density": float(top.get("reference_density", 0.0)),
+                    "max_dense_similarity": float(top.get("max_dense_similarity", 0.0)),
+                    "minimum_reference_density": minimum_density,
                 },
             },
             "candidates": [

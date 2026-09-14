@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -13,6 +16,7 @@ from fastapi import HTTPException
 
 from api.dataset_query import DatasetQueryBuilder, DatasetTableDescriptor
 from api.evidence import VISIBLE_FIELDS
+from api.telemetry import Stats
 
 
 @lru_cache(maxsize=128)
@@ -68,8 +72,9 @@ class DatasetService:
         ),
     }
 
-    def __init__(self, root: Path | str):
+    def __init__(self, root: Path | str, stats: Stats | None = None):
         self.root = Path(root).resolve()
+        self._stats = stats
 
     @staticmethod
     def _friendly_name(generation: Path, manifest: dict[str, Any], current: bool) -> dict[str, str]:
@@ -158,8 +163,7 @@ class DatasetService:
         manifest = self._manifest(generation)
         current = (self.root / "current").resolve() if (self.root / "current").exists() else None
         tables = []
-        con = duckdb.connect()
-        try:
+        with self._duckdb("duckdb.dataset_summary") as con:
             for table, descriptor in self.TABLES.items():
                 path = generation / descriptor.filename
                 if not path.exists():
@@ -178,8 +182,6 @@ class DatasetService:
                         "cursor_column": descriptor.cursor_column,
                     }
                 )
-        finally:
-            con.close()
         is_current = bool(current and generation.resolve() == current)
         return {
             "id": generation.name,
@@ -214,6 +216,25 @@ class DatasetService:
         key = self.TABLES[table].manifest_count_key
         value = manifest.get("counts", {}).get(key) if key else None
         return int(value) if value is not None else None
+
+    @contextmanager
+    def _duckdb(self, name: str) -> Iterator[Any]:
+        started = time.perf_counter()
+        try:
+            connection = duckdb.connect()
+            try:
+                yield connection
+            finally:
+                connection.close()
+        except BaseException:
+            self._record(name, started, error=True)
+            raise
+        else:
+            self._record(name, started)
+
+    def _record(self, name: str, started: float, *, error: bool = False) -> None:
+        if self._stats is not None:
+            self._stats.record(name, time.perf_counter() - started, error=error)
 
     def records(
         self,
@@ -251,8 +272,7 @@ class DatasetService:
         total_exact = after is None and (
             include_total or (not has_predicates and known_total is not None)
         )
-        con = duckdb.connect()
-        try:
+        with self._duckdb("duckdb.dataset_page") as con:
             if total_exact and known_total is not None and not has_predicates:
                 total = known_total
             elif total_exact:
@@ -264,8 +284,6 @@ class DatasetService:
             fetch_limit = page_limit + 1 if not total_exact else page_limit
             page = builder.page(fetch_limit, after=after, offset=page_offset)
             frame = con.execute(page.sql, page.params).fetchdf()
-        finally:
-            con.close()
         has_more = len(frame) > page_limit if not total_exact else page_offset + len(frame) < total
         if len(frame) > page_limit:
             frame = frame.iloc[:page_limit]

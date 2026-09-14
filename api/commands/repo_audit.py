@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """One-command repository status (the "did I break anything?" gate).
 
 Runs every enforcement layer and prints a PASS/FAIL table; nonzero exit on
@@ -13,13 +12,20 @@ import subprocess
 import sys
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parents[1]
+REPO = Path(__file__).resolve().parents[2]
 PY = [sys.executable, "-m"]
 NPM = shutil.which("npm")
 NODE = shutil.which("node")
 
 
-def run(name: str, cmd: list[str], cwd: Path, timeout: int = 900, env=None) -> bool:
+def run(
+    name: str,
+    cmd: list[str],
+    cwd: Path,
+    timeout: int = 900,
+    env=None,
+    output_path: Path | None = None,
+) -> bool:
     print(f"  {name:<32} ", end="", flush=True)
     try:
         proc = subprocess.run(
@@ -29,6 +35,9 @@ def run(name: str, cmd: list[str], cwd: Path, timeout: int = 900, env=None) -> b
         print("FAIL")
         print(f"{type(exc).__name__}: {exc}")
         return False
+    if output_path is not None:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(proc.stdout + proc.stderr, encoding="utf-8")
     ok = proc.returncode == 0
     print("PASS" if ok else "FAIL")
     if not ok:
@@ -40,19 +49,29 @@ def run(name: str, cmd: list[str], cwd: Path, timeout: int = 900, env=None) -> b
 def main() -> int:
     print("Auditing repository (fastest first)...")
     results: dict[str, bool] = {}
+    metrics_dir = (
+        Path(os.environ["NAYOSE_METRICS_DIR"]) if os.getenv("NAYOSE_METRICS_DIR") else None
+    )
 
     # 1-3: Python lint, formatting, and types
     results["ruff"] = run("ruff (lint)", [*PY, "ruff", "check", "."], REPO)
-    results["structure"] = run("source structure", [*PY, "scripts.audit_structure"], REPO)
-    results["ruff format"] = run("ruff (format)", [*PY, "ruff", "format", "--check", "."], REPO)
-    results["mypy"] = run(
-        "mypy (types)", [*PY, "mypy", "api", "synthetic", "scripts", "tests"], REPO
+    structure_env = os.environ.copy()
+    if metrics_dir is not None:
+        structure_env["NAYOSE_ARCHITECTURE_LEDGER"] = str(metrics_dir / "architecture.json")
+    results["structure"] = run(
+        "source structure", [*PY, "api.commands.structure"], REPO, env=structure_env
     )
+    results["ruff format"] = run("ruff (format)", [*PY, "ruff", "format", "--check", "."], REPO)
+    results["mypy"] = run("mypy (types)", [*PY, "mypy", "api", "synthetic", "tests"], REPO)
 
     # 4: frontend types (tsc) + compile
     if NPM and NODE:
         results["tsc"] = run(
-            "tsc (frontend)", [NPM, "--prefix", "frontend", "run", "typecheck"], REPO, 300
+            "tsc (frontend)",
+            [NPM, "--prefix", "frontend", "run", "build"],
+            REPO,
+            300,
+            output_path=metrics_dir / "tsc.txt" if metrics_dir else None,
         )
         results["npm test"] = run(
             "npm test (js)",

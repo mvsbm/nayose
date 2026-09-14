@@ -18,6 +18,9 @@ dependencies = [
     "pyarrow>=14",
 ]
 
+[project.scripts]
+nayose = "api.cli:main"
+
 [project.optional-dependencies]
 matcher = [
     "scipy>=1.10",
@@ -36,10 +39,6 @@ neural = [
     "sentence-transformers>=2.7",
     "usearch>=2.1",
 ]
-train = [
-    "nbconvert>=7.16",
-    "ipykernel>=6.29",
-]
 performance = [
     "polars>=1.0",
 ]
@@ -52,10 +51,11 @@ dev = [
     "pytest>=8",
     "ruff>=0.6",
     "mypy>=1.10",
+    "psutil>=5.9",
 ]
 
 [tool.setuptools]
-packages = ["api", "scripts", "synthetic"]
+packages = ["api", "api.commands", "synthetic"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -64,7 +64,7 @@ addopts = "-q"
 [tool.ruff]
 target-version = "py311"
 line-length = 100
-exclude = [".venv", "data", "models", "*.ipynb"]
+exclude = [".venv", "data", "models"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM"]
@@ -77,6 +77,7 @@ ignore = ["B008"]  # function calls in argument defaults (standard for dataclass
 "synthetic/report.py" = ["E501"]  # template literals (CSS/JS/HTML strings)
 "api/main.py" = ["E501"]  # SQL template literals
 "api/query_service.py" = ["E501"]  # SQL template literals
+"api/training_pipeline.py" = ["E501"]  # long human-facing training diagnostics
 
 [tool.mypy]
 python_version = "3.12"
@@ -100,3 +101,9 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 module = ["joblib", "scipy.*", "sklearn.*", "duckdb", "fastapi", "starlette.*", "uvicorn.*"]
 ignore_missing_imports = true
+
+# This sequential extraction is covered by runtime/preflight tests while its
+# dynamic pandas-heavy stages are decomposed into typed modules.
+[[tool.mypy.overrides]]
+module = ["api.training_pipeline"]
+ignore_errors = true

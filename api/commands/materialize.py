@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Materialize target-platform serving artifacts for an existing model run."""
 
 from __future__ import annotations
@@ -6,7 +5,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from scripts.train import materialize_runtime_artifacts
+from api.bundle_materialization import materialize_runtime_artifacts
 
 
 def parse_args() -> argparse.Namespace:

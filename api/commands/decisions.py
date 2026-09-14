@@ -1,33 +1,32 @@
-#!/usr/bin/env python3
 """Review-decision audit: score operator decisions against hidden truth.
 
-The review audit: decisions persisted by the dashboard
-(models/decisions/<run>.json — reviewer identity included) are compared with
+The review audit: decisions persisted by the dashboard in the operational
+SQLite store (reviewer identity included) are compared with
 the hidden ground truth (record_truth) to measure reviewer accuracy, and the
 verified pairs are exported as an explicit artifact for a future retraining
 workflow. Training does not consume this export automatically. Truth
 tables are never mutated — this only reads them.
 
 Usage:
-    python scripts/audit_decisions.py [--run <run_id>] [--data-dir data/current]
+    nayose audit decisions [--run <run_id>] [--data-dir data/current]
                                      [--models-dir models] [--top 5]
 """
 
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import sys
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO))
+import duckdb
+import pandas as pd
 
-import duckdb  # noqa: E402
-import pandas as pd  # noqa: E402
+from api.decisions import DecisionsStore
+from api.operational_store import OperationalStore
+from api.release import data_generation_for_fingerprint, safe_run_id
 
-from api.release import data_generation_for_fingerprint, safe_run_id  # noqa: E402
+REPO = Path(__file__).resolve().parents[2]
 
 
 def parse_args() -> argparse.Namespace:
@@ -37,6 +36,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--models-dir", default=str(REPO / "models"))
     parser.add_argument(
         "--top", type=int, default=5, help="wrong-decision samples to print per reviewer"
+    )
+    parser.add_argument(
+        "--operational-db",
+        default="",
+        help="SQLite operational store; default is <data root>/operational.sqlite3",
     )
     return parser.parse_args()
 
@@ -53,30 +57,23 @@ def main() -> int:
     current = (models / "current").resolve() if (models / "current").exists() else None
     run_dir = current if not requested_run else (models / "runs" / requested_run).resolve()
     if run_dir is None or not run_dir.is_dir():
-        raise SystemExit("no run bundle found (models/current) — train first with scripts/train.py")
+        raise SystemExit(
+            "no run bundle found (models/current) — train first with nayose model train"
+        )
     run_id = run_dir.name
 
-    decisions_path = models / "decisions" / f"{run_id}.json"
-    if not decisions_path.exists():
-        print(f"no decisions recorded yet: {decisions_path}")
-        return 0
-    decisions = json.loads(decisions_path.read_text(encoding="utf-8"))
-    if not decisions:
-        print(f"decisions file empty: {decisions_path}")
-        return 0
     manifest_path = run_dir / "run_manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    binding_path = decisions_path.with_suffix(".meta.json")
-    if not binding_path.exists():
-        raise SystemExit(f"decision file has no model binding: {binding_path}")
-    binding = json.loads(binding_path.read_text(encoding="utf-8"))
-    expected_manifest_hash = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
-    if (
-        binding.get("run_id") != run_id
-        or binding.get("data_fingerprint") != manifest.get("data_fingerprint")
-        or binding.get("manifest_sha256") != expected_manifest_hash
-    ):
-        raise SystemExit("decision binding does not match the selected model manifest")
+    operational_store = OperationalStore(
+        Path(args.operational_db) if args.operational_db else data.parent / "operational.sqlite3"
+    )
+    try:
+        decisions = DecisionsStore(models, operational_store).load(run_id)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    if not decisions:
+        print(f"no decisions recorded yet for {run_id}")
+        return 0
 
     fingerprint = str(manifest.get("data_fingerprint", ""))
     generation = data_generation_for_fingerprint(data, fingerprint)
@@ -135,7 +132,8 @@ def main() -> int:
         print(f"note: {unknown} decisions reference records absent from this run's snapshot")
 
     promoted = df[df.resolvable & df.same_entity].copy()
-    out_path = models / "decisions" / f"promoted_{run_id}.parquet"
+    out_path = models / "exports" / f"promoted_{run_id}.parquet"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     promoted.to_parquet(out_path, index=False)
     print(
         f"\nverified duplicate export (not auto-consumed by training): "

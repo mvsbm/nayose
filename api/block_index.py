@@ -16,6 +16,7 @@ from api.normalize import (
     normalize_email,
     normalize_kana,
     normalize_name,
+    normalize_name_signature,
     normalize_phone,
     normalize_postal,
 )
@@ -45,7 +46,7 @@ def data_fingerprint(frame: pd.DataFrame) -> str:
 def _raw_values(frame: pd.DataFrame, column: str) -> pd.Series:
     if column not in frame:
         return pd.Series("", index=frame.index, dtype=object)
-    return frame[column].map(str)
+    return frame[column].map(lambda value: "" if pd.isna(value) else str(value))
 
 
 def _normalized_values(frame: pd.DataFrame) -> dict[str, pd.Series]:
@@ -63,6 +64,7 @@ def _normalized_values(frame: pd.DataFrame) -> dict[str, pd.Series]:
     }
     return {
         "name_kanji": raw["name_kanji"].map(normalize_name),
+        "name_signature": raw["name_kanji"].map(normalize_name_signature),
         "name_kana": raw["name_kana"].map(normalize_kana),
         "phone": raw["phone"].map(normalize_phone),
         "date_birth": raw["date_birth"].map(normalize_dob),
@@ -88,7 +90,14 @@ def _group_keys(keys: pd.Series, valid: pd.Series | None = None) -> dict[str, np
 def _build_block_indexes_pandas(normalized: dict[str, pd.Series]) -> BlockIndex:
     indexes: BlockIndex = {}
     for block_name, columns in BLOCK_SPECS.items():
-        values = [normalized[column] for column in columns]
+        values = [
+            normalized["name_signature"]
+            if block_name == "signature_postal" and column == "name_kanji"
+            else normalized[column]
+            for column in columns
+        ]
+        if block_name == "signature_postal":
+            values[0] = normalized["name_signature"]
         if block_name == "phone_suffix_name":
             values[0] = values[0].str[-8:]
         valid = values[0].ne("")
@@ -110,6 +119,8 @@ def _build_block_indexes_polars(normalized: dict[str, pd.Series]) -> BlockIndex:
     for block_name, columns in BLOCK_SPECS.items():
         working = frame
         key_columns = list(columns)
+        if block_name == "signature_postal":
+            key_columns[0] = "name_signature"
         if block_name == "phone_suffix_name":
             working = working.with_columns(pl.col("phone").str.slice(-8).alias("phone_suffix"))
             key_columns[0] = "phone_suffix"
@@ -179,7 +190,7 @@ def save_block_indexes(
     temporary = path.with_name(f".{path.name}.tmp.{os.getpid()}")
     try:
         with temporary.open("wb") as stream:
-            np.savez(stream, **payload)  # type: ignore[arg-type]
+            np.savez_compressed(stream, **payload)  # type: ignore[arg-type]
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)

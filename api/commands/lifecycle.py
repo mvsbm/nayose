@@ -1,14 +1,13 @@
-#!/usr/bin/env python3
-"""Headless model training: executes nayose.ipynb end-to-end in a fresh kernel.
+"""Headless model training through the checked-in Python pipeline.
 
-CLI == notebook contract. The notebook is the reference pipeline (index →
-candidates → pair features → entity-disjoint verifier → clustering → query
-scoring → bundle export); this command runs it headlessly with NAYOSE_*
-overrides, verifies it, and promotes it only after fingerprint checks pass.
+The pipeline covers index construction, candidate verification, entity-disjoint
+clustering, query scoring, and bundle export. This command supplies validated
+runtime overrides, verifies the resulting bundle, and promotes it only after
+fingerprint and model gates pass.
 
 Usage:
-    python scripts/train.py --data-dir data/current --models-dir models \\
-        --seed 42 --pair-model lightgbm --device auto
+    nayose model train --data-dir data/current --models-dir models \\
+        --seed 42 --pair-model lightgbm --device mps --model-family f2llm_330m
 
 The produced bundle under models/runs/run_<ts>_<hash> (promoted via
 models/current) is exactly what api.main serves.
@@ -23,35 +22,26 @@ import sys
 import time
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
-
-from api.block_index import (  # noqa: E402
-    BLOCK_INDEX_ARTIFACT,
-    BLOCK_INDEX_SCHEMA_VERSION,
-    build_block_indexes,
-    data_fingerprint,
-    save_block_indexes,
-)
-from api.dense_index import (  # noqa: E402
-    DENSE_INDEX_ARTIFACT,
-    build_dense_index,
-    save_dense_index,
-    target_platform,
-    usearch_version,
-)
-from api.dense_views import build_dense_view_artifacts  # noqa: E402
+from api.block_index import BLOCK_INDEX_ARTIFACT  # noqa: E402
+from api.bundle_materialization import materialize_runtime_artifacts  # noqa: E402
 from api.embedding_config import (  # noqa: E402
+    F2LLM_330M_MODEL_ID,
+    F2LLM_MPS_BATCH_SIZE,
+    F2LLM_MPS_DEVICE,
+    F2LLM_MPS_PROCESS_WORKERS,
+    F2LLM_MPS_TORCH_DTYPE,
     SUPPORTED_MODEL_FAMILIES,
     embedding_model_id,
-    notebook_model_family,
+    pipeline_model_family,
 )
 from api.model_gate import evaluate_f2llm_candidate  # noqa: E402
-from api.name_variants import build_entity_aliases  # noqa: E402
-from api.performance import cpu_thread_budget  # noqa: E402
-from api.release import atomic_directory_alias, validate_model_for_data  # noqa: E402
+from api.performance import (  # noqa: E402
+    cpu_thread_budget,
+    model_thread_budget,
+    native_thread_environment,
+)
+from api.release import ReleaseCatalog, ReleasePublisher, validate_model_for_data  # noqa: E402
 
-NOTEBOOK = ROOT / "nayose.ipynb"
 REQUIRED_BUNDLE_ARTIFACTS = (BLOCK_INDEX_ARTIFACT,)
 REQUIRED_BUNDLE_TABLES = (
     "canonical_entities",
@@ -76,7 +66,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=int(os.getenv("NAYOSE_SEED", "42")))
     parser.add_argument(
         "--device",
-        default=os.getenv("NAYOSE_DEVICE", "auto"),
+        default=os.getenv("NAYOSE_DEVICE", F2LLM_MPS_DEVICE),
         choices=["auto", "mps", "cpu", "cuda"],
     )
     parser.add_argument(
@@ -98,12 +88,6 @@ def parse_args() -> argparse.Namespace:
         "--exact-mode",
         default=os.getenv("NAYOSE_EXACT_MODE", "hybrid"),
         choices=["hybrid", "fuzzy_only", "exact_only"],
-    )
-    parser.add_argument(
-        "--timeout",
-        type=int,
-        default=int(os.getenv("NAYOSE_TRAIN_TIMEOUT", "14400")),
-        help="per-cell timeout (s); default 4h",
     )
     parser.add_argument(
         "--baseline-run",
@@ -138,214 +122,101 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _validate_locked_profile(args: argparse.Namespace) -> None:
+    if args.model_family not in {"f2llm", "f2llm_330m"}:
+        return
+    if args.device != F2LLM_MPS_DEVICE:
+        raise SystemExit(
+            "FAIL: f2llm_330m is locked to Apple MPS; use --device mps "
+            "(CPU/CUDA/auto fallback is disabled)"
+        )
+    if args.pair_model == "sklearn":
+        raise SystemExit("FAIL: f2llm_330m is locked to LightGBM pair training")
+    expected = embedding_model_id(args.model_family, args.embedding_model)
+    if expected != F2LLM_330M_MODEL_ID:
+        raise SystemExit(
+            f"FAIL: f2llm_330m is locked to {F2LLM_330M_MODEL_ID}; "
+            "custom embedding models are disabled"
+        )
+
+
 def _env_for(args: argparse.Namespace) -> dict[str, str]:
-    """Notebook overrides. NAYOSE_UI stays off (headless); low-memory + SVD
-    fallback keep a laptop-sized run safe without touching precision logic."""
+    """Build the headless environment, including the locked F2LLM profile."""
+    _validate_locked_profile(args)
+    locked = args.model_family in {"f2llm", "f2llm_330m"}
+    workers = F2LLM_MPS_PROCESS_WORKERS if locked else None
+    cpu_threads = cpu_thread_budget(workers=workers)
+    model_threads = cpu_threads if locked else model_thread_budget()
     snapshot = Path(args.data_dir).resolve()
     data_dir = (snapshot / "current").resolve() if (snapshot / "current").exists() else snapshot
     env = {
+        **native_thread_environment(workers=workers),
         "NAYOSE_DATA_DIR": str(data_dir),
         "NAYOSE_OUTPUT_DIR": str(Path(args.models_dir).resolve()),
         "NAYOSE_SEED": str(args.seed),
         "NAYOSE_DEVICE": args.device,
         "NAYOSE_PAIR_MODEL": args.pair_model,
-        "NAYOSE_MODEL_FAMILY": notebook_model_family(args.model_family),
+        "NAYOSE_MODEL_FAMILY": pipeline_model_family(args.model_family),
         "NAYOSE_EXACT_MODE": args.exact_mode,
         "NAYOSE_REQUESTED_MODEL_FAMILY": args.model_family,
         "NAYOSE_UI": "0",
-        "NAYOSE_STRICT_BACKENDS": os.getenv("NAYOSE_STRICT_BACKENDS", "0"),
-        "NAYOSE_CPU_THREADS": os.getenv("NAYOSE_CPU_THREADS", str(cpu_thread_budget())),
-        "NAYOSE_MODEL_THREADS": os.getenv("NAYOSE_MODEL_THREADS", str(cpu_thread_budget())),
+        "NAYOSE_STRICT_BACKENDS": "1" if locked else os.getenv("NAYOSE_STRICT_BACKENDS", "0"),
+        "NAYOSE_CPU_THREADS": str(cpu_threads),
+        "NAYOSE_MODEL_THREADS": str(model_threads),
         "NAYOSE_INDEX_BACKEND": os.getenv("NAYOSE_INDEX_BACKEND", "polars"),
         "NAYOSE_LOW_MEMORY_MODELS": "1",
-        "NAYOSE_ALLOW_SVD_FALLBACK": os.getenv(
-            "NAYOSE_ALLOW_SVD_FALLBACK", "0" if args.model_family == "f2llm_330m" else "1"
-        ),
-        "NAYOSE_PYTORCH_ENABLE_MPS_FALLBACK": "1",
+        "NAYOSE_ALLOW_SVD_FALLBACK": "0" if locked else os.getenv("NAYOSE_ALLOW_SVD_FALLBACK", "1"),
+        "PYTORCH_ENABLE_MPS_FALLBACK": "0"
+        if locked
+        else os.getenv("PYTORCH_ENABLE_MPS_FALLBACK", "0"),
         "NAYOSE_PROMOTE": "0",
     }
+    if locked:
+        env.update(
+            {
+                "NAYOSE_DEVICE": F2LLM_MPS_DEVICE,
+                "NAYOSE_PAIR_MODEL": "lightgbm",
+                "NAYOSE_EMBEDDING_MODEL": F2LLM_330M_MODEL_ID,
+                "NAYOSE_NEURAL_BATCH": str(F2LLM_MPS_BATCH_SIZE),
+                "NAYOSE_DENSE_VIEW_BATCH": str(F2LLM_MPS_BATCH_SIZE),
+                "NAYOSE_PROCESS_WORKERS": str(F2LLM_MPS_PROCESS_WORKERS),
+                "NAYOSE_USE_DENSE": "1",
+            }
+        )
     embedding = embedding_model_id(args.model_family, args.embedding_model)
     if embedding is not None:
         env["NAYOSE_EMBEDDING_MODEL"] = embedding
     return env
 
 
-def run_notebook(args: argparse.Namespace, env: dict[str, str]) -> float:
-    import nbformat
-    from nbconvert.preprocessors import ExecutePreprocessor
+def run_pipeline(args: argparse.Namespace, env: dict[str, str]) -> float:
+    import runpy
 
-    nb = nbformat.read(NOTEBOOK, as_version=4)
-    executor = ExecutePreprocessor(timeout=args.timeout, kernel_name="python3")
+    previous = {key: os.environ.get(key) for key in env}
     os.environ.update(env)
     print(
-        f"executing {NOTEBOOK.name} with {len(nb.cells)} cells "
+        f"executing api.training_pipeline "
         f"(data={env['NAYOSE_DATA_DIR']}, out={env['NAYOSE_OUTPUT_DIR']}, seed={args.seed})"
     )
     print(
         f"env: device={args.device} pair_model={args.pair_model} "
         f"model_family={args.model_family} exact_mode={args.exact_mode}"
     )
-    t0 = time.monotonic()
-    executor.preprocess(nb, {"metadata": {"path": str(ROOT)}})
-    return time.monotonic() - t0
-
-
-def _materialize_dense_artifact(run: Path) -> dict[str, object] | None:
-    """Materialize the optional ANN cache when the portable backend is installed."""
-    import numpy as np
-
-    embedding_path = next(
-        (
-            run / name
-            for name in ("reference_embeddings.f16.npy", "reference_embeddings.npy")
-            if (run / name).exists()
-        ),
-        None,
-    )
-    if embedding_path is None:
-        return None
+    started = time.monotonic()
     try:
-        embeddings = np.load(embedding_path, mmap_mode="r")
-        index = build_dense_index(embeddings)
-        save_dense_index(run / DENSE_INDEX_ARTIFACT, index)
-    except (ImportError, OSError, RuntimeError, TypeError, ValueError) as exc:
-        print(f"WARN: optional dense ANN artifact skipped ({type(exc).__name__})")
-        return None
-    return {
-        "path": DENSE_INDEX_ARTIFACT,
-        "format": "usearch",
-        "row_count": int(embeddings.shape[0]),
-        "dimensions": int(embeddings.shape[1]),
-        "source": embedding_path.name,
-        "platform": target_platform(),
-        "usearch_version": usearch_version(),
-    }
+        runpy.run_module("api.training_pipeline", run_name="__main__")
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+    return time.monotonic() - started
 
 
-def materialize_runtime_artifacts(
-    run: Path, data: Path, *, index_backend: str | None = None
-) -> None:
-    """Finalize serving artifacts after notebook training completes."""
-    import pandas as pd
-
-    reference_path = data / "reference_records.parquet"
-    reference = pd.read_parquet(reference_path)
-    manifest_path = run / "run_manifest.json"
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    expected_fingerprint = str(manifest.get("data_fingerprint", ""))
-    actual_fingerprint = data_fingerprint(reference)
-    if not expected_fingerprint or actual_fingerprint != expected_fingerprint:
-        raise SystemExit(
-            "FAIL: refusing to materialize block indexes for a fingerprint-mismatched bundle"
-        )
-    selected_backend = index_backend or os.getenv("NAYOSE_INDEX_BACKEND") or "polars"
-    mapping_path = run / "record_to_nayose.parquet"
-    if not mapping_path.is_file():
-        raise SystemExit(f"FAIL: cannot materialize aliases without {mapping_path}")
-    mapping = pd.read_parquet(mapping_path, columns=["record_id", "nayose_id"])
-    record_to_entity = dict(
-        zip(mapping["record_id"].astype(str), mapping["nayose_id"].astype(str), strict=True)
-    )
-    alias_artifact = build_entity_aliases(
-        reference,
-        record_to_entity,
-        run / "entity_aliases.parquet",
-        data_fingerprint=actual_fingerprint,
-    )
-    aliases = pd.read_parquet(run / "entity_aliases.parquet")
-    indexes = build_block_indexes(reference, backend=selected_backend)
-    artifact_path = run / BLOCK_INDEX_ARTIFACT
-    save_block_indexes(
-        artifact_path,
-        indexes,
-        fingerprint=actual_fingerprint,
-        row_count=len(reference),
-    )
-    artifact = {
-        "path": BLOCK_INDEX_ARTIFACT,
-        "format": "npz",
-        "schema_version": BLOCK_INDEX_SCHEMA_VERSION,
-        "data_fingerprint": actual_fingerprint,
-        "row_count": len(reference),
-        "blocks": {name: len(groups) for name, groups in indexes.items()},
-        "backend": selected_backend,
-    }
-    runtime_artifacts = dict(manifest.get("runtime_artifacts", {}))
-    runtime_artifacts["block_indexes"] = artifact
-    runtime_artifacts["entity_aliases"] = alias_artifact
-    dense_artifact = _materialize_dense_artifact(run)
-    if dense_artifact is not None:
-        runtime_artifacts["dense_index"] = dense_artifact
-    dense_views: dict[str, dict[str, object]] = {}
-    if dense_artifact is not None:
-        dense_views["record"] = {
-            "view": "record",
-            "data_fingerprint": actual_fingerprint,
-            "embedding_path": str(dense_artifact["source"]),
-            "index_path": DENSE_INDEX_ARTIFACT,
-            "format": "usearch",
-            "row_count": dense_artifact["row_count"],
-            "dimensions": dense_artifact["dimensions"],
-            "reference_row_count": len(reference),
-        }
-    if (
-        manifest.get("backends", {}).get("neural_enabled")
-        and manifest.get("embedding_model")
-        and os.getenv("NAYOSE_DENSE_VIEWS", "1").lower() not in {"0", "false", "no"}
-    ):
-        dense_views.update(
-            build_dense_view_artifacts(
-                reference,
-                data,
-                run,
-                model_id=str(manifest["embedding_model"]),
-                data_fingerprint=actual_fingerprint,
-                device=os.getenv("NAYOSE_DEVICE", "auto"),
-                batch_size=int(
-                    os.getenv("NAYOSE_DENSE_VIEW_BATCH", os.getenv("NAYOSE_NEURAL_BATCH", "16"))
-                ),
-                aliases=aliases,
-            )
-        )
-    if dense_views:
-        runtime_artifacts["dense_views"] = dense_views
-    manifest["runtime_artifacts"] = runtime_artifacts
-    generated_paths = {
-        BLOCK_INDEX_ARTIFACT,
-        DENSE_INDEX_ARTIFACT,
-        "entity_aliases.parquet",
-        *(descriptor["embedding_path"] for descriptor in dense_views.values()),
-        *(descriptor["index_path"] for descriptor in dense_views.values()),
-    }
-    artifacts = [
-        entry for entry in manifest.get("artifacts", []) if entry.get("path") not in generated_paths
-    ]
-    artifacts.append(artifact)
-    artifacts.append(alias_artifact)
-    if dense_artifact is not None:
-        artifacts.append(dense_artifact)
-    artifacts.extend(
-        {
-            "name": f"dense_index_{view}",
-            "path": str(descriptor["index_path"]),
-            "format": "usearch",
-            "rows": descriptor["row_count"],
-            "dimensions": descriptor["dimensions"],
-        }
-        for view, descriptor in dense_views.items()
-        if view != "record"
-    )
-    manifest["artifacts"] = artifacts
-    temporary = manifest_path.with_name(f".{manifest_path.name}.tmp.{os.getpid()}")
-    temporary.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(temporary, manifest_path)
-    print(
-        f"materialized {BLOCK_INDEX_ARTIFACT}: {len(reference):,} rows, "
-        f"fingerprint {actual_fingerprint[:12]}"
-    )
-
-
-def materialize_latest_runtime_artifacts(args: argparse.Namespace) -> Path:
+def materialize_latest_runtime_artifacts(
+    args: argparse.Namespace, environment: dict[str, str] | None = None
+) -> Path:
     """Materialize serving artifacts for the newest complete run."""
     models = Path(args.models_dir).resolve()
     snapshot = Path(args.data_dir).resolve()
@@ -358,7 +229,17 @@ def materialize_latest_runtime_artifacts(args: argparse.Namespace) -> Path:
     )
     if not runs:
         raise SystemExit("FAIL: no complete run bundle found under models/runs/")
-    materialize_runtime_artifacts(runs[0], data)
+    previous = {key: os.environ.get(key) for key in environment} if environment else {}
+    if environment:
+        os.environ.update(environment)
+    try:
+        materialize_runtime_artifacts(runs[0], data)
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
     return runs[0]
 
 
@@ -415,7 +296,7 @@ def verify_bundle(args: argparse.Namespace) -> Path:
     ]
     if missing_artifacts:
         raise SystemExit(f"FAIL: bundle {run.name} missing artifacts: {missing_artifacts}")
-    if getattr(args, "model_family", "off") == "f2llm_330m":
+    if getattr(args, "model_family", "off") in {"f2llm", "f2llm_330m"}:
         expected_model = embedding_model_id(
             args.model_family, getattr(args, "embedding_model", None)
         )
@@ -427,6 +308,20 @@ def verify_bundle(args: argparse.Namespace) -> Path:
             )
         if not backends.get("neural_enabled") or backends.get("degraded_run"):
             raise SystemExit("FAIL: 330M profile produced a degraded or non-neural bundle")
+        if backends.get("pair_model") != "lightgbm":
+            raise SystemExit("FAIL: 330M profile is locked to LightGBM pair training")
+        policy = manifest.get("runtime_policy", {})
+        expected_policy = {
+            "neural_device": F2LLM_MPS_DEVICE,
+            "torch_dtype": F2LLM_MPS_TORCH_DTYPE,
+            "neural_batch_size": F2LLM_MPS_BATCH_SIZE,
+            "process_workers": F2LLM_MPS_PROCESS_WORKERS,
+            "pytorch_mps_fallback": "0",
+        }
+        if any(policy.get(key) != value for key, value in expected_policy.items()):
+            raise SystemExit(
+                "FAIL: 330M profile runtime policy is not the locked MPS configuration"
+            )
         embedding_path = next(
             (
                 run / name
@@ -471,7 +366,7 @@ def verify_bundle(args: argparse.Namespace) -> Path:
 
 
 def verify_performance(args: argparse.Namespace, run: Path) -> None:
-    if args.model_family != "f2llm_330m":
+    if args.model_family not in {"f2llm", "f2llm_330m"}:
         return
     baseline_path = (
         Path(args.baseline_run) if args.baseline_run else Path(args.models_dir) / "current"
@@ -506,9 +401,21 @@ def verify_performance(args: argparse.Namespace, run: Path) -> None:
 
 def promote_bundle(args: argparse.Namespace, run: Path) -> None:
     models = Path(args.models_dir).resolve()
-    snapshot = Path(args.data_dir).resolve()
-    fingerprint = validate_model_for_data(run, snapshot)
-    atomic_directory_alias(run, models / "current")
+    configured = Path(args.data_dir).resolve()
+    explicit_generation = (configured / "generation_manifest.json").is_file()
+    if explicit_generation:
+        generation = configured
+        if generation.parent.name != "generations":
+            raise ValueError("data generation must live under a generations directory")
+        data_root = generation.parent.parent
+    else:
+        data_root = configured
+        current = data_root / "current"
+        if not current.exists():
+            raise ValueError("current data generation is unavailable")
+        generation = current.resolve()
+    fingerprint = validate_model_for_data(run, generation if explicit_generation else data_root)
+    release = ReleasePublisher(ReleaseCatalog(data_root, models)).publish(generation.name, run.name)
     registry_path = models / "registry.json"
     registry = (
         json.loads(registry_path.read_text(encoding="utf-8")) if registry_path.exists() else []
@@ -528,7 +435,7 @@ def promote_bundle(args: argparse.Namespace, run: Path) -> None:
     registry_tmp = registry_path.with_name(f".{registry_path.name}.tmp.{os.getpid()}")
     registry_tmp.write_text(json.dumps(registry, ensure_ascii=False, indent=2), encoding="utf-8")
     os.replace(registry_tmp, registry_path)
-    print(f"promoted {run.name} (fingerprint {fingerprint[:12]})")
+    print(f"promoted {run.name} as {release.release_id} (fingerprint {fingerprint[:12]})")
 
 
 def main() -> int:
@@ -537,15 +444,15 @@ def main() -> int:
     data = (snapshot / "current").resolve() if (snapshot / "current").exists() else snapshot
     if not (data / "generation_manifest.json").exists():
         raise SystemExit(
-            f"data dir {data} has no generation_manifest.json — run scripts/generate_data.py first"
+            f"data dir {data} has no generation_manifest.json — run nayose data generate first"
         )
     env = _env_for(args)
-    elapsed = run_notebook(args, env)
+    elapsed = run_pipeline(args, env)
     print(f"training finished in {elapsed / 60:.1f} min")
     if args.no_verify:
         print("bundle verification skipped; leaving models/current unchanged")
         return 0
-    materialize_latest_runtime_artifacts(args)
+    materialize_latest_runtime_artifacts(args, env)
     run = verify_bundle(args)
     verify_performance(args, run)
     promote_bundle(args, run)

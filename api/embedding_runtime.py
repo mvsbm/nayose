@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import multiprocessing as mp
 import os
+import time
 from collections.abc import Callable, Sequence
 from contextlib import suppress
 from multiprocessing.connection import Connection
@@ -12,7 +13,15 @@ from typing import Any
 
 import numpy as np
 
-from api.performance import cpu_thread_budget, resolve_device
+from api.embedding_config import F2LLM_330M_MODEL_ID, F2LLM_MPS_BATCH_SIZE, is_f2llm_model
+from api.performance import (
+    configure_mps_runtime,
+    configure_torch_threads,
+    model_thread_budget,
+    require_mps_device,
+    resolve_device,
+)
+from api.telemetry import Stats
 
 
 class _EmbeddingWorker:
@@ -103,10 +112,11 @@ class QueryEmbeddingEncoder:
         self,
         model_id: str,
         *,
-        device: str = "auto",
-        batch_size: int = 16,
+        device: str = "mps",
+        batch_size: int = F2LLM_MPS_BATCH_SIZE,
         model_factory: Callable[[str, str], Any] | None = None,
         timeout_seconds: float = 120.0,
+        stats: Stats | None = None,
     ):
         if not model_id:
             raise ValueError("model_id must not be empty")
@@ -114,12 +124,22 @@ class QueryEmbeddingEncoder:
             raise ValueError("batch_size must be positive")
         if timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive")
+        if model_factory is None and is_f2llm_model(model_id):
+            if device != "mps":
+                raise RuntimeError("F2LLM-v2-330M serving is locked to Apple MPS")
+            if batch_size != F2LLM_MPS_BATCH_SIZE:
+                raise ValueError(
+                    f"F2LLM-v2-330M serving requires batch size {F2LLM_MPS_BATCH_SIZE}"
+                )
         self.model_id = model_id
-        self.device = resolve_device(device)
+        self.device = (
+            require_mps_device(device) if model_factory is None else resolve_device(device)
+        )
         self.batch_size = batch_size
         self._model_factory = model_factory or _load_model
         self._isolated = model_factory is None
         self._timeout_seconds = timeout_seconds
+        self._stats = stats
         self._model: Any = None
         self._worker: _EmbeddingWorker | None = None
         self._lock = RLock()
@@ -131,8 +151,15 @@ class QueryEmbeddingEncoder:
             return np.empty((0, dimensions), dtype=np.float32)
         if any(not isinstance(text, str) for text in values):
             raise TypeError("embedding texts must be strings")
-        with self._lock:
-            encoded = self._encode_locked(values)
+        started = time.perf_counter()
+        try:
+            with self._lock:
+                encoded = self._encode_locked(values)
+        except BaseException:
+            self._record("embedding.encode", started, error=True)
+            raise
+        else:
+            self._record("embedding.encode", started)
         result = np.asarray(encoded, dtype=np.float32)
         if result.ndim != 2 or result.shape[0] != len(values):
             raise ValueError("query encoder returned an invalid shape")
@@ -166,6 +193,10 @@ class QueryEmbeddingEncoder:
             convert_to_numpy=True,
         )
 
+    def _record(self, name: str, started: float, *, error: bool = False) -> None:
+        if self._stats is not None:
+            self._stats.record(name, time.perf_counter() - started, error=error)
+
     def close(self) -> None:
         with self._lock:
             if self._worker is not None:
@@ -175,25 +206,32 @@ class QueryEmbeddingEncoder:
 
 
 def _load_model(model_id: str, device: str) -> Any:
+    configure_mps_runtime()
+    import torch
     from sentence_transformers import SentenceTransformer
 
-    if device == "cpu":
-        import torch
-
-        torch.set_num_threads(cpu_thread_budget())
-    kwargs: dict[str, Any] = {"device": device}
-    if device in {"mps", "cuda"}:
-        import torch
-
-        kwargs["model_kwargs"] = {"torch_dtype": torch.float16}
-    return SentenceTransformer(model_id, **kwargs)
+    require_mps_device(device)
+    configure_torch_threads(model_thread_budget())
+    return SentenceTransformer(
+        model_id,
+        device="mps",
+        model_kwargs={"torch_dtype": torch.float16},
+    )
 
 
 _DEFAULT_ENCODER: QueryEmbeddingEncoder | None = None
 _DEFAULT_MODEL_ID: str | None = None
 _DEFAULT_DEVICE: str | None = None
 _DEFAULT_BATCH_SIZE: int | None = None
+_DEFAULT_STATS: Stats | None = None
 _DEFAULT_LOCK = RLock()
+
+
+def configure_embedding_stats(stats: Stats | None) -> None:
+    """Attach process-local telemetry to lazily created query encoders."""
+    global _DEFAULT_STATS
+    with _DEFAULT_LOCK:
+        _DEFAULT_STATS = stats
 
 
 def configure_query_encoder(
@@ -201,7 +239,7 @@ def configure_query_encoder(
 ) -> None:
     """Bind the process-wide encoder to the currently loaded bundle."""
     global _DEFAULT_ENCODER, _DEFAULT_MODEL_ID, _DEFAULT_DEVICE, _DEFAULT_BATCH_SIZE
-    requested_device = device if device is not None else os.getenv("NAYOSE_DEVICE") or "auto"
+    requested_device = device if device is not None else os.getenv("NAYOSE_DEVICE") or "mps"
     selected_device = resolve_device(requested_device)
     selected_batch_size = configured_batch_size() if batch_size is None else batch_size
     if selected_batch_size < 1:
@@ -232,7 +270,7 @@ def close_query_encoder() -> None:
 
 def encode_queries(texts: list[str], expected_dimensions: int | None = None) -> np.ndarray:
     global _DEFAULT_ENCODER
-    configured_model_id = os.getenv("NAYOSE_EMBEDDING_MODEL", "cl-nagoya/ruri-v3-130m")
+    configured_model_id = os.getenv("NAYOSE_EMBEDDING_MODEL", F2LLM_330M_MODEL_ID)
     with _DEFAULT_LOCK:
         if _DEFAULT_MODEL_ID is None:
             configure_query_encoder(configured_model_id)
@@ -243,6 +281,7 @@ def encode_queries(texts: list[str], expected_dimensions: int | None = None) -> 
                 _DEFAULT_MODEL_ID,
                 device=_DEFAULT_DEVICE,
                 batch_size=_DEFAULT_BATCH_SIZE,
+                stats=_DEFAULT_STATS,
             )
         return _DEFAULT_ENCODER.encode(texts, expected_dimensions)
 
@@ -251,7 +290,7 @@ def encode_query(text: str) -> np.ndarray:
     return encode_queries([text])
 
 
-def configured_batch_size(default: int = 16) -> int:
+def configured_batch_size(default: int = F2LLM_MPS_BATCH_SIZE) -> int:
     raw = os.getenv("NAYOSE_NEURAL_BATCH", str(default))
     try:
         value = int(raw)
