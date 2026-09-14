@@ -55,7 +55,7 @@ dev = [
 ]
 
 [tool.setuptools]
-packages = ["api", "api.commands", "synthetic"]
+packages = ["api", "api.commands", "api.training", "synthetic"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -77,7 +77,6 @@ ignore = ["B008"]  # function calls in argument defaults (standard for dataclass
 "synthetic/report.py" = ["E501"]  # template literals (CSS/JS/HTML strings)
 "api/main.py" = ["E501"]  # SQL template literals
 "api/query_service.py" = ["E501"]  # SQL template literals
-"api/training_pipeline.py" = ["E501"]  # long human-facing training diagnostics
 
 [tool.mypy]
 python_version = "3.12"
@@ -101,9 +100,3 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 module = ["joblib", "scipy.*", "sklearn.*", "duckdb", "fastapi", "starlette.*", "uvicorn.*"]
 ignore_missing_imports = true
-
-# This sequential extraction is covered by runtime/preflight tests while its
-# dynamic pandas-heavy stages are decomposed into typed modules.
-[[tool.mypy.overrides]]
-module = ["api.training_pipeline"]
-ignore_errors = true

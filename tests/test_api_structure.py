@@ -21,6 +21,36 @@ def test_cli_shared_artifact_work_is_not_script_to_script() -> None:
     assert "from api.bundle_materialization import materialize_runtime_artifacts" in train
 
 
+def test_training_pipeline_is_a_compatibility_shim() -> None:
+    source = (REPO / "api" / "training_pipeline.py").read_text(encoding="utf-8")
+
+    assert len(source.splitlines()) <= 40
+    assert "runpy" not in source
+    assert "NAYOSE_PROMOTE" not in source
+
+
+def test_training_application_is_split_into_stages() -> None:
+    training = REPO / "api" / "training"
+    expected = {
+        "application.py",
+        "artifacts.py",
+        "clustering.py",
+        "config.py",
+        "contracts.py",
+        "data.py",
+        "entity_training.py",
+        "evaluation.py",
+        "indexing.py",
+        "pair_training.py",
+        "ports.py",
+        "preflight.py",
+        "stages.py",
+        "worker.py",
+    }
+
+    assert expected <= {path.name for path in training.glob("*.py")}
+
+
 def test_api_routes_are_split_by_capability() -> None:
     routes = REPO / "api" / "routers"
     expected = {
