@@ -43,6 +43,7 @@ from api.embedding_runtime import (
     encode_query,
 )
 from api.features import (  # noqa: F401
+    ENTITY_FEATURE_COLS,
     PAIR_FEATURE_COLS,
     _fuzzy,
     compute_pair_features,
@@ -69,6 +70,7 @@ from api.normalize import (  # noqa: F401
     normalize_romaji,
 )
 from api.performance import cpu_thread_budget, cpu_thread_limit
+from api.release import validate_artifact_checksums
 from api.retrieval import _resolve_device  # noqa: F401
 from api.retrieval_fusion import retrieval_fusion_score, retrieval_methods
 from api.sparse_retrieval import (
@@ -518,6 +520,7 @@ def _load_bundle(config: InferenceConfig) -> NayoseEngine:
     bundle_manifest = json.loads(
         (config.model_dir / "run_manifest.json").read_text(encoding="utf-8")
     )
+    validate_artifact_checksums(config.model_dir)
     runtime_artifacts = bundle_manifest.get("runtime_artifacts", {})
     inverted_metadata = (
         runtime_artifacts.get("sparse_inverted") if isinstance(runtime_artifacts, dict) else None
@@ -595,7 +598,30 @@ def _load_bundle(config: InferenceConfig) -> NayoseEngine:
 
     # Load models (native LightGBM booster; legacy joblib tolerated)
     engine._pair_model = load_pair_model(config.model_dir, config.cpu_threads)
-    engine._pair_calibrator = joblib.load(config.model_dir / "pair_calibrator.joblib")
+    pair_calibrator_path = config.model_dir / "pair_calibrator.joblib"
+    engine._pair_calibrator = (
+        joblib.load(pair_calibrator_path) if pair_calibrator_path.is_file() else None
+    )
+    scoring_mode = str(bundle_manifest.get("entity_scoring_mode", "legacy_mean_top3"))
+    if scoring_mode not in {"legacy_mean_top3", "logistic_v1"}:
+        raise RuntimeError(f"unsupported entity scoring mode: {scoring_mode}")
+    if scoring_mode == "logistic_v1":
+        entity_paths = {
+            "scaler": config.model_dir / "entity_scaler.joblib",
+            "model": config.model_dir / "entity_model.joblib",
+        }
+        missing_entity = [str(path) for path in entity_paths.values() if not path.is_file()]
+        if missing_entity:
+            raise RuntimeError(
+                f"logistic entity scoring requires bundle artifacts: {missing_entity}"
+            )
+        engine._entity_scaler = joblib.load(entity_paths["scaler"])
+        engine._entity_model = joblib.load(entity_paths["model"])
+        calibrator_path = config.model_dir / "entity_calibrator.joblib"
+        engine._entity_calibrator = (
+            joblib.load(calibrator_path) if calibrator_path.is_file() else None
+        )
+    engine._entity_scoring_mode = scoring_mode
 
     _apply_manifest_thresholds(config)
     _apply_manifest_embedding_model(config)
@@ -670,6 +696,40 @@ class NayoseEngine:
         self._sparse_matrix: Any | None = None
         self._vectorizer: Any | None = None
         self._block_indexes: dict[str, dict[str, np.ndarray]] = {}
+        self._entity_scaler: Any | None = None
+        self._entity_model: Any | None = None
+        self._entity_calibrator: Any | None = None
+        self._entity_scoring_mode = "legacy_mean_top3"
+
+    def score_entity_candidates(self, candidates: list[dict[str, Any]]) -> np.ndarray:
+        if not candidates:
+            return np.empty(0, dtype=np.float64)
+        if self._entity_scoring_mode != "logistic_v1":
+            return np.asarray(
+                [
+                    float(candidate.get("mean_top3_probability", candidate.get("probability", 0.0)))
+                    for candidate in candidates
+                ],
+                dtype=np.float64,
+            )
+        if self._entity_scaler is None or self._entity_model is None:
+            raise RuntimeError("logistic entity scoring is configured without its models")
+        features = pd.DataFrame(
+            [
+                {name: float(candidate.get(name, 0.0)) for name in ENTITY_FEATURE_COLS}
+                for candidate in candidates
+            ]
+        )
+        raw = np.asarray(
+            self._entity_model.predict_proba(self._entity_scaler.transform(features))[:, 1],
+            dtype=np.float64,
+        )
+        if self._entity_calibrator is None:
+            return raw
+        return np.asarray(
+            self._entity_calibrator.predict_proba(logit_clip(raw).reshape(-1, 1))[:, 1],
+            dtype=np.float64,
+        )
 
     @classmethod
     def _data_fingerprint(cls, frame: pd.DataFrame) -> str:
@@ -737,5 +797,4 @@ def _apply_manifest_thresholds(config: InferenceConfig) -> None:
 
 
 def load_engine(model_dir: str = "models/current", data_dir: str = "data/current") -> NayoseEngine:
-    """Load and return a ready-to-use engine."""
     return NayoseEngine.load(model_dir, data_dir)

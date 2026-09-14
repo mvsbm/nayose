@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -169,7 +170,6 @@ def _env_for(args: argparse.Namespace) -> dict[str, str]:
         "PYTORCH_ENABLE_MPS_FALLBACK": "0"
         if locked
         else os.getenv("PYTORCH_ENABLE_MPS_FALLBACK", "0"),
-        "NAYOSE_PROMOTE": "0",
     }
     if locked:
         env.update(
@@ -190,12 +190,9 @@ def _env_for(args: argparse.Namespace) -> dict[str, str]:
 
 
 def run_pipeline(args: argparse.Namespace, env: dict[str, str]) -> float:
-    import runpy
-
-    previous = {key: os.environ.get(key) for key in env}
-    os.environ.update(env)
+    """Run the ML-heavy worker in an isolated child process."""
     print(
-        f"executing api.training_pipeline "
+        f"executing api.training.worker "
         f"(data={env['NAYOSE_DATA_DIR']}, out={env['NAYOSE_OUTPUT_DIR']}, seed={args.seed})"
     )
     print(
@@ -203,14 +200,13 @@ def run_pipeline(args: argparse.Namespace, env: dict[str, str]) -> float:
         f"model_family={args.model_family} exact_mode={args.exact_mode}"
     )
     started = time.monotonic()
-    try:
-        runpy.run_module("api.training_pipeline", run_name="__main__")
-    finally:
-        for key, value in previous.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
+    child_environment = {**os.environ, **env}
+    subprocess.run(
+        [sys.executable, "-m", "api.training.worker"],
+        cwd=Path.cwd(),
+        env=child_environment,
+        check=True,
+    )
     return time.monotonic() - started
 
 
@@ -285,6 +281,10 @@ def verify_bundle(args: argparse.Namespace) -> Path:
         raise SystemExit(
             f"FAIL: fingerprint mismatch — data {expected_fp[:12]} vs bundle {actual_fp[:12]}"
         )
+    try:
+        validate_model_for_data(run, data)
+    except ValueError as exc:
+        raise SystemExit(f"FAIL: bundle integrity validation: {exc}") from exc
     required_artifacts = list(REQUIRED_BUNDLE_ARTIFACTS)
     if any(
         (run / name).exists()

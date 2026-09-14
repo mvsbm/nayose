@@ -36,16 +36,20 @@ class PairScorer:
         engine = self.engine
         with cpu_thread_limit(getattr(engine.config, "cpu_threads", 1)):
             base = np.asarray(engine._pair_model.predict_proba(features[PAIR_FEATURE_COLS])[:, 1])
-            inputs = getattr(engine._pair_calibrator, "n_features_in_", 1)
-            if inputs == 3:
-                calibration = np.column_stack(
-                    [logit_clip(base), np.zeros(len(base)), np.zeros(len(base))]
-                )
-            elif inputs == 1:
-                calibration = base.reshape(-1, 1)
+            calibrator = engine._pair_calibrator
+            if calibrator is None:
+                scores = base
             else:
-                raise ValueError("unsupported calibrator input schema")
-            scores = np.asarray(engine._pair_calibrator.predict_proba(calibration)[:, 1])
+                inputs = getattr(calibrator, "n_features_in_", 1)
+                if inputs == 3:
+                    calibration = np.column_stack(
+                        [logit_clip(base), np.zeros(len(base)), np.zeros(len(base))]
+                    )
+                elif inputs == 1:
+                    calibration = base.reshape(-1, 1)
+                else:
+                    raise ValueError("unsupported calibrator input schema")
+                scores = np.asarray(calibrator.predict_proba(calibration)[:, 1])
             if not np.isfinite(scores).all() or ((scores < 0) | (scores > 1)).any():
                 raise ValueError("invalid calibrated scores")
             return scores
@@ -113,6 +117,12 @@ class CandidateAggregator:
                         },
                     }
                 )
+        canonical = engine._canonical
+        canonical_sizes = (
+            canonical.set_index("nayose_id")["record_count"]
+            if "record_count" in canonical
+            else pd.Series(dtype=np.int64)
+        )
         candidates: list[dict[str, Any]] = []
         for entity_id, evidence in groups.items():
             evidence.sort(key=lambda e: (-e["score"], e["record"]["record_id"]))
@@ -153,21 +163,82 @@ class CandidateAggregator:
                 for item in evidence
                 for score in item["retrieval"].get("dense_view_scores", {}).values()
             )
+            scores = np.asarray([float(e["score"]) for e in top_evidence], dtype=np.float64)
+            entity_features = {
+                "max_pair_probability": float(scores[0]),
+                "second_pair_probability": float(scores[1]) if len(scores) > 1 else 0.0,
+                "mean_top3_probability": float(scores.mean()),
+                "record_score_margin": float(scores[0] - scores[1])
+                if len(scores) > 1
+                else float(scores[0]),
+                "support_record_count": len(evidence),
+                "support_agency_count": len(
+                    {item["record"].get("agency_id", "") for item in evidence}
+                ),
+                "candidate_entity_size": int(canonical_sizes.get(entity_id, len(evidence))),
+                "max_name_similarity": max(
+                    float(item["features"].get("name_similarity", 0.0)) for item in evidence
+                ),
+                "max_kana_similarity": max(
+                    float(item["features"].get("kana_similarity", 0.0)) for item in evidence
+                ),
+                "max_romaji_similarity": max(
+                    float(item["features"].get("romaji_similarity", 0.0)) for item in evidence
+                ),
+                "max_address_similarity": max(
+                    float(item["features"].get("address_similarity", 0.0)) for item in evidence
+                ),
+                "any_name_exact": float(
+                    any(
+                        item["features"].get("name_strict_exact", 0)
+                        or item["features"].get("name_loose_exact", 0)
+                        for item in evidence
+                    )
+                ),
+                "any_dob_exact": max(
+                    float(item["features"].get("dob_exact", 0.0)) for item in evidence
+                ),
+                "any_phone_exact": max(
+                    float(item["features"].get("phone_exact", 0.0)) for item in evidence
+                ),
+                "any_email_exact": max(
+                    float(item["features"].get("email_exact", 0.0)) for item in evidence
+                ),
+                "any_postal_exact": max(
+                    float(item["features"].get("postal_exact", 0.0)) for item in evidence
+                ),
+                "any_identity_anchor": float(identity_anchor_safe),
+                "max_evidence_family_count": max_evidence_families,
+                "max_retrieval_score": max(
+                    float(item["retrieval"].get("retrieval_score", 0.0)) for item in evidence
+                ),
+                "max_channel_count": max(
+                    float(item["features"].get("channel_count", 0.0)) for item in evidence
+                ),
+                "hard_conflict_count": hard_conflict_count,
+                "review_or_auto_record_count": sum(
+                    float(item["score"]) >= float(engine.config.entity_review_threshold)
+                    for item in evidence
+                ),
+            }
             candidates.append(
                 {
                     "nayose_id": entity_id,
                     "name": str(canonical_name),
-                    "probability": float(np.mean([e["score"] for e in top_evidence])),
+                    "probability": float(scores.mean()),
                     "support": len(evidence),
-                    "max_evidence_family_count": max_evidence_families,
-                    "hard_conflict_count": hard_conflict_count,
                     "identity_anchor_count": identity_anchor_count,
                     "identity_anchor_safe": identity_anchor_safe,
                     "reference_density": len(evidence) / max(len(raw), 1),
                     "max_dense_similarity": max(dense_similarities, default=0.0),
                     "evidence": top_evidence,
+                    **entity_features,
                 }
             )
+        if hasattr(engine, "score_entity_candidates"):
+            scores = engine.score_entity_candidates(candidates)
+            for candidate, score in zip(candidates, scores, strict=True):
+                candidate["probability"] = float(score)
         candidates.sort(key=lambda c: (-c["probability"], c["nayose_id"]))
         return candidates
 

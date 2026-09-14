@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -71,6 +72,7 @@ def _materialize_sparse_inverted_artifact(
     return {
         "path": SPARSE_INVERTED_ARTIFACT,
         "format": "scipy_npz_csc",
+        "sha256": _sha256(output),
         "data_fingerprint": data_fingerprint_value,
         "row_count": row_count,
         "dimensions": int(inverted.shape[1]),
@@ -103,6 +105,7 @@ def _materialize_dense_artifact(run: Path) -> dict[str, object] | None:
     return {
         "path": DENSE_INDEX_ARTIFACT,
         "format": "usearch",
+        "sha256": _sha256(run / DENSE_INDEX_ARTIFACT),
         "row_count": int(embeddings.shape[0]),
         "dimensions": int(embeddings.shape[1]),
         "source": embedding_path.name,
@@ -139,6 +142,7 @@ def materialize_runtime_artifacts(
         data_fingerprint=actual_fingerprint,
     )
     aliases = pd.read_parquet(run / "entity_aliases.parquet")
+    alias_artifact["sha256"] = _sha256(run / "entity_aliases.parquet")
     indexes = build_block_indexes(reference, backend=selected_backend)
     save_block_indexes(
         run / BLOCK_INDEX_ARTIFACT,
@@ -153,6 +157,7 @@ def materialize_runtime_artifacts(
         "schema_version": BLOCK_INDEX_SCHEMA_VERSION,
         "data_fingerprint": actual_fingerprint,
         "row_count": len(reference),
+        "sha256": _sha256(run / BLOCK_INDEX_ARTIFACT),
         "blocks": {name: len(groups) for name, groups in indexes.items()},
         "backend": selected_backend,
     }
@@ -220,17 +225,28 @@ def materialize_runtime_artifacts(
     artifacts.append(alias_artifact)
     if dense_artifact is not None:
         artifacts.append(dense_artifact)
-    artifacts.extend(
-        {
-            "name": f"dense_index_{view}",
-            "path": str(descriptor["index_path"]),
-            "format": "usearch",
-            "rows": descriptor["row_count"],
-            "dimensions": descriptor["dimensions"],
-        }
-        for view, descriptor in dense_views.items()
-        if view != "record"
-    )
+    for view, descriptor in dense_views.items():
+        embedding_path = run / str(descriptor["embedding_path"])
+        index_path = run / str(descriptor["index_path"])
+        artifacts.extend(
+            [
+                {
+                    "name": f"dense_embedding_{view}",
+                    "path": str(descriptor["embedding_path"]),
+                    "format": "npy",
+                    "rows": _metadata_int(descriptor["row_count"], "row_count"),
+                    "sha256": _sha256(embedding_path),
+                },
+                {
+                    "name": f"dense_index_{view}",
+                    "path": str(descriptor["index_path"]),
+                    "format": "usearch",
+                    "rows": _metadata_int(descriptor["row_count"], "row_count"),
+                    "dimensions": _metadata_int(descriptor["dimensions"], "dimensions"),
+                    "sha256": _sha256(index_path),
+                },
+            ]
+        )
     manifest["artifacts"] = artifacts
     temporary = manifest_path.with_name(f".{manifest_path.name}.tmp.{os.getpid()}")
     temporary.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -239,3 +255,28 @@ def materialize_runtime_artifacts(
         f"materialized {BLOCK_INDEX_ARTIFACT}: {len(reference):,} rows, "
         f"fingerprint {actual_fingerprint[:12]}"
     )
+
+
+def _metadata_int(value: object, field: str) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"dense view {field} must be an integer")
+    if isinstance(value, int):
+        parsed = value
+    elif isinstance(value, str):
+        try:
+            parsed = int(value)
+        except ValueError as exc:
+            raise ValueError(f"dense view {field} must be an integer") from exc
+    else:
+        raise ValueError(f"dense view {field} must be an integer")
+    if parsed < 1:
+        raise ValueError(f"dense view {field} must be positive")
+    return parsed
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()

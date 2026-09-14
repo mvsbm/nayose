@@ -333,6 +333,7 @@ def data_generation_for_fingerprint(data_root: Path, fingerprint: str) -> Path |
 
 
 def validate_model_for_data(run_dir: Path, data_root: Path) -> str:
+    validate_artifact_checksums(run_dir)
     model_fingerprint = manifest_fingerprint(run_dir)
     configured_root = Path(data_root)
     data_link = configured_root / "current"
@@ -353,6 +354,35 @@ def validate_model_for_data(run_dir: Path, data_root: Path) -> str:
     if model_fingerprint != data_fingerprint:
         raise ValueError("model/data fingerprint mismatch")
     return model_fingerprint
+
+
+def validate_artifact_checksums(run_dir: Path) -> None:
+    manifest_path = run_dir / "run_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    artifacts = manifest.get("artifacts")
+    if not isinstance(artifacts, list):
+        return
+    require_checksums = manifest.get("training_algorithm_version") == "modular-v1"
+    for entry in artifacts:
+        if not isinstance(entry, dict):
+            raise ValueError("model manifest contains malformed artifact metadata")
+        relative = entry.get("path")
+        expected = entry.get("sha256")
+        if (
+            not isinstance(relative, str)
+            or Path(relative).is_absolute()
+            or ".." in Path(relative).parts
+        ):
+            raise ValueError("model manifest contains an unsafe artifact path")
+        if not isinstance(expected, str) or not re.fullmatch(r"[0-9a-f]{64}", expected):
+            if require_checksums:
+                raise ValueError(f"model manifest has no valid checksum for {relative}")
+            continue
+        path = run_dir / relative
+        if not path.is_file():
+            raise ValueError(f"model manifest references missing artifact {relative}")
+        if _sha256(path) != expected:
+            raise ValueError(f"artifact checksum mismatch: {relative}")
 
 
 def _sha256(path: Path) -> str:

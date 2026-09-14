@@ -61,6 +61,31 @@ PAIR_FEATURE_COLS = [
     "reranker_score",
 ]
 
+ENTITY_FEATURE_COLS = [
+    "max_pair_probability",
+    "second_pair_probability",
+    "mean_top3_probability",
+    "record_score_margin",
+    "support_record_count",
+    "support_agency_count",
+    "candidate_entity_size",
+    "max_name_similarity",
+    "max_kana_similarity",
+    "max_romaji_similarity",
+    "max_address_similarity",
+    "any_name_exact",
+    "any_dob_exact",
+    "any_phone_exact",
+    "any_email_exact",
+    "any_postal_exact",
+    "any_identity_anchor",
+    "max_evidence_family_count",
+    "max_retrieval_score",
+    "max_channel_count",
+    "hard_conflict_count",
+    "review_or_auto_record_count",
+]
+
 
 def compute_pair_features(
     query: dict[str, str], candidates: pd.DataFrame, retrieval: pd.DataFrame
