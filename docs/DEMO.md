@@ -10,9 +10,9 @@ serving path with per-field evidence. This runbook makes that demo repeatable.
 ```bash
 source .venv/bin/activate
 # (a) generate a ~2k-record synthetic corpus with hidden ground truth
-python scripts/generate_data.py --profile smoke --seed 7 --data-dir /tmp/demo_data
+python -m api.cli data generate --profile smoke --seed 7 --data-dir /tmp/demo_data
 # (b) headless train (LightGBM + TF-IDF/SVD), writes models/current
-python scripts/train.py --data-dir /tmp/demo_data --models-dir /tmp/demo_models \
+python -m api.cli model train --data-dir /tmp/demo_data --models-dir /tmp/demo_models \
   --seed 7 --device cpu --model-family off --prune-aborted
 # (c) serve with the engine PRELOADED (no cold-start hiccup during the demo)
 NAYOSE_WARM_EMBED=1 NAYOSE_MODELS_DIR=/tmp/demo_models \
@@ -26,12 +26,12 @@ a real calibrated pair model (candidate recall ≈0.99) and real metrics.
 
 ## 2. Full-scale demo (already trained in this workspace)
 
-The repo workspace ships a trained **374,253-record** bundle:
+The repo workspace contains a trained **374,677-record** bundle:
 
 ```bash
 NAYOSE_WARM_EMBED=1 python -m api.main   # serves data/current + models/current
-# open http://127.0.0.1:8899  (approx 70–130s cold engine load; keep the tab open
-# or rely on warmup so the point-to-照合 click is instant)
+# open http://127.0.0.1:8899 (measure startup and warm latency on the target machine;
+# NAYOSE_WARM_EMBED=1 makes readiness wait for the selected engine)
 ```
 
 ## 3. The 5-minute script (what to click, in order)
@@ -69,13 +69,13 @@ Do not claim:
 |---|---|---|
 | Clicking 照合 "does nothing" for ~1–2 min | cold engine load (374k bundle) | `NAYOSE_WARM_EMBED=1` + keep the tab warm; or demo the smoke bundle |
 | 401s with `NAYOSE_API_TOKEN` set | the web UI previously sent no token | the transport now attaches `Authorization: Bearer <nayose.token>` from browser localStorage — set it on the demo machine (`localStorage.setItem("nayose.token", "…")`) or run the GUI behind a proxy that injects it |
-| エラー: モデルを読み込めません | `models/current` and `data/current` fingerprint mismatch | train/serve against the SAME generation — `scripts/train.py` points `models/current` at the generation it trained on |
+| エラー: モデルを読み込めません | `models/current` and `data/current` fingerprint mismatch | train/serve against the SAME generation — `nayose model train` points `models/current` at the generation it trained on |
 | Search finds nothing for a typed name | bundle-specific nameset | use サンプルデータを入力 or search by entity ID (`N000…`) |
 
 ## 6. After the demo
 
-- Audit exports: `python scripts/audit_decisions.py --models-dir <m> --data-dir <d>`
-  writes ground-truth-confirmed pairs to `models/decisions/promoted_<run>.parquet`.
-- Full gates: `python scripts/audit_repo.py`; browser E2E: `NAYOSE_E2E=1 npm --prefix frontend run test:e2e`
+- Audit exports: `python -m api.cli audit decisions --models-dir <m> --data-dir <d>`
+  writes ground-truth-confirmed pairs to `models/exports/promoted_<run>.parquet`.
+- Full gates: `python -m api.cli audit repo`; browser E2E: `NAYOSE_E2E=1 npm --prefix frontend run test:e2e`
   (strict mode: any page error / API non-2xx fails the journey).
 - Remote GPU training: `docs/REMOTE_GPU.md`; ops: `docs/OPERATIONS.md`; deployment: `docs/CLOUD.md`.

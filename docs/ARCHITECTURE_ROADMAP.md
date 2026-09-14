@@ -22,8 +22,8 @@ following invariants remain mandatory in every phase:
 - Hidden truth, policy data, and lineage columns never enter visible responses.
 - Frontend views use `frontend/ts` ports and stores; generated `frontend/js` is
   updated by TypeScript compilation.
-- Notebooks remain thin drivers; implementation belongs in `api/`, `synthetic/`,
-  or `scripts/`.
+- `python -m api.cli` is the only batch entry point; implementation belongs in
+  `api/`, `synthetic/`, or `api/commands/`.
 - No new dependency is added without a `pyproject.toml` or
   `frontend/package.json` entry and a security/licensing review.
 - Every change is independently testable and reversible.
@@ -80,18 +80,17 @@ New modules must have one responsibility and follow the current layout:
 | Jobs | `api/admin_jobs.py`, `api/matching_runtime.py` | Durable job repository, worker protocol, retries and heartbeats |
 | Audit | `api/admin.py` initially; extract `api/audit.py` when needed | Durable, tamper-evident, PII-safe audit events |
 | API composition | `api/main.py` | App factory, lifespan ownership, dependency injection |
-| Batch workflows | `scripts/` | `validate_release.py`, `benchmark_load.py` only when implemented |
+| Batch workflows | `api/cli.py`, `api/commands/` | lifecycle, release, audit, and benchmark command families |
 | Tests | `tests/` | Unit and fixture-backed integration tests; no external downloads |
 | Operations docs | `docs/` | Update `OPERATIONS.md`, `CLOUD.md`, and this roadmap together |
 
-Recommended script names:
+Canonical command families:
 
-- `scripts/validate_release.py`: validate a complete data/model release before
-  publication; never mutate aliases.
-- `scripts/benchmark_load.py`: repeatable latency, throughput, memory, and
-  concurrency benchmark over generated fixture bundles.
-- `scripts/recover_jobs.py`: only if job recovery needs an operator command;
-  otherwise keep recovery in the durable worker service.
+- `python -m api.cli release validate`: validate a complete data/model release;
+  never mutate aliases.
+- `python -m api.cli benchmark runtime`: measure repeatable latency, memory, and
+  process behavior over a fingerprint-bound bundle.
+- Job recovery remains in the durable worker service; add no recovery script.
 
 Do not create generic modules named `utils.py`, `helpers.py`, or `common.py`.
 
@@ -111,9 +110,9 @@ make unsafe deployment configurations fail closed.
 - [ ] Define availability, RPO, RTO, retention, and backup requirements for
   each deployment mode.
 - [ ] Define memory and disk budgets for 100K, 500K, and 2M records.
-- [ ] Record the current limitation explicitly: the validated 2M path is
-  clean-only; full sabotaged generation and full matcher serving require a
-  separate capacity sign-off.
+- [x] Record the current limitation explicitly: the clean-only 2M path is an
+  implementation route, not a capacity certification; full sabotaged generation
+  and full matcher serving require a separate target-runner sign-off.
 - [ ] Add these assumptions to `docs/OPERATIONS.md` without presenting
   estimates as measured results.
 
@@ -145,7 +144,7 @@ an explicit 409/503-style domain error.
 - [ ] Validate generation completeness, manifest presence, schema, checksums,
   fingerprint, model compatibility, and target-platform ANN artifacts before
   publication.
-- [ ] Implement `scripts/validate_release.py` as a read-only preflight command.
+- [x] Implement `python -m api.cli release validate` as a read-only preflight command.
 - [ ] Publish a release manifest containing the complete data/model pair.
 - [ ] Atomically update one release pointer after all artifacts are durable.
 - [ ] Preserve the previous release pointer for rollback.
@@ -194,10 +193,10 @@ SQL/file reads, spoofed identities, oversized bodies, and rate limits.
 
 **Phase 0 gate:**
 
-- [ ] `python scripts/validate_release.py` passes on a valid fixture.
+- [x] `python -m api.cli release validate` passes on a valid fixture.
 - [ ] Historical-run and alias-rotation tests pass.
 - [ ] Security boundary tests pass.
-- [ ] `source .venv/bin/activate && python scripts/audit_repo.py` passes after
+- [ ] `source .venv/bin/activate && python -m api.cli audit repo` passes after
   all Phase 0 changes.
 - [ ] A rollback drill succeeds without mutating immutable artifacts.
 
@@ -240,7 +239,7 @@ never leaves decision data without its binding, and undo is auditable.
   process.
 - [ ] Limit one expensive generation/training job per resource pool while
   permitting bounded read traffic.
-- [ ] Add `scripts/recover_jobs.py` only if operators need manual recovery;
+- [x] Keep job recovery in the durable worker service; no operator script is needed;
   recovery must be idempotent.
 
 **Acceptance:** API restart does not erase jobs, duplicate submission does not
@@ -378,8 +377,8 @@ aggregate retrieval gains alone.
 
 **Phase 2 gate:**
 
-- [ ] `scripts/benchmark_load.py` produces reproducible reports for 100K,
-  500K, and the supported 2M path.
+- [ ] `python -m api.cli benchmark runtime` produces reproducible reports for
+  100K, 500K, and a target-runner-approved 2M path.
 - [ ] Memory, p95/p99 latency, throughput, and error budgets meet the approved
   capacity table.
 - [ ] ANN portability checks pass for every supported target.
@@ -507,8 +506,7 @@ For every implementation slice:
 - [ ] Add API, storage, migration, and rollback documentation with the change.
 - [ ] Update `frontend/ts` first and compile generated `frontend/js` when the
   frontend contract changes.
-- [ ] Verify no secrets, runtime artifacts, executed notebooks, or generated
-  data/models are staged.
+- [ ] Verify no secrets, runtime artifacts, or generated data/models are staged.
 - [ ] Run the smallest relevant tests after each increment, then the full
   repository audit before merge.
 - [ ] Use E2E only for changes crossing the real server/browser/persistence
@@ -581,8 +579,7 @@ Use focused Conventional Commits, for example:
 - [ ] Review `git show --stat --check HEAD` after committing.
 - [ ] Rebase only after preserving local work and only when a remote/base is
   available.
-- [ ] Never commit `data/`, `models/`, `.env`, credentials, or executed
-  notebooks.
+- [ ] Never commit `data/`, `models/`, `.env`, or credentials.
 
 ## Explicit non-goals
 

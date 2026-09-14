@@ -1,5 +1,9 @@
 # Training/serving on the GPU box (RTX 3090 · Ryzen 7 7700X · 64 GB)
 
+> **Status:** The current production profile is Apple-MPS-only and fail-closed.
+> This CUDA runbook is retained as historical capacity research and is not a
+> supported path for the locked F2LLM profile.
+
 The dashboard's heavy stages map cleanly onto this machine: CUDA accelerates
 the neural stages that were CPU-only locally, 16 threads cut LightGBM, and
 64 GB comfortably holds the pair-feature matrices for the 623k-record
@@ -11,7 +15,7 @@ generation. Everything below is the existing repo — no code changes needed.
 # on the remote (VSCode Remote terminal or ssh)
 git clone <your-repo-url> nayose && cd nayose
 python3 -m venv .venv && source .venv/bin/activate
-pip install -e ".[matcher,neural,train,serve,dev]"
+pip install -e ".[matcher,neural,serve,dev]"
 ```
 
 - `neural` pulls torch — make sure it links CUDA on this box. If `pip` picked
@@ -35,7 +39,7 @@ link remotely.)
 
 **b) Regenerate on the box (deterministic — same seed/outputs):**
 ```bash
-python scripts/generate_data.py --profile generate_only --n-parties 250000 \
+python -m api.cli data generate --profile generate_only --n-parties 250000 \
     --seed 42 --data-dir data
 ```
 
@@ -47,7 +51,7 @@ GEN=data/generations/gen_20260904-160304_ff650a4a
 NAYOSE_MAX_FULL_RECORDS=700000 \
 NAYOSE_MODEL_THREADS=14 \
 OMP_NUM_THREADS=14 OPENBLAS_NUM_THREADS=14 \
-nohup python scripts/train.py \
+nohup python -m api.cli model train \
     --data-dir $GEN \
     --models-dir models --seed 42 --device cuda --model-family ruri \
     > train.log 2>&1 &
@@ -94,7 +98,7 @@ curl -s localhost:8899/api/health
 ## 5. Audit + retrain loop (same as local)
 
 ```bash
-python scripts/audit_decisions.py --models-dir models --data-dir $GEN
+python -m api.cli audit decisions --models-dir models --data-dir $GEN
 ```
 
 ## Expected speedups vs the M-series laptop

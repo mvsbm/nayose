@@ -8,7 +8,7 @@ Read **ARCHITECTURE.md** (one page) and **AGENTS.md** (rules + "how to add a
 view/endpoint/decision" checklists). One command for status:
 
 ```bash
-python scripts/audit_repo.py       # ruff, mypy, tsc, npm test, pytest (+ E2E opt-in)
+python -m api.cli audit repo       # ruff, mypy, tsc, npm test, pytest (+ E2E opt-in)
 ```
 
 The original root-level app layer (`nayose_cli.py`) was retired and the engine
@@ -24,16 +24,16 @@ migrated to `api/engine.py`; all behavior lives in `api/`, `frontend/`,
 > Japanese/English UI: **[`docs/MATCHING_UI.md`](docs/MATCHING_UI.md)**.
 > 5-minute stakeholder demo: **[`docs/DEMO.md`](docs/DEMO.md)**.
 
-Both notebooks read `data/current` by default. The generator writes the visible
-snapshots (`reference_records`, `incoming_queries`) plus core hidden truth
-tables and clean policy lifecycle tables under `data/ground_truth/`.
+The generator writes the visible snapshots (`reference_records`,
+`incoming_queries`) plus core hidden truth tables and clean policy lifecycle
+tables under `data/ground_truth/`.
 
 ### 1. Generate Training Data
 
 ```bash
 source .venv/bin/activate
-uv sync --extra matcher --extra performance --extra train --extra serve --extra dev
-python scripts/generate_data.py --profile smoke --data-dir data --seed 42
+uv sync --extra matcher --extra performance --extra serve --extra dev
+python -m api.cli data generate --profile smoke --data-dir data --seed 42
 # profiles: ~340 / ~800 / ~6,800 / ~22,700 / ~113,500 canonical entities
 # one-time downloads, cached in data/raw/: Nemotron persona names, Japan Post ken_all, EDINET
 ```
@@ -42,31 +42,33 @@ For a large canonical layer, stream clean entities without retaining sabotaged
 records, policies, and lineage in memory:
 
 ```bash
-python scripts/generate_data.py --clean-only --n-parties 2000000 \
+python -m api.cli data generate --clean-only --n-parties 2000000 \
   --chunk-size 50000 --seed 42 --data-dir data
 # writes data/clean_generations/clean_<timestamp>_<hash>/ and updates data/clean_current
 ```
 
 The full generation path remains capped at 2,000,000 base entities because it
 materializes all observations, policy lifecycle tables, and field lineage before
-saving. The clean-only path is chunked and is the validated route for a 2M
-canonical entity layer; it does not replace `data/current`.
+saving. The clean-only path is chunked and is the implementation route for a 2M
+canonical entity layer; target-runner capacity sign-off is still required, and it
+does not replace `data/current`.
 
 ### 2. Train / Evaluate the Matcher
 
 ```bash
-# Supported headless path: executes the notebook, validates the bundle, and
-# materializes the target-platform exact/ANN artifacts.
-python scripts/train.py --data-dir data/current --models-dir models \
-  --seed 42 --device cpu --model-family off
+# Supported headless path: runs the locked F2LLM-v2-330M pipeline on Apple MPS,
+# validates the bundle, and materializes the exact/ANN artifacts.
+python -m api.cli model train --data-dir data/current --models-dir models \
+  --seed 42 --device mps --model-family f2llm_330m --pair-model lightgbm
 ```
 
 ### 3. Run Inference
 
-`scripts/train.py` executes `nayose.ipynb`, then writes a model bundle (models
-+ portable indexes + target-platform ANN + run_manifest) into its output
+`nayose model train` runs `api/training_pipeline.py`, then writes a model bundle
+(portable indexes + target-platform ANN + run_manifest) into its output
 directory. `NayoseEngine.load` **fingerprint-checks the bundle against
-the reference data** and refuses stale combinations:
+the
+reference data** and refuses stale combinations:
 
 ```python
 from api.engine import load_engine
@@ -77,8 +79,7 @@ print(result.action)  # AUTO_LINK
 print(result.top_nayose_id)  # N000012345
 ```
 
-Headless training and serving (the supported paths — using the same bundle
-contract as the notebooks):
+Headless training and serving use the same immutable bundle contract:
 
 ```bash
 # then open http://127.0.0.1:8899
@@ -88,8 +89,8 @@ NAYOSE_DASH_PORT=8899 NAYOSE_WARM_EMBED=1 python -m api.main
 ## Project Structure
 
 ```
-├── synthetic_data.ipynb        # Data generation pipeline
-├── nayose.ipynb                # Model training & evaluation
+├── api/cli.py                  # Canonical data/model/audit/benchmark CLI facade
+├── api/commands/               # Focused command implementations
 ├── api/                        # Serving (FastAPI) + matching engine
 │   ├── main.py                 #   typed routes, composition, auth
 │   ├── query_service.py        #   server-owned bundle reads
@@ -101,22 +102,23 @@ NAYOSE_DASH_PORT=8899 NAYOSE_WARM_EMBED=1 python -m api.main
 │   ├── generations/gen_<ts>_<hash>/   # one immutable dataset product per run
 │   │   ├── reference_records.parquet / incoming_queries.parquet / agencies.parquet
 │   │   └── ground_truth/          # identity + clean policy truth tables
-│   └── current -> generations/gen_<ts>_<hash>   # promoted generation (consumer-facing)
-│       ├── record_truth.parquet
-│       ├── party_truth.parquet
-│       ├── relation_truth.parquet
-│       ├── query_truth.parquet
-│       ├── evaluation_truth.parquet
-│       ├── field_lineage.parquet  # per-field provenance audit (1.9M rows @100k)
-│       ├── policy_truth.parquet / policy_term_truth.parquet
-│       ├── policy_event_truth.parquet / policy_party_truth.parquet
-│       └── policy_risk_truth.parquet
+│   ├── current -> generations/gen_<ts>_<hash>   # promoted generation (consumer-facing)
+│   │   ├── record_truth.parquet
+│   │   ├── party_truth.parquet
+│   │   ├── relation_truth.parquet
+│   │   ├── query_truth.parquet
+│   │   ├── evaluation_truth.parquet
+│   │   ├── field_lineage.parquet  # per-field provenance audit (1.9M rows @100k)
+│   │   ├── policy_truth.parquet / policy_term_truth.parquet
+│   │   ├── policy_event_truth.parquet / policy_party_truth.parquet
+│   │   └── policy_risk_truth.parquet
+│   └── operational.sqlite3     # SQLite WAL jobs, decisions, audit, manual staging
 │
 └── models/                     # Trained artifacts (gitignored)
     ├── runs/run_<ts>_<hash>/   # immutable bundle + run_manifest.json
     ├── current -> runs/...     # validated serving alias
-    ├── registry.json           # append-only run metadata
-    └── decisions/<run>.json    # review state bound to that run manifest
+    └── registry.json           # append-only run metadata
+
 ```
 
 ## Architecture
@@ -135,13 +137,17 @@ NAYOSE_DASH_PORT=8899 NAYOSE_WARM_EMBED=1 python -m api.main
 | Family | Embedding | Notes |
 |---|---|---|
 | `off` (default) | — | Deterministic SVD baseline |
-| `f2llm_330m` | `codefuse-ai/F2LLM-v2-330M` | Recommended fixed dense candidate-retrieval model |
-| `f2llm` | `codefuse-ai/F2LLM-v2-1.7B` (or `NAYOSE_EMBEDDING_MODEL`) | Optional dense retrieval; weights are downloaded and cached by the runtime |
-| `f2llm_0.6b` | `codefuse-ai/F2LLM-v2-0.6B` | Smaller optional model |
+| `f2llm_330m` | `codefuse-ai/F2LLM-v2-330M` | Locked production profile: Apple MPS, FP16, batch 32, one process |
+| `f2llm` | `codefuse-ai/F2LLM-v2-330M` | Compatibility alias for the locked 330M profile |
+| `f2llm_0.6b` | `codefuse-ai/F2LLM-v2-0.6B` | Experimental MPS-only alternative, no fallback |
 | `ruri` | Ruri encoder/reranker path | Optional A/B entry |
 | `qwen` | Qwen embedding/reranker path | Optional |
 
-The neural paths are engineering alternatives, not a benchmark claim. Record the selected family, backend, device, and degraded status in the run manifest before comparing runs.
+The production neural path is MPS-only and fail-closed: unavailable MPS, missing
+sentence-transformers, model-load errors, and unsupported fallback settings abort the
+run. The locked F2LLM-v2-330M settings are FP16, batch 32, one process, dense retrieval
+enabled, and `PYTORCH_ENABLE_MPS_FALLBACK=0`. Record the selected family, backend,
+device, and degraded status in the run manifest before comparing runs.
 
 Optimizations for MPS + time complexity:
 
@@ -220,9 +226,10 @@ an identity decision by itself.
 | | `NAYOSE_DENSE_VIEWS` | 1 | materialize field-aware F2LLM name/address/alias artifacts |
 | | `NAYOSE_SPARSE_TOPK` / `NAYOSE_DENSE_TOPK` | 24 / 16 | k per retrieval channel |
 | | `NAYOSE_CANDIDATE_CAP` | 80 | max candidate records per query |
-| | `NAYOSE_SPARSE_BATCH` / `NAYOSE_NEURAL_BATCH` | 512 / 16 | batch sizes |
-| Embeddings | `NAYOSE_EMBEDDING_MODEL` | F2LLM-v2-1.7B | dense encoder (0.6B/1.7B) |
-| | `NAYOSE_DEVICE` | auto | mps/cuda/cpu; explicit unavailable devices fail fast |
+| | `NAYOSE_SPARSE_BATCH` / `NAYOSE_NEURAL_BATCH` | 512 / 32 | batch sizes; 32 is frozen for F2LLM |
+| Embeddings | `NAYOSE_EMBEDDING_MODEL` | F2LLM-v2-330M | locked production dense encoder |
+| | `NAYOSE_DEVICE` | mps | MPS-only neural execution; no device fallback |
+| | `PYTORCH_ENABLE_MPS_FALLBACK` | 0 | unsupported MPS ops fail instead of using CPU |
 | | `NAYOSE_USE_DENSE` | 1 | dense channel on/off; bundle artifacts remain strict |
 | | `NAYOSE_CPU_THREADS` | auto | per-process numerical thread budget |
 | | `NAYOSE_PROCESS_WORKERS` | 1 | process count used to divide CPU threads |
@@ -237,9 +244,9 @@ an identity decision by itself.
 | | `NAYOSE_ENTITY_MARGIN` | 0.06 | margin over second entity |
 | | `NAYOSE_ENTITY_OVERRIDE` | 0 | force manifest thresholds off |
 
-LightGBM internals (n_estimators=260, lr=0.035, num_leaves=31, …) live in the
-matcher notebook's `train_pair_model`; the sklearn HistGB backend is the
-MPS-serving alternative.
+LightGBM internals (n_estimators=260, lr=0.035, num_leaves=31, …) live in
+`api/training_pipeline.py`'s `train_pair_model`; the sklearn HistGB backend is
+the MPS-serving alternative.
 
 ## Confusion matrices & evaluation discipline
 
@@ -293,7 +300,7 @@ field lineage remains in the immutable generation's hidden `field_lineage` table
 side-by-side KPI table with Δ (green/red deltas, tabular numerals).
 
 **Decision persistence (server-side)**: review 既読 is a Command in the store,
-mirrored to `models/decisions/<run>.json` via `GET/PUT /api/decisions`
+persisted in the operational SQLite store via `GET/PUT /api/decisions`
 (debounced) — decisions survive across machines/sessions; localStorage remains
 the offline fallback; `取り消し` undoes via the command history.
 
@@ -366,18 +373,18 @@ ranking/robustness layer; keep them on by default.
 
 ```
 frontend/            no-build ESM app (index.html, styles.css, js/app.js)
-api/main.py          FastAPI: static + /api/runs + /api/query (DuckDB) + /api/recommend
+api/main.py          FastAPI composition root; typed routers expose search, matching, data, and admin APIs
 tests/test_api.py    API contract tests (self-contained fake bundle)
 ```
 
 ## Model saving / inference (run bundles)
 
-`nayose.ipynb` writes each train/evaluate into an immutable model bundle and promotes it via a symlink:
+`nayose model train` writes each train/evaluate into an immutable model bundle and promotes it via a symlink:
 
 ```
 models/
 ├── registry.json                     # run_id → bundle, config/data hashes, backends, stage metrics
-├── runs/run_<ts>_<hash>/             # frames + models + reference_sparse_matrix + embeddings + run_manifest
+├── runs/run_<ts>_<hash>/             # frames + models + sparse/optional inverted index + embeddings + manifest
 └── current -> runs/run_<ts>_<hash>   # promoted bundle (consumer-facing)
 ```
 
@@ -393,9 +400,9 @@ models/
 
 | Metric | Value |
 |--------|-------|
-| Bundle load | ~0.6 s (guard passes, usearch index ready) |
-| Inference (warm) | ~0.1 s/query |
-| Inference (cold, first) | ~12 s (1.7B encoder load, cached engine) |
+| Bundle load | ~7.3 s (374,677-row MPS benchmark, guard passes) |
+| Inference (warm) | ~0.032 s/query (20-iteration p50) |
+| Sparse retrieval | deterministic top-k; 64 highest-weight query features by default |
 | Training (smoke, f2llm+MPS) | ~48 s end-to-end (embeddings cached) |
 | B³ F1 (smoke) | 96.8–96.9 %; top-1 identity 96.8 % (f2llm) vs 94.7 % (off) |
 
@@ -409,7 +416,8 @@ pykakasi phonenumbers jaconv pyarrow faker(optional legacy) datasets
 ## Engine package & tests
 
 The generator logic lives in `synthetic/` (providers / noise / truth / engine;
-data-driven config in `synthetic/config.py`) - the notebook is a thin driver.
+data-driven config in `synthetic/config.py`), with `nayose data generate` as
+its thin CLI.
 
 ```bash
 uv pip install pytest && python -m pytest tests/ -q
@@ -430,5 +438,5 @@ uv pip install pytest && python -m pytest tests/ -q
   quality band × agency factors; every value carries a lineage label.
 - Orthographic consistency: kana/romaji are derived from the kanji, so names
   never disagree across spellings (82% of field cells stay clean).
-- Benchmark validated end-to-end: smoke profile -> nayose.ipynb B3-F1 ≈ 96.5%,
-  candidate recall ≈ 99.8% (model `off`, CPU).
+- Benchmark validated end-to-end: smoke profile -> `nayose model train` B3-F1
+  ≈ 96.5%, candidate recall ≈ 99.8% (model `off`, CPU).

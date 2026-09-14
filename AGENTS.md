@@ -4,15 +4,15 @@
 
 ```bash
 source .venv/bin/activate
-uv pip install -e '.[matcher,performance,train,serve]'  # reproducible fast serving/training extras
+uv pip install -e '.[matcher,performance,serve]'  # reproducible fast serving/training extras
 python -m pytest tests/ -q           # unit tests (fast, no external data)
 ruff check .                          # lint (config in pyproject.toml)
 ruff format --check .                 # formatting
 mypy synthetic tests                  # type check (engine + tests only)
-python scripts/generate_data.py --profile smoke   # headless pipeline (CLI == notebook contract)
-python scripts/train.py --data-dir data/current --models-dir models --seed 42   # headless training + target-platform artifacts
-python scripts/benchmark_runtime.py --iterations 20                         # cold/warm latency benchmark
-python scripts/audit_decisions.py                # decision audit + promoted labels (label feedback loop)
+python -m api.cli data generate --profile smoke   # headless generation CLI contract
+python -m api.cli model train --data-dir data/current --models-dir models --seed 42 --device mps --model-family f2llm_330m   # locked headless training + target-platform artifacts
+python -m api.cli benchmark runtime --iterations 20                         # cold/warm latency benchmark
+python -m api.cli audit decisions                # decision audit + promoted labels (label feedback loop)
 python -m api.main                              # serve the dashboard (NAYOSE_DASH_PORT, NAYOSE_API_TOKEN, NAYOSE_WARM_EMBED)
 curl http://127.0.0.1:8000/api/health            # readiness probe (auth-exempt)
 ```
@@ -22,14 +22,15 @@ curl http://127.0.0.1:8000/api/health            # readiness probe (auth-exempt)
 | Path | Responsibility |
 |---|---|
 | `synthetic/` | Engine: `config.py` (presets/rates/data incl. email domains, channel contact profiles, POLICY_PARAMS), `providers.py` (real data sources; persona Han-initial sanitizer), `realism.py` (phone styles + email domains), `policy.py` (policy aggregate roots + truth timeline states + temporal validation), `noise.py` (correlated dirty events + lineage; agent profiles consumed), `truth.py` (party, relationship, policy, and query ground-truth tables), `engine.py` (orchestration), `pipeline.py` (generate + single save contract) |
-| `api/` | Serving: `main.py` (typed FastAPI routes + token gate), `contracts.py` (response schemas incl. admin job stages), `evidence.py` (visible fields + field comparison), `normalize.py` + `features.py` (shared primitives), `retrieval.py` (bundle-aware query encoding), `search.py` (embedding entity search), `query_service.py` + `repositories.py` (server-owned bundle reads), `matching.py` (scored evidence + async jobs + session threshold overrides), `admin.py` (generate/train jobs, settings, and audit coordination), `manual_store.py` (locked atomic parquet data entry), `decisions.py` (bound review state), `telemetry.py` (endpoint timing), `engine.py` (trained-artifact loading + fingerprint guard). |
+| `api/` | Serving: `main.py` (typed FastAPI routes + token gate), `contracts.py` (response schemas incl. admin job stages), `evidence.py` (visible fields + field comparison), `normalize.py` + `features.py` (shared primitives), `retrieval.py` (bundle-aware query encoding), `search.py` (embedding entity search), `query_service.py` + `repositories.py` (server-owned bundle reads), `matching.py` (scored evidence + async jobs + session threshold overrides), `admin.py` (generate/train jobs, settings, and audit coordination), `manual_store.py` (manual staging repository), `decisions.py` (bound review state), `operational_store.py` (SQLite WAL transaction boundary), `audit.py` (append-only audit repository), `telemetry.py` (endpoint timing), `engine.py` (trained-artifact loading + fingerprint guard). |
 | `tests/` | Unit tests only — must never require external data or downloads |
-| `scripts/generate_data.py` | Headless generation CLI; writes the exact same tables as the notebook |
-| `synthetic_data.ipynb` / `nayose.ipynb` | Thin drivers / reports (do **not** add logic here) |
+| `api/cli.py` + `api/commands/data.py` | Headless generation CLI; writes the generation tables |
+| `api/commands/lifecycle.py` / `api/training_pipeline.py` | Training, evaluation, and immutable bundle publication |
 | `data/raw` | Immutable reference-data cache (ken_all, personas, EDINET) — never mutate |
 | `data/generations/gen_*` + `data/current` | Immutable sabotaged dataset products; `current` is the matcher consumer alias |
 | `data/clean_generations/clean_*` + `data/clean_current` | Immutable streamable canonical entity products; clean-only source layer |
 | `models/runs/run_*` + `models/current` + `registry.json` | Immutable model bundles, CPU-neutral indexes, and target-platform ANN artifacts |
+| `data/operational.sqlite3` | Transactional local jobs, decisions, audit, and manual staging |
 | `data/`, `models/` | Gitignored runtime artifacts (regenerate, never commit) |
 
 ## Contract (do not break)
@@ -45,11 +46,14 @@ curl http://127.0.0.1:8000/api/health            # readiness probe (auth-exempt)
   `models/runs/run_<ts>_<hash>`, promoting `models/current`.
 - `NayoseEngine.load` refuses a bundle whose fingerprint doesn't match the
   reference — never disable that guard.
+- The production F2LLM-v2-330M profile is locked to Apple MPS, FP16, neural
+  batch 32, one process, dense retrieval, LightGBM pair training, and
+  `PYTORCH_ENABLE_MPS_FALLBACK=0`; unavailable MPS or model-load failures are fatal.
 - Visible tables must never leak hidden columns
   (`truth_id`, `scenario`, `split`, `record_quality`, `transformation`, ...).
 - Every record/query field must have a lineage row
   (`field_lineage`: item_id × field, canonical vs observed, owner, transformation).
-- The notebook preflight invariants and `tests/` enforce this; run them before changing the schema.
+- The preflight invariants and `tests/` enforce this; run them before changing the schema.
 - `tests/test_arch_contract.py` checks frontend port parity, the CSS class
   dictionary, no layout/stacking on bare element selectors, and no sticky table
   cells. It ships with the suite — drift fails `pytest`, never the browser.
@@ -65,10 +69,10 @@ New VIEW (#/route):
 4. `ts/features.ts`: new `mountX(el, port, store)`; register in `app.ts` VIEWS +
    palette nav; add the sidebar link in `index.html`.
 5. Tests: `MockPort` in `test/view.test.mjs` + a flow test; server test above.
-6. `python scripts/audit_repo.py` — all gates green.
+6. `python -m api.cli audit repo` — all gates green.
 
 New decision/state (e.g., review verdicts):
-- Store it in `Store` + `port.saveDecisions/loadDecisions` (server: models/decisions).
+- Store it in `Store` + `port.saveDecisions/loadDecisions` (server: operational SQLite).
 - Commands live in `store.ts`; keep undo (never mutate without a Command).
 
 FIX a bug:
@@ -76,13 +80,13 @@ FIX a bug:
 - Reproduce, fix at the layer that owns the fact (port/backend/view), no shotgun edits.
 
 Definition of done (EVERY change):
-- `python scripts/audit_repo.py` PASS (ruff, mypy, tsc, npm test, pytest incl.
+- `python -m api.cli audit repo` PASS (ruff, mypy, tsc, npm test, pytest incl.
   schema-contract + frontend gate). E2E (NAYOSE_E2E=1) when touch server/urls/views.
 - No new raw SQL on the client; no new dependencies without pyproject/package.json entry.
 
 ## Do not
 
-- Do not add logic to notebooks (thin driver rule).
+- Keep `api/cli.py` thin; implementation belongs in `api/commands/`, `api/`, and `synthetic/`.
 - Testing pyramid: unit (pure) + jsdom view tests are the workhorse; Playwright
   E2E (`frontend/test/e2e.test.mjs`, opt-in `NAYOSE_E2E=1`) is for stories that
   cross the real server⇄browser⇄persistence seam. `e2e-util.mjs` copies the
@@ -98,9 +102,9 @@ Definition of done (EVERY change):
 - Admin workspace (`#/admin`) and data entry (`#/data-entry`) are always OPEN
   as local-first surfaces; they have no separate admin credential. If the
   deployment is exposed beyond the trust boundary, use the shared
-  `NAYOSE_API_TOKEN` bearer policy. Every admin operation is recorded in the append-only audit log
-  (`models/admin_audit.jsonl`) regardless of auth. Manual entries live
-  OUTSIDE the immutable generation (`data/manual`, atomic parquet writes) and
+  `NAYOSE_API_TOKEN` bearer policy. Every admin operation is recorded in the append-only audit log in the
+  operational SQLite store regardless of auth. Manual entries live OUTSIDE the
+  immutable generation and are staged in that same store; they
   are labeled un-trained — they must never break the fingerprint contract.
 - `MemoProxy` caches reads; MUTATION-ADJACENT reads (manualList, adminState,
   loadDecisions) are pass-through — never cache state that an action mutates.
@@ -121,7 +125,7 @@ Definition of done (EVERY change):
   dictionary), never hardcoded Japanese strings; the language toggle must not
   translate customer data.
 - Do not hardcode datasets/rates in engine code — extend `config.py`/providers.
-- Do not commit `data/`, `models/`, `*.executed.ipynb`, or environment files.
+- Do not commit `data/`, `models/`, or environment files.
 - Do not install new deps into the shared `.venv` without adding them to
   `pyproject.toml` first.
 - Do not change random-seed defaults silently — outputs must be seed-reproducible.
@@ -142,8 +146,9 @@ Definition of done (EVERY change):
   `boot({port, store, runs})` with no import side effects. New views → new
   feature module + focused port method; never call fetch/SQL/localStorage
   directly in views.
-- Decision state persists server-side under `models/decisions/<run>.json`
-  (GET/PUT /api/decisions); review updates remain undoable on the client.
+- Decision state persists server-side in the operational SQLite store and is
+  bound to the selected model manifest (GET/PUT /api/decisions); review updates
+  remain undoable on the client.
 - New port operations need ApiAdapter + MockPort implementations and a
   fixture-backed API test (server) + a mock-port view test (frontend).
 - Server API is typed domain endpoints (no raw SQL to clients; `NAYOSE_DEBUG_SQL=1`

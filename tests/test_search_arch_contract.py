@@ -7,6 +7,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 SEARCH = REPO / "api" / "search_service.py"
+SEARCH_ROUTES = REPO / "api" / "routers" / "search.py"
 MAIN = REPO / "api" / "main.py"
 MATCH_VIEW = REPO / "frontend" / "ts" / "match-view.ts"
 INFRA = REPO / "frontend" / "ts" / "infra.ts"
@@ -94,11 +95,11 @@ def test_composition_root_has_a_search_factory():
 
 
 def test_api_search_endpoint_uses_service_not_retrievers():
-    tree = ast.parse(MAIN.read_text(encoding="utf-8"))
+    tree = ast.parse(SEARCH_ROUTES.read_text(encoding="utf-8"))
     endpoint = _top_level_function(tree, "entities")
     source = ast.unparse(endpoint)
-    assert "current_search_service" in source
-    assert ".search" in source
+    assert "get_services" in source
+    assert "services.search" in source
     assert "QUERIES" not in source
     assert "RECOMMEND" not in source
 

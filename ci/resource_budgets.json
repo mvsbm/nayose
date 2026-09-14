@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "commands": {
+    "audit": {
+      "max_peak_rss_mb": 4096,
+      "max_process_count": 128,
+      "max_peak_threads": 512,
+      "max_cgroup_memory_mb": 4096,
+      "max_cgroup_pids": 128
+    },
+    "generate_smoke": {
+      "max_peak_rss_mb": 4096,
+      "max_process_count": 64,
+      "max_peak_threads": 512,
+      "max_cgroup_memory_mb": 4096,
+      "max_cgroup_pids": 128
+    },
+    "train_smoke": {
+      "max_peak_rss_mb": 8192,
+      "max_process_count": 64,
+      "max_peak_threads": 512,
+      "max_cgroup_memory_mb": 8192,
+      "max_cgroup_pids": 128
+    },
+    "audit_decisions": {
+      "max_peak_rss_mb": 4096,
+      "max_process_count": 64,
+      "max_peak_threads": 512,
+      "max_cgroup_memory_mb": 4096,
+      "max_cgroup_pids": 128
+    },
+    "e2e": {
+      "max_peak_rss_mb": 8192,
+      "max_process_count": 256,
+      "max_peak_threads": 1024,
+      "max_cgroup_memory_mb": 8192,
+      "max_cgroup_pids": 256
+    }
+  }
+}

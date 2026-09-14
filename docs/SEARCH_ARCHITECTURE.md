@@ -32,7 +32,7 @@ pair verification. The full record-dense rank is primary; only views relevant
 to populated query fields contribute, and name, address, and alias views remain
 lower-weight correlated discovery signals. Field-view scores never overwrite
 the record-dense feature consumed by the trained verifier.
-Dense evidence is discovery evidence, not an identity decision.
+Dense evidence is discovery evidence, not an identity decision. Offline candidate graph construction uses the bounded sparse backend in `api/training_retrieval.py`; its capped CSC postings path shares the serving query-feature cap instead of materializing all-pairs sparse scores. Exact block indexes are fingerprint-bound and stored with deflate compression.
 
 | Component | Responsibility |
 |---|---|
@@ -69,7 +69,7 @@ Dense evidence is discovery evidence, not an identity decision.
 - New retrieval behavior must register a retriever; do not extend `SearchService` with backend-specific branches.
 - Build dense views in batches and cache them inside the generation by data fingerprint and model ID; never materialize one destructive entity centroid.
 - Keep corpus and query text shapes identical. Alias retrieval searches each observed name variant as a separate `name=<value>` query rather than embedding a multi-alias query against single-alias rows.
-- Keep the labeled retrieval-text schema shared by notebook training and API serving; a bundle must not score an unstructured query against a labeled corpus.
+- Keep the labeled retrieval-text schema shared by offline training and API serving; a bundle must not score an unstructured query against a labeled corpus.
 - Treat auto-linking as a safety decision: require calibrated probability, margin, independent evidence families, no hard field conflicts, and an exact date-of-birth or email anchor; phone-only evidence remains reviewable because household contacts can be shared.
 
-`tests/test_search_arch_contract.py` is the executable enforcement layer. `tests/test_arch_contract.py` enforces the broader frontend and CSS architecture. Run `python scripts/audit_repo.py` before merging.
+`tests/test_search_arch_contract.py` is the executable enforcement layer. `tests/test_arch_contract.py` enforces the broader frontend and CSS architecture. Run `python -m api.cli audit repo` before merging.

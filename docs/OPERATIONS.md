@@ -7,14 +7,14 @@ derived dataset. Everything is env-configured (`NAYOSE_*`), immutable
 ## 1. Generate reference data (one immutable generation)
 
 ```bash
-python scripts/generate_data.py --profile generate_only \
+python -m api.cli data generate --profile generate_only \
     --n-parties 250000 --seed 42 --data-dir data
 # writes data/generations/gen_<ts>_<hash>/ and repoints data/current
 ```
 
 - Profiles are named by estimated canonical-entity size in the dashboard: `~340 | ~800 | ~6,800 | ~22,700 | ~113,500` (internal IDs remain `preflight | smoke | mac | large_mac | generate_only`).
-- For a canonical-only large layer, use `python scripts/generate_data.py --clean-only --n-parties 2000000 --chunk-size 50000`; this writes an immutable `clean_generations/` product and updates `clean_current` without replacing `data/current`.
-- Full generation is capped at 2,000,000 base entities because observations, policies, and field lineage are currently materialized before saving. The clean-only stream is the validated 2M path; larger full generations require chunked policy/lineage orchestration first.
+- For a canonical-only large layer, use `python -m api.cli data generate --clean-only --n-parties 2000000 --chunk-size 50000`; this writes an immutable `clean_generations/` product and updates `clean_current` without replacing `data/current`.
+- Full generation is capped at 2,000,000 base entities because observations, policies, and field lineage are currently materialized before saving. The clean-only stream is the implementation path for a 2M canonical layer; target-runner capacity sign-off is still required, and larger full generations require chunked policy/lineage orchestration first.
 - Dirtiness: `--difficulty realistic` (default) | `debug | severe`.
 - In the dashboard, **Admin → Data & training** exposes every registered
   corruption event, its probability, affected fields, example, channel
@@ -27,12 +27,12 @@ python scripts/generate_data.py --profile generate_only \
 ## 2. Train + evaluate (one immutable run bundle)
 
 ```bash
-python scripts/train.py --data-dir data/current --models-dir models \
-    --seed 42 --pair-model lightgbm --device auto
+python -m api.cli model train --data-dir data/current --models-dir models \
+    --seed 42 --pair-model lightgbm --device mps --model-family f2llm_330m
 ```
 
-`train.py` executes `nayose.ipynb` headlessly (fresh kernel, `NAYOSE_*`
-overrides), then **verifies the bundle** before exiting 0:
+`nayose model train` runs the checked-in Python training pipeline with `NAYOSE_*`
+overrides, then **verifies the bundle** before exiting 0:
 
 - required tables present (`canonical_entities`, `record_to_nayose`,
   `review_queue`, `full_dataset_metrics`, `full_dataset_summary`,
@@ -43,25 +43,26 @@ overrides), then **verifies the bundle** before exiting 0:
   candidate/pair/query metrics.
 
 Bundle: `models/runs/run_<ts>_<hash>/`, promoted via `models/current`.
-Key knobs: `--device auto|mps|cpu|cuda`, `--pair-model auto|lightgbm|sklearn`,
-`--model-family off|ruri|...`, `--exact-mode hybrid|fuzzy_only|exact_only`.
+The production F2LLM profile is locked to `--device mps`, FP16, neural
+batch 32, one process, dense retrieval, and `PYTORCH_ENABLE_MPS_FALLBACK=0`.
+It fails closed if MPS or the exact 330M model is unavailable. The `off`
+profile remains available for deterministic CPU-only test fixtures.
+Key knobs: `--pair-model auto|lightgbm|sklearn`, `--model-family off|f2llm_330m|...`,
+`--exact-mode hybrid|fuzzy_only|exact_only`.
 Pair models are saved as native LightGBM text boosters — never joblib-pickle
 LightGBM alongside torch (MPS deadlock; see AGENTS.md).
 
 The pipeline refuses loads above `NAYOSE_MAX_FULL_RECORDS` (default 100,000)
 by design; raise it deliberately when the machine has headroom
 (e.g. `NAYOSE_MAX_FULL_RECORDS=700000` for a ~620k-record snapshot).
-On CPU boxes default to `--model-family off` (deterministic SVD embeddings with
-usearch ANN); set `--model-family ruri` on a GPU/MPS box when you want neural
-embedding/reranking workloads. The serving path requires the exact and dense ANN
-artifacts recorded in the bundle manifest; it never silently rebuilds or switches
-retrieval backends.
+The serving path requires the exact and dense ANN artifacts recorded in the
+bundle manifest; it never silently rebuilds or switches retrieval backends.
 
 For an existing unpromoted bundle copied to another target platform, materialize
 its native ANN artifact before packaging it:
 
 ```bash
-python scripts/materialize_bundle.py \
+python -m api.cli model materialize \
     --run-dir /staging/models/runs/run_<id> \
     --data-dir /staging/data/current \
     --index-backend polars
@@ -77,37 +78,38 @@ NAYOSE_DASH_PORT=8899 python -m api.main
 | Env | Effect |
 |---|---|
 | `NAYOSE_DASH_PORT` | bind port (default 8000) |
-| `NAYOSE_API_TOKEN` | set → `/api/*` requires `Authorization: Bearer <token>` |
+| `NAYOSE_AUTH_MODE` | `local_bearer` (default) or `trusted_proxy`; trusted proxy mode requires an authenticated edge proxy |
+| `NAYOSE_API_TOKEN` | bearer credential for `local_bearer`; required when `NAYOSE_BIND_HOST` is non-loopback |
+| `NAYOSE_AUTH_SUBJECT_HEADER` / `NAYOSE_AUTH_SCOPES_HEADER` | trusted-proxy identity headers; proxy must strip client-supplied values; scopes are `read review admin` |
 | `NAYOSE_WARM_EMBED=1` | preload recommend engine (embeddings + ANN) at startup |
 | `NAYOSE_REVIEWER_DEFAULT` | reviewer identity when the `X-Reviewer` header is absent |
 | `NAYOSE_DEBUG_SQL=1` | enable `POST /api/query` (SELECT/WITH only) for debugging |
-| `NAYOSE_EXACT_MODE` | channel-attribution experiments (honored in graph+retrieval) |
+| `NAYOSE_EXACT_MODE` | initial channel-attribution mode; admin settings update the application-owned value without mutating process environment |
 | `NAYOSE_CPU_THREADS` | explicit per-process numerical thread budget; default uses CPU affinity/process count |
 | `NAYOSE_PROCESS_WORKERS` | API process count used to divide the CPU budget |
-| `NAYOSE_DEVICE` | `auto`, `cpu`, `cuda`, or `mps`; explicit unavailable accelerators fail fast |
+| `NAYOSE_DEVICE` | `mps` for neural serving; no CPU/CUDA fallback |
+| `NAYOSE_OPERATIONAL_DB` | SQLite WAL path for jobs, decisions, audit events, and manual staging; defaults to `<data root>/operational.sqlite3` |
 
-- `GET /api/health` — readiness/hygiene probe (auth-exempt): current run,
-  data/model fingerprints, compatibility, run count, endpoint stats, and timestamps.
-  A missing or mismatched data/model alias is `degraded`; Docker healthcheck uses it.
+- `GET /api/health` — minimal auth-exempt liveness/readiness probe with status and timestamp; Docker healthcheck uses it.
+- `GET /api/health/details` — authenticated operational details: release identity,
+  fingerprints, runtime, engine state, run count, and endpoint telemetry.
+  Every response includes `X-Request-ID`; clients may provide a bounded ASCII ID for correlation.
 - `GET /api/admin/generation-config` — server-owned profiles, difficulties,
   corruption catalog, channel rules, and defaults.
 - `POST /api/admin/generation-preview` — validates controls and returns a
   side-effect-free deterministic estimate; it never creates a generation.
-- Reviewer identity: `PUT /api/decisions` accepts `X-Reviewer`; each stored
-  decision records `{left, right, ts, reviewer}` under `models/decisions/<run>.json`.
-- Admin and data-entry routes are local-first and have no separate admin token;
-  when `NAYOSE_API_TOKEN` is configured they follow the same shared bearer
-  policy as every other API route.
+- Reviewer identity: `PUT /api/decisions` accepts `X-Reviewer` only for unauthenticated loopback use. Authenticated bearer and trusted-proxy requests use the authenticated subject, so a client cannot impersonate a reviewer. Review mutations require the `review` scope; admin/data-entry mutations require `admin`. Decisions are stored in the configured operational SQLite database and bound to the model fingerprint and manifest hash.
+- `trusted_proxy` is valid only behind a reverse proxy that strips the configured identity headers before adding verified OIDC/JWT claims. Do not expose the application directly in this mode.
 
 ## 4. Audit review decisions (label feedback loop)
 
 ```bash
-python scripts/audit_decisions.py --models-dir models --data-dir data/current
+python -m api.cli audit decisions --models-dir models --data-dir data/current
 ```
 
 Scores operator decisions against hidden `record_truth`: per-reviewer accuracy,
-wrong-decision samples, and an exported `models/decisions/promoted_<run>.parquet`
-of verified duplicate pairs. The export is an explicit review artifact; training
+wrong-decision samples, and an exported `models/exports/promoted_<run>.parquet`
+of verified duplicate pairs. The SQLite database is the operational source of truth; the export is an explicit review artifact, and training
 does not consume it automatically. Truth is read-only; nothing is mutated.
 
 ## 5. Retrain & drift
@@ -121,7 +123,8 @@ does not consume it automatically. Truth is read-only; nothing is mutated.
 ## 6. Containerized serving
 
 ```bash
-docker compose up -d --build     # mounts ./data and ./models at runtime
+NAYOSE_API_TOKEN="$(openssl rand -hex 32)" docker compose up -d --build
+# mounts ./data and ./models at runtime; shared binding is authenticated
 docker compose logs -f nayose
 ```
 

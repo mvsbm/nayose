@@ -2,8 +2,28 @@ from __future__ import annotations
 
 from threading import Event, Thread
 
-from api.query_context import BundleReader
+import pytest
+
+from api.query_context import BundleReader, validate_debug_sql
 from api.repositories import RunRepository
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "UPDATE 'bundle/records.parquet' SET value = 1",
+        "SELECT * FROM read_csv('/etc/passwd')",
+        "SELECT * FROM read_parquet('data/../secrets.parquet')",
+        "SELECT 1; SELECT 2",
+    ],
+)
+def test_debug_sql_rejects_mutation_and_untrusted_paths(sql):
+    with pytest.raises(ValueError):
+        validate_debug_sql(sql)
+
+
+def test_debug_sql_accepts_a_rooted_read():
+    validate_debug_sql("SELECT * FROM 'bundle/canonical_entities.parquet'")
 
 
 def test_cache_single_flight_runs_one_loader_for_same_key(tmp_path):

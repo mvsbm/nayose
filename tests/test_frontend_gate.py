@@ -1,4 +1,5 @@
-"""Enforcement gate: the frontend's own test suite (tsc + node:test) must pass.
+"""Enforcement gate: the frontend's own node:test suite must pass.
+TypeScript compilation is performed once by the authoritative audit build.
 Skipped on machines without node/npm; fail otherwise (hermetic, no network)."""
 
 import shutil

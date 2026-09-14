@@ -1,11 +1,13 @@
 import hashlib
 import json
 
-from api.admin import AuditLog
+from api.audit import AuditLog
+from api.operational_store import OperationalStore
 
 
 def test_audit_records_form_a_hash_chain(tmp_path):
-    log = AuditLog(tmp_path / "admin_audit.jsonl")
+    store = OperationalStore(tmp_path / "operational.sqlite3")
+    log = AuditLog(store)
 
     first = log.record("tester", "start", {"job": "one"})
     second = log.record("tester", "done", {"job": "one"})
@@ -21,8 +23,9 @@ def test_audit_records_form_a_hash_chain(tmp_path):
     assert log.verify() is True
     assert log.tail(2) == [first, second]
 
-    log_path = tmp_path / "admin_audit.jsonl"
-    log_path.write_text(
-        log_path.read_text(encoding="utf-8").replace('"done"', '"tampered"'), encoding="utf-8"
-    )
+    with store.transaction() as connection:
+        connection.execute(
+            "UPDATE audit_events SET action = ? WHERE event_id = ?",
+            ("tampered", second["event_id"]),
+        )
     assert log.verify() is False

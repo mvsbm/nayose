@@ -25,14 +25,14 @@ Run the repository gate from the project root:
 
 ```bash
 source .venv/bin/activate
-python scripts/audit_repo.py
+python -m api.cli audit repo
 ```
 
 The gate covers TypeScript compilation, frontend tests, Python tests, schema and
 architecture contracts, lint, formatting, and typing. Browser E2E is opt-in:
 
 ```bash
-NAYOSE_E2E=1 python scripts/audit_repo.py
+NAYOSE_E2E=1 python -m api.cli audit repo
 ```
 
 The browser tests use isolated fixture bundles. They do not establish latency,

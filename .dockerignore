@@ -10,8 +10,6 @@ models
 frontend/node_modules
 tests
 docs
-nayose.ipynb
-*.executed.ipynb
 *.log
 .env
 nohup.out

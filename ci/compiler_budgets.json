@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "max_files": 140,
+  "max_types": 30000,
+  "max_instantiations": 30000,
+  "max_memory_mb": 512,
+  "max_total_ms": 10000
+}

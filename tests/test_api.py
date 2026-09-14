@@ -2,11 +2,14 @@
 
 import json
 import os
+from dataclasses import replace
 from pathlib import Path
 
 import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
+
+from api.release import ReleaseCatalog, ReleasePublisher
 
 
 def _write_bundle(root) -> tuple[str, str]:
@@ -181,6 +184,7 @@ def _write_bundle(root) -> tuple[str, str]:
         (root / "current").symlink_to(run, target_is_directory=True)
     if not (data / "current").exists():
         (data / "current").symlink_to(generation, target_is_directory=True)
+    ReleasePublisher(ReleaseCatalog(data, root)).publish("gen_fake", "run_fake")
     return str(run), str(data)
 
 
@@ -189,18 +193,28 @@ def client(tmp_path, monkeypatch):
     run, data = _write_bundle(tmp_path)
     import api.main as m
 
-    monkeypatch.setattr(m, "MODELS_DIR", tmp_path)
-    monkeypatch.setattr(m, "DATA_DIR", tmp_path / "data")
-    monkeypatch.setattr(m, "DATA_ROOT", data)
-    m.DECISIONS = m.DecisionsStore(m.MODELS_DIR)
-    m.RUNS = m.RunRepository(m.MODELS_DIR)
-    m.QUERIES = m.QueryService(m.RUNS, m.DATA_DIR)
-    m.RECOMMEND = m.RecommendService(m.RUNS, m.DATA_DIR)
-    m.ADMIN.close()
-    m.ADMIN = m.AdminService(tmp_path, m.MODELS_DIR, tmp_path / "manual")
-    m.STATS.reset()  # module-global shared state => explicit per-test isolation
+    m.APP_SERVICES.close()
+    config = replace(
+        m.CONFIG,
+        models_dir=tmp_path,
+        data_dir=tmp_path / "data",
+        data_root=Path(data),
+        operational_db=tmp_path / "operational.sqlite3",
+    )
+    m.APP_SERVICES = m.build_application(config)
+    m.MODELS_DIR = config.models_dir
+    m.DATA_DIR = config.data_dir
+    m.DATA_ROOT = config.data_root
+    m.DECISIONS = m.APP_SERVICES.decisions
+    m.RUNS = m.APP_SERVICES.runs
+    m.QUERIES = m.APP_SERVICES.queries
+    m.RECOMMEND = m.APP_SERVICES.recommend
+    m.ADMIN = m.APP_SERVICES.admin
+    m.STATS = m.APP_SERVICES.stats
+    m.app = m.create_app(m.APP_SERVICES, m.router)
+    m.STATS.reset()
     yield TestClient(m.app)
-    m.RECOMMEND.close()
+    m.APP_SERVICES.close()
 
 
 Q = "?run_id=run_fake"
@@ -522,6 +536,8 @@ def test_matching_job_endpoints_and_validation(client):
     assert status["stage"] == "complete"
     assert status["result"]["action"] == "INSUFFICIENT_INPUT"
     assert client.get("/api/recommendations/not-a-job").status_code == 404
+    assert client.post(f"/api/recommendations/{job_id}/cancel").status_code == 200
+    assert client.post("/api/recommendations/not-a-job/cancel").status_code == 404
     assert (
         client.post(
             "/api/recommendations", json={"run_id": "run_fake", "record": {"truth_id": "hidden"}}
@@ -619,9 +635,18 @@ def test_decisions_roundtrip(client):
         },
     )
     assert put.status_code == 200 and put.json()["saved"] == 1
-    items = client.get("/api/decisions?run_id=run_fake").json()["items"]
+    assert put.json()["revision"] == 1
+    current = client.get("/api/decisions?run_id=run_fake").json()
+    assert current["revision"] == 1
+    items = current["items"]
     assert items[0]["left"] == "R0000000000" and items[0]["right"] == "R0000000001"
     assert items[0]["reviewer"] == "web", "default reviewer identity stamped"
+    stale = client.put(
+        "/api/decisions",
+        json={"run_id": "run_fake", "revision": 0, "items": []},
+    )
+    assert stale.status_code == 409
+    assert stale.json()["detail"] == "decision_conflict"
 
 
 def test_decisions_are_bound_to_the_model_manifest(client):
@@ -629,11 +654,15 @@ def test_decisions_are_bound_to_the_model_manifest(client):
         "/api/decisions",
         json={"run_id": "run_fake", "items": [{"left": "L", "right": "R"}]},
     )
-    from api.main import MODELS_DIR
+    from api.main import APP_SERVICES
 
-    metadata = MODELS_DIR / "decisions" / "run_fake.meta.json"
-    assert metadata.exists()
-    manifest = MODELS_DIR / "runs" / "run_fake" / "run_manifest.json"
+    with APP_SERVICES.operational_store.read_connection() as connection:
+        binding = connection.execute(
+            "SELECT data_fingerprint, manifest_sha256 FROM decision_sets WHERE run_id = ?",
+            ("run_fake",),
+        ).fetchone()
+    assert binding is not None
+    manifest = APP_SERVICES.runs.resolve("run_fake") / "run_manifest.json"
     payload = manifest.read_text(encoding="utf-8").replace("abc123def4567890", "changed")
     manifest.write_text(payload, encoding="utf-8")
     assert client.get("/api/decisions?run_id=run_fake").status_code == 422
@@ -651,7 +680,7 @@ def test_decisions_stamp_reviewer_header(client):
 
 
 def test_health_reports_current_run(client):
-    h = client.get("/api/health")
+    h = client.get("/api/health/details")
     body = h.json()
     assert h.status_code == 200
     assert body["status"] == "ok"
@@ -693,12 +722,15 @@ def test_queries_bind_reference_data_to_model_fingerprint(tmp_path):
 
 
 def test_bearer_auth_opt_in(tmp_path, monkeypatch):
-    monkeypatch.setenv("NAYOSE_API_TOKEN", "sekret")
     from api import main as m
 
+    config = replace(m.APP_SERVICES.config, api_token="sekret")
+    auth_services = m.build_application(config)
+    m.app = m.create_app(auth_services, m.router)
     client = TestClient(m.app)
     assert client.get("/api/runs").status_code == 401
     assert client.get("/api/health").status_code == 200, "health probe exempt from auth"
+    assert client.get("/api/health/details").status_code == 401
     ok = client.get("/api/runs", headers={"Authorization": "Bearer sekret"})
     assert ok.status_code == 200 and ok.json()
     page = client.get("/")

@@ -127,11 +127,41 @@ def test_matching_returns_actual_support_and_threshold_reason():
     assert stages == ["retrieving", "scoring", "aggregating"]
 
 
+def test_minimum_reference_density_allows_safe_no_match():
+    from api.matching import ExplainedMatcher
+
+    engine = fake_engine()
+    engine.config.minimum_reference_density = 1.0
+
+    result = ExplainedMatcher(engine).recommend(
+        {
+            "name_kanji": "佐藤 太郎",
+            "phone": "09012345678",
+            "date_birth": "2000-01-01",
+        },
+        lambda _: None,
+    )
+
+    assert result["action"] == "NO_MATCH"
+    assert result["reason"] == "reference_density_below_threshold"
+    assert result["diagnostics"]["reference_density"] == pytest.approx(0.5)
+
+
 def test_scoring_failure_is_not_disguised_as_probability():
     from api.matching import ExplainedMatcher
 
     with pytest.raises(ValueError, match="broken model"):
         ExplainedMatcher(fake_engine(broken=True)).recommend({"name_kanji": "佐藤"}, lambda _: None)
+
+
+def test_inference_config_validates_dense_profile_and_density():
+    from api.engine import InferenceConfig
+
+    assert InferenceConfig(dense_profile="field_aware", minimum_reference_density=0.5)
+    with pytest.raises(ValueError, match="dense_profile"):
+        InferenceConfig(dense_profile="unknown")
+    with pytest.raises(ValueError, match="minimum_reference_density"):
+        InferenceConfig(minimum_reference_density=1.1)
 
 
 def test_engine_load_defaults_to_promoted_aliases():
@@ -161,6 +191,7 @@ def test_engine_refuses_bundles_without_fingerprint_guard(tmp_path):
 
 def test_query_embedding_encoder_batches_and_reuses_model():
     from api.embedding_runtime import QueryEmbeddingEncoder
+    from api.telemetry import Stats
 
     calls: list[list[str]] = []
 
@@ -169,16 +200,21 @@ def test_query_embedding_encoder_batches_and_reuses_model():
             calls.append(list(texts))
             return np.ones((len(texts), 2), dtype=np.float32)
 
+    stats = Stats()
     encoder = QueryEmbeddingEncoder(
         "fake/model",
         device="cpu",
         batch_size=8,
         model_factory=lambda model_id, device: FakeModel(),
+        stats=stats,
     )
     first = encoder.encode(["record", "name", "alias"])
     second = encoder.encode(["address"])
     assert first.shape == (3, 2) and second.shape == (1, 2)
     assert calls == [["record", "name", "alias"], ["address"]]
+    assert (
+        next(row for row in stats.snapshot() if row["endpoint"] == "embedding.encode")["hits"] == 2
+    )
 
 
 def test_process_wide_query_encoder_is_reused_and_rebound(monkeypatch):
@@ -188,7 +224,8 @@ def test_process_wide_query_encoder_is_reused_and_rebound(monkeypatch):
     closed = []
 
     class FakeEncoder:
-        def __init__(self, model_id, *, device, batch_size):
+        def __init__(self, model_id, *, device, batch_size, stats=None):
+            del stats
             created.append((model_id, device, batch_size))
 
         def encode(self, texts, expected_dimensions=None):
@@ -383,6 +420,11 @@ def test_normalize_record_field_invariants():
     # _compact strips punctuation (legacy email contract)
     assert normalized["n_email"] == "taro@examplecojp"
     assert "1000001" in normalized["retrieval_text"]
+    from api.normalize import normalize_frame
+
+    frame = normalize_frame(pd.DataFrame([{"record_id": "R1", **raw}]), "record_id").iloc[0]
+    for field, value in normalized.items():
+        assert str(frame[field]) == value
     for norm, sample in (
         (normalize_phone, "０９０−１２３４−５６７８"),
         (normalize_postal, "100-0001"),
@@ -637,6 +679,32 @@ def test_matching_job_status_survives_service_restart(tmp_path):
 
     assert status["stage"] == "complete"
     assert status["result"]["action"] == "INSUFFICIENT_INPUT"
+
+
+def test_matching_job_cancellation_is_persisted(tmp_path):
+    from api.matching import ExplainedMatcher, RecommendationService
+
+    started, release = Event(), Event()
+
+    def load(run, data):
+        started.set()
+        assert release.wait(5)
+        return ExplainedMatcher(fake_engine())
+
+    repo = SimpleNamespace(resolve=lambda _: tmp_path)
+    service = RecommendationService(repo, tmp_path, loader=load)
+    try:
+        job = service.start("run", {"name_kanji": "佐藤"})
+        assert started.wait(5)
+        status = service.cancel(job["id"])
+        assert status["stage"] == "cancelled"
+        release.set()
+        service.wait(job["id"], timeout=5)
+        assert service.status(job["id"])["stage"] == "cancelled"
+        assert service.status(job["id"])["error"] == "request_cancelled"
+    finally:
+        release.set()
+        service.close()
 
 
 def test_async_jobs_report_real_loading_and_reuse_engine(tmp_path):

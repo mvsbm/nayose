@@ -18,6 +18,16 @@ RECORD = {
 }
 
 
+def test_dense_view_selection_follows_populated_query_families():
+    available = {"name": object(), "address": object(), "alias": object()}
+    assert dense_views.selected_dense_views(RECORD, available) == ("name", "address", "alias")
+    assert dense_views.selected_dense_views({"n_name_loose": "高橋太郎"}, available) == (
+        "name",
+        "alias",
+    )
+    assert dense_views.selected_dense_views({"n_address": "東京都"}, available) == ("address",)
+
+
 def test_dense_name_view_is_field_labeled_and_normalized():
     text = dense_view_text(RECORD, "name")
     assert text.startswith("party_type=person")

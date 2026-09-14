@@ -9,12 +9,13 @@ rules, README.md the usage.
 ```
 data/raw/...  generations/gen_*/  current↙   immutable real data + generation products
 synthetic/    engine + providers + noise + truth + pipeline      (generator + CLI contract)
-synthetic_data.ipynb                                              (thin generation/report driver)
-nayose.ipynb                                                      (training reference; scripts/train.py is the headless adapter)
+api/commands/data.py                                           (data command implementation)
+api/commands/lifecycle.py + api/training_pipeline.py             (training and evaluation CLI/pipeline)
 models/runs/run_*/  current↙  + registry.json                     (matcher bundles)
-models/decisions/<run>.json                                       (operational review state)
+data/operational.sqlite3                                        (jobs, decisions, audit, manual staging)
 frontend/     typed TS app with explicit ports (no bundler; tsc -> ESM in js/)
-api/main.py   FastAPI: typed domain endpoints (+ debug-only raw SQL)
+api/app.py + api/routers/   FastAPI transport, lifecycle, and typed domain endpoints
+api/main.py   compatibility entrypoint and composition root
 ```
 
 ## Frontend boundaries
@@ -41,7 +42,7 @@ RunRepository (bundles) → QueryService (DuckDB, owned SQL, per-run LRU cache)
                         → SearchService (shared query plan + exact/hybrid strategies)
                         → RecommendService (lazy, fingerprint-guarded engine)
 EntityGraphRepository → EntityGraphProjector → typed graph response
-DecisionsStore (models/decisions/<run>.json) → typed FastAPI routes (op()-timed)
+OperationalStore (SQLite WAL) → focused repositories → typed FastAPI routes (timed_operation)
 ```
 All queries are typed endpoints (`/api/entities`, `/api/entities/explorer`,
 `/api/entity/{id}`, `/api/entity/{id}/graph`, `/api/review`, `/api/metrics`,
@@ -52,15 +53,15 @@ All queries are typed endpoints (`/api/entities`, `/api/entities/explorer`,
 ## Data flow (one loop)
 
 ```
-generate (synthetic/) → run matcher (scripts/train.py / nayose.ipynb) → immutable bundle + generation field_lineage
+generate (synthetic/) → run matcher (nayose model train) → immutable bundle + generation field_lineage
 → API serves bundle parquet via DuckDB → Web views (search/review/audit)
-→ decisions written back (models/decisions) → next audit reads them
+→ decisions written back (operational SQLite) → next audit reads them
 ```
 
 ## Enforcement (definition of done for ANY change)
 
 ```bash
-python scripts/audit_repo.py     # tsc + npm test + E2E(opt-in) + pytest + ruff + mypy
+python -m api.cli audit repo     # tsc + npm test + E2E(opt-in) + pytest + ruff + mypy
 ```
 Every acceptance criterion the repo has is runnable in one command (see AGENTS.md
 "How to add…" for step-by-step paths).

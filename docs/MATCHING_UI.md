@@ -43,6 +43,6 @@ The job registry is **in-memory, single-process**, with one background worker an
 
 ## Verification
 
-Focused tests: `tests/test_api.py`, `tests/test_matching.py`, `tests/test_arch_contract.py`, and `frontend/test/view.test.mjs`. Type-check with `npm --prefix frontend run typecheck`. Regenerate committed browser assets with `npm --prefix frontend run build` before serving the updated UI; then run `python scripts/audit_repo.py` and the relevant browser tests.
+Focused tests: `tests/test_api.py`, `tests/test_matching.py`, `tests/test_arch_contract.py`, and `frontend/test/view.test.mjs`. Type-check with `npm --prefix frontend run typecheck`. Regenerate committed browser assets with `npm --prefix frontend run build` before serving the updated UI; then run `python -m api.cli audit repo` and the relevant browser tests.
 
-An existing smoke bundle and the 374,253-record bundle were exercised through the new backend. Both passed fingerprint verification and returned scored evidence using the saved SVD transform. The larger cold request took approximately 134 seconds, mostly initialization; this is an observation from the local machine, not a latency guarantee. Neural/CUDA serving was not validated by these probes.
+The promoted 374,677-record F2LLM bundle was exercised through the backend and passed fingerprint verification, serving load, and dense-view restoration. The local MPS benchmark measured 7.0 s cold bundle load, 110.6 ms warm recommendation p50, 113.5 ms p95, and 2.93 GiB peak RSS; these are target-machine observations, not latency guarantees. Linux, CUDA, ARM64/x86_64 portability, multi-user capacity, and 2M serving remain uncertified.

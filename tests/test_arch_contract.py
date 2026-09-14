@@ -8,7 +8,7 @@ classes are missing from the stylesheet.
 import re
 from pathlib import Path
 
-from scripts.audit_structure import violations
+from api.commands.structure import violations
 
 REPO = Path(__file__).resolve().parents[1]
 CSS = REPO / "frontend" / "styles.css"
@@ -245,17 +245,18 @@ def test_views_depend_only_on_ports():
 
 
 def test_single_transport_seam():
-    """Exactly one fetch-bearing module exists in frontend/ts: infra.ts.
+    """Exactly one fetch-bearing module exists in frontend/ts: http.ts.
 
-    A second transport path would duplicate authentication and timeout logic.
+    ApiAdapter owns domain mapping while the HTTP helper owns authentication,
+    timeout, and cancellation behavior.
     """
     carriers = []
     for path in sorted((REPO / "frontend" / "ts").glob("*.ts")):
         src = path.read_text(encoding="utf-8")
         if "fetch(" in src:
             carriers.append(path.name)
-    assert carriers == ["infra.ts"], (
-        f"fetch must live ONLY in infra.ts (the ApiAdapter seam); found {carriers}"
+    assert carriers == ["http.ts"], (
+        f"fetch must live ONLY in http.ts (the transport seam); found {carriers}"
     )
 
 

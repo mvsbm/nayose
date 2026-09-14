@@ -15,7 +15,6 @@ COPY pyproject.toml README.md uv.lock ./
 COPY synthetic/ synthetic/
 COPY api/ api/
 COPY frontend/ frontend/
-COPY scripts/ scripts/
 RUN python -m venv /opt/venv \
     && /opt/venv/bin/pip install -U pip "uv==0.9.27" \
     && UV_PROJECT_ENVIRONMENT=/opt/venv /opt/venv/bin/uv sync --frozen --no-dev --no-editable \
@@ -38,10 +37,9 @@ COPY --from=builder /src/api ./api
 COPY --from=builder /src/frontend ./frontend
 COPY --from=builder /src/synthetic ./synthetic
 COPY --from=builder /src/pyproject.toml ./
-COPY --from=builder /src/scripts ./scripts
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
-# writable runtime dirs (decisions live under models/) — volumes are mounted at runtime
+# writable runtime dirs — volumes are mounted at runtime
 RUN mkdir -p /app/data /app/models && chown -R nayose:nayose /app
 ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["python", "-m", "api.main"]

@@ -9,10 +9,6 @@ __pycache__/
 venv/
 env/
 
-# --- Jupyter ---
-.ipynb_checkpoints/
-*_executed.ipynb
-
 # --- Generated data / models / outputs (regenerable, too large for git) ---
 data/
 models/
@@ -48,4 +44,5 @@ Thumbs.db
 
 # --- Logs ---
 *.log
+operational.sqlite3
 frontend/node_modules/

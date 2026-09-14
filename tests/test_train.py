@@ -3,13 +3,13 @@ from argparse import Namespace
 from pathlib import Path
 from typing import Any
 
+from api.commands.lifecycle import REQUIRED_BUNDLE_TABLES, promote_bundle, verify_bundle
 from api.embedding_config import (
     F2LLM_330M_MODEL_ID,
     embedding_model_id,
-    notebook_model_family,
+    pipeline_model_family,
 )
 from api.model_gate import evaluate_f2llm_candidate
-from scripts.train import REQUIRED_BUNDLE_TABLES, promote_bundle, verify_bundle
 
 
 def _args(data_root: Path, models_root: Path) -> Namespace:
@@ -75,9 +75,9 @@ def test_f2llm_330m_performance_gate_requires_material_gain():
     ).passed
 
 
-def test_f2llm_330m_is_an_explicit_notebook_compatible_profile():
+def test_f2llm_330m_is_an_explicit_pipeline_profile():
     assert embedding_model_id("f2llm_330m") == F2LLM_330M_MODEL_ID
-    assert notebook_model_family("f2llm_330m") == "f2llm"
+    assert pipeline_model_family("f2llm_330m") == "f2llm"
     assert embedding_model_id("f2llm", "custom/model") == "custom/model"
 
 
@@ -89,6 +89,7 @@ def test_verify_ignores_aborted_newer_run_and_promotes_verified_bundle(tmp_path)
     (generation / "generation_manifest.json").write_text(
         json.dumps({"data_fingerprint": fingerprint}), encoding="utf-8"
     )
+    (generation / "reference_records.parquet").touch()
     (data_root / "current").symlink_to(Path("generations/gen_a"), target_is_directory=True)
 
     models_root = tmp_path / "models"
@@ -119,6 +120,9 @@ def test_verify_ignores_aborted_newer_run_and_promotes_verified_bundle(tmp_path)
     promote_bundle(args, verified)
 
     assert (models_root / "current").resolve() == run
+    release = json.loads((data_root / "release.json").read_text(encoding="utf-8"))
+    assert release["model_run_id"] == "run_a"
+    assert release["data_generation_id"] == "gen_a"
     registry = json.loads((models_root / "registry.json").read_text(encoding="utf-8"))
     assert registry[-1]["run_id"] == "run_a"
     assert registry[-1]["data_fingerprint"] == fingerprint
