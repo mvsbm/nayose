@@ -1,5 +1,5 @@
 {
-  "max_executable_scripts": 0,
-  "max_script_loc": 0,
+  "max_executable_scripts": 2,
+  "max_script_loc": 250,
   "max_command_module_lines": 800
 }

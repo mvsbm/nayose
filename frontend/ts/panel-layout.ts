@@ -1,4 +1,4 @@
-import type { Storage } from "./port.js";
+import type { Storage } from "./storage.js";
 import { DisposableStore } from "./lifecycle.js";
 import { ResizableRegion } from "./resizable-region.js";
 

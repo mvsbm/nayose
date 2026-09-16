@@ -94,5 +94,6 @@ def build_application(
         search=build_search_service(queries, recommend),
         stats=stats,
         review=review,
+        config_snapshot=snapshot,
         resource_manager=resource_manager,
     )

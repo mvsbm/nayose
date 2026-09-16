@@ -17,7 +17,7 @@ from api.infrastructure.persistence.audit import AuditLog
 from api.infrastructure.persistence.decisions import DecisionsStore
 from api.infrastructure.persistence.operational_store import OperationalStore
 from api.infrastructure.runtime.resource_manager import ResourceManager
-from nayose.config import RuntimeConfig
+from nayose.config import ConfigSnapshot, RuntimeConfig
 
 
 @dataclass(slots=True)
@@ -38,6 +38,7 @@ class ApplicationServices:
     admin: AdminService
     search: SearchService
     stats: Stats
+    config_snapshot: ConfigSnapshot | None = None
     resource_manager: ResourceManager | None = None
 
     def close(self) -> None:

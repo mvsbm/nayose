@@ -688,6 +688,9 @@ def test_health_reports_current_run(client):
     assert body["fingerprint"] == "abc123def456"
     assert body["engine_warm"] is False, "fixture never loads the engine"
     assert "stats" in body
+    assert body["configuration"]["schema_version"] == 1
+    assert body["configuration"]["hash"]
+    assert body["configuration"]["source"] == "nayose.toml + environment overrides"
 
 
 def test_empty_run_id_resolves_to_current(client):

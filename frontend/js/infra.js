@@ -54,7 +54,25 @@ function adaptEntityDetail(data) {
 }
 function adaptHealth(data) {
     const result = object(data, "health_schema_mismatch");
-    if (typeof result.status !== "string" || (result.run !== undefined && result.run !== null && typeof result.run !== "string") || (result.engine_warm !== undefined && typeof result.engine_warm !== "boolean") || (result.stats !== undefined && records(array(result.stats, "health_schema_mismatch"), "health_schema_mismatch").some(stat => typeof stat.endpoint !== "string" || !finite(stat.hits) || !finite(stat.total_ms))))
+    const resources = result.resources;
+    const memory = isObject(resources) ? resources.memory : undefined;
+    const configuration = result.configuration;
+    const validConfiguration = configuration === undefined || (isObject(configuration) && typeof configuration.hash === "string" && finite(configuration.schema_version) && typeof configuration.source === "string");
+    const validResources = resources === undefined || (isObject(resources)
+        && typeof resources.operating_system === "string"
+        && typeof resources.machine === "string"
+        && finite(resources.cpu_count)
+        && finite(resources.available_cpus)
+        && isObject(memory)
+        && finite(memory.available_bytes)
+        && finite(memory.total_bytes)
+        && finite(memory.process_rss_bytes));
+    if (typeof result.status !== "string"
+        || (result.run !== undefined && result.run !== null && typeof result.run !== "string")
+        || (result.engine_warm !== undefined && typeof result.engine_warm !== "boolean")
+        || (result.stats !== undefined && records(array(result.stats, "health_schema_mismatch"), "health_schema_mismatch").some(stat => typeof stat.endpoint !== "string" || !finite(stat.hits) || !finite(stat.total_ms)))
+        || !validResources
+        || !validConfiguration)
         invalid("health_schema_mismatch");
     return result;
 }

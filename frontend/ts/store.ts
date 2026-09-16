@@ -1,6 +1,6 @@
 // Minimal observable store with reversible decision updates.
 // Views subscribe; mutations are the only writers of shared state.
-import { Storage } from "./port.js";
+import type { Storage } from "./storage.js";
 import type { DecisionSnapshot } from "./port.js";
 import { checkedKey } from "./core.js";
 import { Locale, translate } from "./i18n.js";

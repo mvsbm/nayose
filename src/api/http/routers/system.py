@@ -16,6 +16,7 @@ from api.http.auth import require_scope
 from api.http.dependencies import get_services
 from api.infrastructure.bundles.release import release_status
 from api.infrastructure.runtime.performance import RuntimeProfile
+from nayose.config import load_config
 
 router = APIRouter(tags=["system"])
 
@@ -114,10 +115,23 @@ def health_details(
         runtime_error = str(exc)
         runtime = {"device": runtime_device, "available": False, "error": runtime_error}
     resources: dict[str, Any] = {}
+    storage = _storage_health(services)
+    snapshot = services.config_snapshot or load_config()
     if services.resource_manager is not None:
         resources = services.resource_manager.inspect().as_dict()
-        resources["storage"] = services.resource_manager.inspect_storage(services.config.data_root)
-    storage = _storage_health(services)
+        resources["storage"] = {
+            **services.resource_manager.inspect_storage(services.config.data_root),
+            **storage,
+        }
+        resources["policy"] = {
+            "device": runtime_device,
+            "process_workers": runtime.get(
+                "process_workers", snapshot.performance.process_workers or 1
+            ),
+            "cpu_threads": runtime.get("cpu_threads", snapshot.performance.cpu_threads),
+            "model_threads": runtime.get("model_threads", snapshot.performance.model_threads),
+            "embedding_batch_size": snapshot.embedding.batch_size,
+        }
     return {
         "status": (
             "ok"
@@ -142,6 +156,11 @@ def health_details(
         "stats": services.stats.snapshot(),
         "runtime": runtime,
         "resources": resources,
+        "configuration": {
+            "hash": snapshot.config_hash,
+            "schema_version": snapshot.schema_version,
+            "source": "nayose.toml + environment overrides",
+        },
         "runtime_error": runtime_error,
         "engine_warm": services.recommend.engine_ready(current["id"] if current else "")
         if release.compatible

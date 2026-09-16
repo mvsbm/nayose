@@ -1,5 +1,5 @@
 import type { Density, Theme } from "./store.js";
-import type { Storage } from "./port.js";
+import type { Storage } from "./storage.js";
 import type { Locale } from "./i18n.js";
 
 const STORAGE_KEY = "nayose.preferences";

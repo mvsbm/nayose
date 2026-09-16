@@ -1,7 +1,9 @@
 // Frontend capability interfaces. Views do not access fetch, SQL, or
 // localStorage directly; the composition root supplies the implementation.
 import type { EntityExplorerPage, EntityGraph } from "./entity-explorer-port.js";
+import type { HealthConfiguration, HealthResources } from "./health.js";
 export type { EntityExplorerPage, EntityGraph, EntityGraphEdge, EntityGraphNode } from "./entity-explorer-port.js";
+export type { HealthConfiguration, HealthMemory, HealthResources } from "./health.js";
 
 export interface EntityHit {
   kind?: "exact" | "semantic" | "nearest";
@@ -148,6 +150,8 @@ export interface HealthInfo {
   engine_warm?: boolean;
   now_utc?: string;
   stats?: Array<{ endpoint: string; hits: number; total_ms: number }>;
+  resources?: HealthResources;
+  configuration?: HealthConfiguration;
 }
 
 export interface RecommendResult {
@@ -441,8 +445,3 @@ export interface RecommendationPort {
 export interface WorkbenchPort extends SearchPort, EntityDetailPort, ReviewPort, MetricsPort, ConfusionPort,
   EntityExplorerPort, ComparePort, CompareRunsPort, MatchingPort, DataEntryPort, AdminPort,
   RunPort, SystemPort, DecisionPort, RecommendationPort {}
-
-export interface Storage {
-  read(key: string): string | null;
-  write(key: string, value: string): void;
-}

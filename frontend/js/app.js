@@ -274,11 +274,37 @@ export async function boot(opts = {}) {
             const stats = (h.stats ?? []).slice(0, 8)
                 .map(s => `<tr><td>${esc(s.endpoint)}</td><td>${esc(s.hits)}</td><td>${esc(Math.round(s.total_ms))}ms</td></tr>`)
                 .join("");
+            const resources = h.resources;
+            const memory = resources?.memory;
+            const storage = resources?.storage;
+            const policy = resources?.policy;
+            const resourceSummary = resources
+                ? ` · ${esc(resources.machine)} · ${esc(resources.available_cpus)}/${esc(resources.cpu_count)} ${esc(store.t("cpu"))} · ${esc(policy?.process_workers ?? "—")} ${esc(store.t("workers"))} · ${esc(formatBytes(memory?.available_bytes ?? 0))} ${esc(store.t("ramAvailable"))} · ${esc(formatBytes(storage?.available_bytes ?? 0))} ${esc(store.t("storageAvailable"))}`
+                : "";
+            const resourcePanel = resources
+                ? `<details><summary>${esc(store.t("resourceDetails"))}</summary><dl class="configuration-values">
+          <div><dt>${esc(store.t("host"))}</dt><dd>${esc(resources.operating_system)}</dd></div>
+          <div><dt>${esc(store.t("architecture"))}</dt><dd>${esc(resources.machine)}</dd></div>
+          <div><dt>${esc(store.t("cpu"))}</dt><dd>${esc(resources.available_cpus)} / ${esc(resources.cpu_count)}</dd></div>
+          <div><dt>${esc(store.t("workers"))}</dt><dd>${esc(policy?.process_workers ?? "—")}</dd></div>
+          <div><dt>${esc(store.t("configuredDevice"))}</dt><dd>${esc(policy?.device ?? "—")}</dd></div>
+          <div><dt>${esc(store.t("batchSize"))}</dt><dd>${esc(policy?.embedding_batch_size ?? "—")}</dd></div>
+          <div><dt>${esc(store.t("ramAvailable"))}</dt><dd>${esc(formatBytes(memory?.available_bytes ?? 0))} / ${esc(formatBytes(memory?.total_bytes ?? 0))}</dd></div>
+          <div><dt>${esc(store.t("storageAvailable"))}</dt><dd>${esc(formatBytes(storage?.available_bytes ?? 0))} / ${esc(formatBytes(storage?.total_bytes ?? 0))}</dd></div>
+          <div><dt>${esc(store.t("configurationSource"))}</dt><dd>${esc(h.configuration?.source ?? "—")}</dd></div>
+          <div><dt>${esc(store.t("configurationVersion"))}</dt><dd>${esc(h.configuration?.schema_version ?? "—")}</dd></div>
+          <div><dt>${esc(store.t("configurationHash"))}</dt><dd>${esc(h.configuration?.hash?.slice(0, 12) ?? "—")}</dd></div>
+        </dl></details>`
+                : "";
+            const lowStorage = storage && storage.reserve_bytes !== undefined && storage.available_bytes <= storage.reserve_bytes
+                ? `<span class="bad">${esc(store.t("lowStorage"))}</span>`
+                : "";
             strip.hidden = false;
             const sessionRecords = store.checked.size
                 ? ` · ${esc(store.t("sessionRecords", { n: store.checked.size }))}`
                 : "";
-            strip.innerHTML = `<b>${esc(store.t("runningRun"))}:</b> ${esc(h.run ?? "—")} · ${fpBadge} · ${engine}${sessionRecords}
+            strip.innerHTML = `<b>${esc(store.t("runningRun"))}:</b> ${esc(h.run ?? "—")} · ${fpBadge} · ${engine}${resourceSummary}${sessionRecords} ${lowStorage}
+        ${resourcePanel}
         <details><summary>${esc(store.t("apiStats"))}</summary><table><thead><tr><th scope="col">${esc(store.t("endpoint"))}</th><th scope="col">${esc(store.t("hits"))}</th><th scope="col">${esc(store.t("total"))}</th></tr></thead><tbody>${stats || `<tr><td colspan="3">—</td></tr>`}</tbody></table>
         <p class="members">${esc(store.t("healthNow", { t: (h.now_utc ?? "").slice(0, 19).replace("T", " ") }))}</p></details>`;
         }
@@ -307,6 +333,18 @@ export async function boot(opts = {}) {
     await navigate();
     return { destroy: cleanup };
 }
+const formatBytes = (value) => {
+    if (!Number.isFinite(value) || value < 0)
+        return "—";
+    const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let amount = value;
+    let unit = 0;
+    while (amount >= 1024 && unit < units.length - 1) {
+        amount /= 1024;
+        unit += 1;
+    }
+    return `${amount.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
+};
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 // Real browser: auto-start. Tests import this module with a ?boot=N query
 // (to control instantiation) and call boot() themselves — no side effects on import.

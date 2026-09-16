@@ -80,7 +80,24 @@ const mockPort = {
     return Promise.resolve({ record: { name_kanji: "佐藤 太郎", phone: "090-1234-5678", record_id: "R0" } });
   },
   health() {
-    return Promise.resolve({ status: "ok", run: "run_fake", fingerprint: "abc", engine_warm: true, stats: [], now_utc: "2026-01-01T00:00:00" });
+    return Promise.resolve({
+      status: "ok",
+      run: "run_fake",
+      fingerprint: "abc",
+      engine_warm: true,
+      stats: [],
+      now_utc: "2026-01-01T00:00:00",
+      resources: {
+        operating_system: "Darwin",
+        machine: "arm64",
+        cpu_count: 10,
+        available_cpus: 10,
+        memory: { available_bytes: 8 * 1024 ** 3, total_bytes: 16 * 1024 ** 3, process_rss_bytes: 2 * 1024 ** 3, cgroup_limit_bytes: null },
+        storage: { path: "/data", available_bytes: 50 * 1024 ** 3, total_bytes: 100 * 1024 ** 3, reserve_bytes: 20 * 1024 ** 3 },
+        policy: { device: "mps", process_workers: 1, cpu_threads: null, model_threads: null, embedding_batch_size: 32 },
+      },
+      configuration: { hash: "config123456789", schema_version: 1, source: "nayose.toml + environment overrides" },
+    });
   },
   adminCapability() {
     return Promise.resolve({ capable: true });
@@ -738,6 +755,10 @@ test("status strip renders health: run, fingerprint and engine state", async () 
   assert.match(strip.textContent, /run_fake/);
   assert.match(strip.textContent, /fingerprint|一致|OK/);
   assert.match(strip.textContent, /Engine ready|準備済み/);
+  assert.match(strip.textContent, /arm64/);
+  assert.match(strip.textContent, /RAM available|空きRAM/);
+  assert.match(strip.textContent, /Resource details|リソース詳細/);
+  assert.match(strip.textContent, /config123456|設定ハッシュ/);
 });
 
 test("admin capability has no separate token and workspace opens immediately", async () => {
