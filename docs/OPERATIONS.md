@@ -52,6 +52,15 @@ Key knobs: `--pair-model auto|lightgbm|sklearn`, `--model-family off|f2llm_330m|
 Pair models are saved as native LightGBM text boosters — never joblib-pickle
 LightGBM alongside torch (MPS deadlock; see AGENTS.md).
 
+Every generation and training launch uses the centralized resource manager. It
+records CPU affinity/cgroup quotas, RAM headroom, and available PyTorch
+(CUDA/ROCm/MPS) and MLX backends, then derives a non-oversubscribing thread
+plan. Training and generation take an exclusive `.nayose-runtime` lease with
+a heartbeat; a later launch reaps only same-user processes whose recorded PID
+and start time still match, so unrelated or reused PIDs are never terminated.
+The authenticated health-details response exposes the current host resource
+snapshot under `resources`.
+
 The pipeline refuses loads above `NAYOSE_MAX_FULL_RECORDS` (default 100,000)
 by design; raise it deliberately when the machine has headroom
 (e.g. `NAYOSE_MAX_FULL_RECORDS=700000` for a ~620k-record snapshot).
@@ -79,7 +88,9 @@ NAYOSE_DASH_PORT=8899 python -m api.main
 |---|---|
 | `NAYOSE_DASH_PORT` | bind port (default 8000) |
 | `NAYOSE_AUTH_MODE` | `local_bearer` (default) or `trusted_proxy`; trusted proxy mode requires an authenticated edge proxy |
-| `NAYOSE_API_TOKEN` | bearer credential for `local_bearer`; required when `NAYOSE_BIND_HOST` is non-loopback |
+| `NAYOSE_API_TOKEN` | legacy all-scope bearer credential; required when `NAYOSE_BIND_HOST` is non-loopback unless a role token is configured |
+| `NAYOSE_REVIEW_TOKEN` | optional bearer credential limited to `read` and `review` |
+| `NAYOSE_ADMIN_TOKEN` | optional bearer credential for `read`, `review`, and `admin`; prefer this over the legacy all-scope token |
 | `NAYOSE_AUTH_SUBJECT_HEADER` / `NAYOSE_AUTH_SCOPES_HEADER` | trusted-proxy identity headers; proxy must strip client-supplied values; scopes are `read review admin` |
 | `NAYOSE_WARM_EMBED=1` | preload recommend engine (embeddings + ANN) at startup |
 | `NAYOSE_REVIEWER_DEFAULT` | reviewer identity when the `X-Reviewer` header is absent |
@@ -87,7 +98,7 @@ NAYOSE_DASH_PORT=8899 python -m api.main
 | `NAYOSE_EXACT_MODE` | initial channel-attribution mode; admin settings update the application-owned value without mutating process environment |
 | `NAYOSE_CPU_THREADS` | explicit per-process numerical thread budget; default uses CPU affinity/process count |
 | `NAYOSE_PROCESS_WORKERS` | API process count used to divide the CPU budget |
-| `NAYOSE_DEVICE` | `mps` for neural serving; no CPU/CUDA fallback |
+| `NAYOSE_DEVICE` | requested `cpu`, `mps`, `cuda`, `rocm`, `mlx_gpu`, or `auto`; the locked F2LLM profile remains MPS-only |
 | `NAYOSE_OPERATIONAL_DB` | SQLite WAL path for jobs, decisions, audit events, and manual staging; defaults to `<data root>/operational.sqlite3` |
 
 - `GET /api/health` — minimal auth-exempt liveness/readiness probe with status and timestamp; Docker healthcheck uses it.
@@ -130,13 +141,33 @@ does not consume it automatically. Truth is read-only; nothing is mutated.
 ## 6. Containerized serving
 
 ```bash
-NAYOSE_API_TOKEN="$(openssl rand -hex 32)" docker compose up -d --build
+NAYOSE_ADMIN_TOKEN="$(openssl rand -hex 32)" docker compose up -d --build
 # mounts ./data and ./models at runtime; shared binding is authenticated
 docker compose logs -f nayose
 ```
 
 `Dockerfile` healthcheck curls `/api/health`; token/warmup via compose env.
 The image installs the frozen `uv.lock` dependency set.
+
+## 7. Release candidate check
+
+Run this from the exact commit intended for deployment. It fails on a dirty worktree and checks generated diagrams plus container packaging invariants:
+
+```bash
+python scripts/check_release_candidate.py
+```
+
+## 8. Storage maintenance
+
+Serving mounts `data/` and `models/` read-only; operational SQLite state is kept in the named runtime volume. Inspect capacity and preview collection before applying cleanup:
+
+```bash
+python -m api.cli storage inspect --path .
+python -m api.cli storage explain --older-than-days 30
+python -m api.cli storage gc --older-than-days 30 --apply
+```
+
+Collection is two-phase: the first apply writes tombstones, and a later apply removes only already-tombstoned, unprotected artifacts. Current and release-history artifacts are always protected.
 
 ## Notes
 

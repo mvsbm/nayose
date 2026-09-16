@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -28,15 +29,6 @@ from api.training.pair_training import CrossEncoderReranker, threshold_for_preci
 from nayose.config import TrainingConfig
 
 ENTITY_FEATURES = ENTITY_FEATURE_COLS
-
-
-@dataclass(slots=True)
-class RetrievalState:
-    exact_blocks: set[str] = field(default_factory=set)
-    sparse_score: float = 0.0
-    dense_score: float = 0.0
-    sparse_rank: int = 0
-    dense_rank: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,19 +99,14 @@ class EntityTrainer:
 
     def _score_queries(self) -> dict[str, pd.DataFrame]:
         queries = self.corpus.incoming.reset_index(drop=True)
-        retrievals = _retrieve_many(self.index, queries)
-        retrieval_rows: list[dict[str, object]] = []
-        for position, query in enumerate(queries.to_dict("records")):
-            query_id = str(query["query_id"])
-            for item in retrievals[query_id].to_dict("records"):
-                retrieval_rows.append({"query_position": position, "query_id": query_id, **item})
+        retrieval_long = _retrieve_many(self.index, queries)
+        query_ids = queries.query_id.astype(str).tolist()
         entities = {
-            str(query_id): pd.DataFrame(columns=["nayose_id", *ENTITY_FEATURES])
-            for query_id in queries.query_id
+            query_id: pd.DataFrame(columns=["nayose_id", *ENTITY_FEATURES])
+            for query_id in query_ids
         }
-        if not retrieval_rows:
+        if retrieval_long.empty:
             return entities
-        retrieval_long = pd.DataFrame(retrieval_rows).reset_index(drop=True)
         left = queries.iloc[retrieval_long.query_position.to_numpy()].reset_index(drop=True)
         candidates = self.corpus.reference.iloc[
             retrieval_long.candidate_index.to_numpy()
@@ -173,11 +160,11 @@ class EntityTrainer:
         scored["pair_probability"] = probability
         mapping = self.clusters.mapping.set_index("record_id")["nayose_id"]
         scored["nayose_id"] = scored.record_id.map(mapping)
-        for query_id, group in scored.groupby("query_id", sort=False):
-            ordered = group.sort_values("pair_probability", ascending=False).reset_index(drop=True)
-            entities[str(query_id)] = _aggregate_entities(
-                ordered, self.clusters.canonical_entities, self.pair.review_threshold
-            )
+        aggregated = _aggregate_entities_many(
+            scored, self.clusters.canonical_entities, self.pair.review_threshold
+        )
+        for query_id, group in aggregated.groupby("query_id", sort=False):
+            entities[str(query_id)] = group.drop(columns="query_id").reset_index(drop=True)
         return entities
 
     def _reranker_name(self) -> str | None:
@@ -253,76 +240,106 @@ class EntityTrainer:
         )
 
 
-def _retrieve_many(index: TrainingCandidateIndex, queries: pd.DataFrame) -> dict[str, pd.DataFrame]:
+def _retrieve_many(index: TrainingCandidateIndex, queries: pd.DataFrame) -> pd.DataFrame:
     values = queries.reset_index(drop=True)
-    empty_ids: np.ndarray = np.empty((len(values), 0), dtype=np.int32)
-    empty_scores: np.ndarray = np.empty((len(values), 0), dtype=np.float32)
+    row_count = len(values)
+    empty_ids: np.ndarray = np.empty((row_count, 0), dtype=np.int32)
+    empty_scores: np.ndarray = np.empty((row_count, 0), dtype=np.float32)
     sparse_ids, sparse_scores = empty_ids, empty_scores
     dense_ids, dense_scores = empty_ids, empty_scores
     if index.config.exact_mode != "exact_only":
-        sparse_ids, sparse_scores = index.sparse_candidates(
-            values.retrieval_text.astype(str).tolist(), index.config.sparse_top_k
-        )
-        dense_ids, dense_scores = index.dense_candidates(
-            values.retrieval_text.astype(str).tolist(), index.config.dense_top_k
-        )
-    output: dict[str, pd.DataFrame] = {}
-    for position, (_, query) in enumerate(values.iterrows()):
-        states: dict[int, RetrievalState] = {}
-        if index.config.exact_mode != "fuzzy_only":
+        texts = values.retrieval_text.astype(str).tolist()
+        if index.reference_embeddings is not None:
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                sparse_future = executor.submit(
+                    index.sparse_candidates, texts, index.config.sparse_top_k
+                )
+                dense_ids, dense_scores = index.dense_candidates(texts, index.config.dense_top_k)
+                sparse_ids, sparse_scores = sparse_future.result()
+        else:
+            sparse_ids, sparse_scores = index.sparse_candidates(texts, index.config.sparse_top_k)
+
+    parts = [
+        _retrieval_channel_frame(sparse_ids, sparse_scores, "sparse_score", "sparse_rank"),
+        _retrieval_channel_frame(dense_ids, dense_scores, "dense_score", "dense_rank"),
+    ]
+    if index.config.exact_mode != "fuzzy_only":
+        exact_rows: list[dict[str, object]] = []
+        for position, (_, query) in enumerate(values.iterrows()):
             for candidate, blocks in index.exact_candidates(query).items():
-                states.setdefault(candidate, RetrievalState()).exact_blocks.update(blocks)
-        if index.config.exact_mode != "exact_only":
-            _merge_retrieval(states, sparse_ids[position], sparse_scores[position], "sparse")
-            if dense_ids.shape[1]:
-                _merge_retrieval(states, dense_ids[position], dense_scores[position], "dense")
-        output[str(query.query_id)] = _retrieval_frame(index, states)
-    return output
-
-
-def _retrieval_frame(
-    index: TrainingCandidateIndex, states: dict[int, RetrievalState]
-) -> pd.DataFrame:
-    rows: list[dict[str, object]] = []
-    for candidate, state in states.items():
-        exact_blocks = sorted(state.exact_blocks)
-        rows.append(
-            {
-                "candidate_index": candidate,
-                "exact_blocks": ",".join(exact_blocks),
-                "exact_count": len(exact_blocks),
-                "sparse_score": state.sparse_score,
-                "dense_score": state.dense_score,
-                "sparse_rank": state.sparse_rank,
-                "dense_rank": state.dense_rank,
-                "retrieval_score": max(state.sparse_score, state.dense_score)
-                + 0.08 * min(len(exact_blocks), 3),
-                "channel_count": int(bool(exact_blocks))
-                + int(state.sparse_score > 0)
-                + int(state.dense_score > 0),
-            }
-        )
-    if not rows:
+                ordered_blocks = sorted(blocks)
+                exact_rows.append(
+                    {
+                        "query_position": position,
+                        "candidate_index": candidate,
+                        "exact_blocks": ",".join(ordered_blocks),
+                        "exact_count": len(ordered_blocks),
+                    }
+                )
+        if exact_rows:
+            parts.append(pd.DataFrame(exact_rows).set_index(["query_position", "candidate_index"]))
+    parts = [part for part in parts if not part.empty]
+    if not parts:
         return pd.DataFrame()
+    combined = parts[0]
+    for part in parts[1:]:
+        combined = combined.join(part, how="outer")
+    for column in ("sparse_score", "dense_score", "sparse_rank", "dense_rank", "exact_count"):
+        if column not in combined:
+            combined[column] = 0
+        else:
+            combined[column] = combined[column].fillna(0)
+    if "exact_blocks" not in combined:
+        combined["exact_blocks"] = ""
+    else:
+        combined["exact_blocks"] = combined["exact_blocks"].fillna("")
+    combined["retrieval_score"] = combined[["sparse_score", "dense_score"]].max(axis=1) + (
+        0.08 * combined.exact_count.clip(upper=3)
+    )
+    combined["channel_count"] = (
+        combined.exact_count.gt(0).astype(np.int8)
+        + combined.sparse_score.gt(0).astype(np.int8)
+        + combined.dense_score.gt(0).astype(np.int8)
+    )
+    result = combined.reset_index()
+    result["query_id"] = values.query_id.astype(str).to_numpy()[
+        result.query_position.to_numpy(dtype=np.int64)
+    ]
+    result = result.sort_values(
+        ["query_position", "retrieval_score", "channel_count"],
+        ascending=[True, False, False],
+        kind="stable",
+    )
     return (
-        pd.DataFrame(rows)
-        .sort_values(["retrieval_score", "channel_count"], ascending=False)
+        result.groupby("query_position", sort=False, group_keys=False)
         .head(index.config.candidate_cap_per_record)
         .reset_index(drop=True)
     )
 
 
-def _merge_retrieval(
-    states: dict[int, RetrievalState], ids: np.ndarray, scores: np.ndarray, channel: str
-) -> None:
-    for rank, (candidate, score) in enumerate(zip(ids, scores, strict=True), start=1):
-        if int(candidate) < 0:
-            continue
-        state = states.setdefault(int(candidate), RetrievalState())
-        if channel == "sparse" and float(score) > state.sparse_score:
-            state.sparse_score, state.sparse_rank = float(score), rank
-        if channel == "dense" and float(score) > state.dense_score:
-            state.dense_score, state.dense_rank = float(score), rank
+def _retrieval_channel_frame(
+    ids: np.ndarray, scores: np.ndarray, score_column: str, rank_column: str
+) -> pd.DataFrame:
+    if ids.shape != scores.shape or ids.ndim != 2 or ids.shape[1] == 0:
+        return pd.DataFrame()
+    width = ids.shape[1]
+    positions: np.ndarray = np.repeat(np.arange(ids.shape[0], dtype=np.int64), width)
+    values: np.ndarray = ids.reshape(-1).astype(np.int64, copy=False)
+    valid = values >= 0
+    if not valid.any():
+        return pd.DataFrame()
+    ranks = np.tile(np.arange(1, width + 1, dtype=np.int16), ids.shape[0])
+    frame = pd.DataFrame(
+        {
+            "query_position": positions[valid],
+            "candidate_index": values[valid],
+            score_column: scores.reshape(-1)[valid],
+            rank_column: ranks[valid],
+        }
+    )
+    return frame.groupby(["query_position", "candidate_index"], sort=False).agg(
+        {score_column: "max", rank_column: "min"}
+    )
 
 
 def _calibrate(
@@ -332,6 +349,100 @@ def _calibrate(
         return base
     stacked = np.column_stack([logit_clip(base), reranker, present])
     return np.asarray(calibrator.predict_proba(stacked)[:, 1], dtype=np.float64)
+
+
+def _aggregate_entities_many(
+    scored: pd.DataFrame, canonical: pd.DataFrame, review_threshold: float
+) -> pd.DataFrame:
+    if scored.empty:
+        return pd.DataFrame(columns=["query_id", "nayose_id", *ENTITY_FEATURES])
+    enriched = scored.merge(
+        canonical[["nayose_id", "record_count"]].rename(
+            columns={"record_count": "candidate_entity_size"}
+        ),
+        on="nayose_id",
+        how="left",
+    )
+    keys = ["query_id", "nayose_id"]
+    ordered = enriched.sort_values(
+        [*keys, "pair_probability"], ascending=[True, True, False], kind="stable"
+    ).reset_index(drop=True)
+    ordered["_entity_rank"] = ordered.groupby(keys, sort=False, observed=True).cumcount()
+    grouped = ordered.groupby(keys, sort=False, observed=True)
+    result = grouped["pair_probability"].agg(
+        max_pair_probability="max", support_record_count="size"
+    )
+    second = (
+        ordered.loc[ordered["_entity_rank"].eq(1)]
+        .set_index(keys)["pair_probability"]
+        .reindex(result.index)
+        .fillna(0.0)
+    )
+    top3 = (
+        ordered.loc[ordered["_entity_rank"].lt(3)]
+        .groupby(keys, sort=False, observed=True)["pair_probability"]
+        .mean()
+        .reindex(result.index)
+    )
+    result["second_pair_probability"] = second
+    result["mean_top3_probability"] = top3
+    result["record_score_margin"] = result.max_pair_probability - second
+    result["support_agency_count"] = grouped["agency_id"].nunique()
+    result["candidate_entity_size"] = grouped["candidate_entity_size"].first()
+    for output, column in (
+        ("max_name_similarity", "f_name_similarity"),
+        ("max_kana_similarity", "f_kana_similarity"),
+        ("max_romaji_similarity", "f_romaji_similarity"),
+        ("max_address_similarity", "f_address_similarity"),
+        ("max_evidence_family_count", "f_evidence_family_count"),
+        ("max_retrieval_score", "f_retrieval_score"),
+        ("max_channel_count", "f_channel_count"),
+    ):
+        result[output] = grouped[column].max()
+    for output, column in (
+        ("any_name_exact", "f_name_strict_exact"),
+        ("any_dob_exact", "f_dob_exact"),
+        ("any_phone_exact", "f_phone_exact"),
+        ("any_email_exact", "f_email_exact"),
+        ("any_postal_exact", "f_postal_exact"),
+    ):
+        result[output] = grouped[column].max()
+    result["any_name_exact"] = np.maximum(
+        result["any_name_exact"], grouped["f_name_loose_exact"].max()
+    )
+    result["any_identity_anchor"] = (
+        (
+            (ordered["f_dob_exact"].eq(1) | ordered["f_email_exact"].eq(1))
+            & (ordered["f_name_strict_exact"].eq(1) | ordered["f_name_loose_exact"].eq(1))
+        )
+        .groupby([ordered[key] for key in keys], sort=False, observed=True)
+        .max()
+        .reindex(result.index)
+    )
+    result["hard_conflict_count"] = (
+        (ordered["f_type_conflict"].eq(1) | ordered["f_dob_conflict"].eq(1))
+        .groupby([ordered[key] for key in keys], sort=False, observed=True)
+        .sum()
+        .reindex(result.index)
+    )
+    result["review_or_auto_record_count"] = (
+        ordered["pair_probability"]
+        .ge(review_threshold)
+        .groupby([ordered[key] for key in keys], sort=False, observed=True)
+        .sum()
+        .reindex(result.index)
+    )
+    first = ordered.loc[ordered["_entity_rank"].eq(0)].set_index(keys).reindex(result.index)
+    result["best_record_id"] = first["record_id"]
+    result["best_record_probability"] = result.max_pair_probability
+    result["best_exact_blocks"] = first["exact_blocks"]
+    result = result.reset_index()
+    result["any_identity_anchor"] = result["any_identity_anchor"].astype(float)
+    result["hard_conflict_count"] = result["hard_conflict_count"].astype(int)
+    result["review_or_auto_record_count"] = result["review_or_auto_record_count"].astype(int)
+    return result.sort_values(
+        ["query_id", "max_pair_probability"], ascending=[True, False], kind="stable"
+    ).reset_index(drop=True)
 
 
 def _aggregate_entities(

@@ -13,6 +13,14 @@ def test_text_fingerprint_is_order_sensitive_without_exposing_text() -> None:
     assert text_fingerprint(["alpha", "beta"]) == first
 
 
+def test_embedding_cache_paths_are_namespaced_by_non_reference_backend(tmp_path) -> None:
+    pytorch = cache_paths(tmp_path, "model", "query")
+    mlx = cache_paths(tmp_path, "model", "query", backend="mlx_gpu")
+
+    assert pytorch != mlx
+    assert "mlx_gpu" in mlx[0].name
+
+
 def test_embedding_cache_requires_all_provenance_fields(tmp_path) -> None:
     vector_path, metadata_path = cache_paths(tmp_path, "codefuse-ai/F2LLM-v2-330M", "query")
     values: np.ndarray = np.eye(2, dtype=np.float32)

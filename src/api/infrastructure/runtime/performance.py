@@ -12,11 +12,11 @@ from pathlib import Path
 from threading import RLock
 from typing import Any
 
-from nayose.config import PerformanceConfig, load_config
+from nayose.config import PerformanceConfig, performance_from_environment
 
 
 def _cgroup_cpu_quota() -> float | None:
-    """Return the Linux cgroup-v2 CPU quota in logical CPUs when available."""
+    """Return the Linux cgroup CPU quota in logical CPUs when available."""
     if sys.platform != "linux":
         return None
     try:
@@ -27,12 +27,19 @@ def _cgroup_cpu_quota() -> float | None:
         )
         root = Path("/sys/fs/cgroup") / relative.lstrip("/")
         quota, period = (root / "cpu.max").read_text(encoding="utf-8").split()
-        if quota == "max":
-            return None
-        value = float(quota) / float(period)
-        return value if value > 0 else None
+        if quota != "max":
+            value = float(quota) / float(period)
+            return value if value > 0 else None
     except (OSError, StopIteration, ValueError, ZeroDivisionError):
-        return None
+        pass
+    try:
+        quota = int(Path("/sys/fs/cgroup/cpu/cpu.cfs_quota_us").read_text(encoding="utf-8"))
+        period = int(Path("/sys/fs/cgroup/cpu/cpu.cfs_period_us").read_text(encoding="utf-8"))
+        if quota > 0 and period > 0:
+            return quota / period
+    except (OSError, ValueError, ZeroDivisionError):
+        pass
+    return None
 
 
 def available_cpu_count() -> int:
@@ -51,7 +58,7 @@ def available_cpu_count() -> int:
 
 
 def _settings(settings: PerformanceConfig | None) -> PerformanceConfig:
-    return settings if settings is not None else load_config().performance
+    return settings if settings is not None else performance_from_environment()
 
 
 def process_worker_count(settings: PerformanceConfig | None = None) -> int:
@@ -85,6 +92,8 @@ def model_thread_budget(
     resolved = _settings(settings)
     explicit = resolved.model_threads
     budget = cpu_thread_budget(workers=workers, settings=resolved)
+    if resolved.native_thread_cap is not None:
+        budget = min(budget, resolved.native_thread_cap)
     return min(explicit, budget) if explicit is not None else budget
 
 
@@ -122,14 +131,19 @@ def native_thread_environment(
 
 
 def configure_native_threads(
-    threads: int | None = None, settings: PerformanceConfig | None = None
+    threads: int | None = None,
+    settings: PerformanceConfig | None = None,
+    *,
+    workers: int | None = None,
 ) -> int:
     """Apply one process-wide native-thread policy before numerical work starts."""
     resolved = _settings(settings)
-    budget = cpu_thread_budget(settings=resolved)
+    budget = cpu_thread_budget(workers=workers, settings=resolved)
+    if resolved.native_thread_cap is not None:
+        budget = min(budget, resolved.native_thread_cap)
     selected = budget if threads is None else min(max(1, threads), budget)
     with _NATIVE_LOCK:
-        os.environ.update(native_thread_environment(selected, settings=resolved))
+        os.environ.update(native_thread_environment(selected, workers=workers, settings=resolved))
         global _NATIVE_LIMIT
         try:
             from threadpoolctl import threadpool_limits  # type: ignore[import-untyped]
@@ -143,15 +157,20 @@ def configure_native_threads(
 
 
 def configure_torch_threads(
-    threads: int | None = None, settings: PerformanceConfig | None = None
+    threads: int | None = None,
+    settings: PerformanceConfig | None = None,
+    *,
+    workers: int | None = None,
 ) -> int:
     """Configure Torch intra-op and inter-op parallelism under the CPU policy."""
     resolved = _settings(settings)
     selected = (
-        model_thread_budget(settings=resolved)
+        model_thread_budget(workers=workers, settings=resolved)
         if threads is None
-        else min(max(1, threads), cpu_thread_budget(settings=resolved))
+        else min(max(1, threads), cpu_thread_budget(workers=workers, settings=resolved))
     )
+    if resolved.native_thread_cap is not None:
+        selected = min(selected, resolved.native_thread_cap)
     torch_module: Any = sys.modules.get("torch")
     if torch_module is None:
         try:

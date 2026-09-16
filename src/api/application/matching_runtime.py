@@ -24,7 +24,7 @@ from api.infrastructure.bundles.request_context import bind_snapshot
 from api.infrastructure.bundles.request_context import snapshot_for as request_snapshot_for
 from api.infrastructure.matching.scoring import empty_result
 from api.infrastructure.observability.telemetry import Stats
-from api.infrastructure.persistence.job_store import SQLiteJobStore
+from api.infrastructure.persistence.job_store import JobConflict, SQLiteJobStore
 from api.infrastructure.persistence.operational_store import OperationalStore
 from api.infrastructure.retrieval.entity_search import EntitySearch
 from nayose.config import EXACT_MODES
@@ -267,12 +267,23 @@ class MatchingJobRunner:
             self._persist(job)
 
     def _persist(self, job: dict[str, Any]) -> None:
-        version = int(job.get("_version", 0))
-        persisted = dict(job)
-        persisted["_version"] = version + 1
-        persisted["_elapsed_ms"] = round((time.monotonic() - job["started"]) * 1000)
-        new_version = self._job_store.save(persisted, action="recommend", expected_version=version)
-        job["_version"] = new_version
+        for attempt in range(2):
+            version = int(job.get("_version", 0))
+            persisted = dict(job)
+            persisted["_version"] = version + 1
+            persisted["_elapsed_ms"] = round((time.monotonic() - job["started"]) * 1000)
+            try:
+                new_version = self._job_store.save(
+                    persisted, action="recommend", expected_version=version
+                )
+            except JobConflict:
+                if attempt:
+                    raise
+                job["_version"] = self._job_store.version(str(job["id"]))
+                LOGGER.warning("matching job=%s persistence conflict; retrying", job["id"])
+                continue
+            job["_version"] = new_version
+            return
 
     def start(
         self, run_id: str, record: dict[str, str], overrides: dict[str, float] | None = None
@@ -363,6 +374,14 @@ class MatchingJobRunner:
             self._persist(job)
         LOGGER.info("matching job=%s stage=%s elapsed_ms=%s", job_id, stage, elapsed)
 
+    def _persist_heartbeat(self, job_id: str, job: dict[str, Any]) -> bool:
+        try:
+            self._persist(job)
+        except JobConflict:
+            LOGGER.warning("matching job=%s heartbeat persistence conflict", job_id)
+            return False
+        return True
+
     def _heartbeat(self, job_id: str) -> None:
         stop = self._heartbeat_events[job_id]
         while not stop.wait(5.0):
@@ -371,7 +390,8 @@ class MatchingJobRunner:
                 if job is None or job["stage"] in ("complete", "failed", "cancelled"):
                     return
                 job["updated"] = time.monotonic()
-                self._persist(job)
+                if not self._persist_heartbeat(job_id, job):
+                    return
 
     def _check_cancelled(self, job_id: str) -> None:
         event = self._cancel_events[job_id]

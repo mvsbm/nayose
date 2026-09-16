@@ -14,13 +14,18 @@ export function disposable(dispose: () => void): Disposable {
 }
 
 export class DisposableStore implements Disposable {
-  private readonly items: Disposable[] = [];
+  private readonly items = new Set<Disposable>();
+  private readonly timeouts = new Map<number, Disposable>();
   private disposed = false;
 
   add<T extends Disposable>(item: T): T {
     if (this.disposed) item.dispose();
-    else this.items.push(item);
+    else this.items.add(item);
     return item;
+  }
+
+  private remove(item: Disposable): void {
+    this.items.delete(item);
   }
 
   addEventListener(
@@ -34,9 +39,28 @@ export class DisposableStore implements Disposable {
   }
 
   addTimeout(callback: () => void, delayMs: number): number {
-    const timer = window.setTimeout(callback, delayMs);
-    this.add(disposable(() => window.clearTimeout(timer)));
+    let owned: Disposable | undefined;
+    const timer = window.setTimeout(() => {
+      if (owned) this.remove(owned);
+      this.timeouts.delete(timer);
+      callback();
+    }, delayMs);
+    owned = this.add(disposable(() => {
+      window.clearTimeout(timer);
+      this.timeouts.delete(timer);
+    }));
+    if (!this.disposed) this.timeouts.set(timer, owned);
     return timer;
+  }
+
+  clearTimeout(timer: number | undefined): void {
+    if (timer === undefined) return;
+    window.clearTimeout(timer);
+    const owned = this.timeouts.get(timer);
+    if (owned) {
+      this.remove(owned);
+      this.timeouts.delete(timer);
+    }
   }
 
   addInterval(callback: () => void, delayMs: number): number {
@@ -52,7 +76,10 @@ export class DisposableStore implements Disposable {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
-    for (const item of this.items.splice(0).reverse()) item.dispose();
+    const items = [...this.items].reverse();
+    this.items.clear();
+    this.timeouts.clear();
+    for (const item of items) item.dispose();
   }
 }
 

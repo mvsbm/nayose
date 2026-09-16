@@ -22,6 +22,7 @@ F2LLM_MPS_DEVICE = "mps"
 F2LLM_MPS_BATCH_SIZE = 32
 F2LLM_MPS_PROCESS_WORKERS = 1
 F2LLM_MPS_TORCH_DTYPE = "float16"
+EMBEDDING_BACKENDS = ("pytorch_mps", "mlx_gpu", "mlx_cpu")
 SUPPORTED_MODEL_FAMILIES = (
     "off",
     "ruri",
@@ -92,6 +93,7 @@ SERVING_DEFAULTS = _section("serving")
 EMBEDDING_DEFAULTS = _section("embedding")
 PERFORMANCE_DEFAULTS = _section("performance")
 RETRIEVAL_DEFAULTS = _section("retrieval")
+STORAGE_DEFAULTS = _section("storage")
 INFERENCE_DEFAULTS = _section("inference")
 TRAINING_DEFAULTS = _section("training")
 RELEASE_DEFAULTS = _section("release")
@@ -123,6 +125,8 @@ class RuntimeConfig:
     bind_host: str = str(SERVING_DEFAULTS["bind_host"])
     port: int = int(SERVING_DEFAULTS["port"])
     api_token: str = ""
+    review_token: str = ""
+    admin_token: str = ""
     auth_mode: str = str(SERVING_DEFAULTS["auth_mode"])
     trusted_auth_subject_header: str = str(SERVING_DEFAULTS["trusted_auth_subject_header"])
     trusted_auth_scopes_header: str = str(SERVING_DEFAULTS["trusted_auth_scopes_header"])
@@ -149,13 +153,18 @@ class RuntimeConfig:
         if (
             self.auth_mode == "local_bearer"
             and not _is_loopback(self.bind_host)
-            and not self.api_token
+            and not any((self.api_token, self.review_token, self.admin_token))
         ):
             raise ConfigurationError(
                 "authentication is required when NAYOSE_BIND_HOST is not loopback"
             )
         if not self.trusted_auth_subject_header or not self.trusted_auth_scopes_header:
             raise ConfigurationError("trusted authentication headers must not be empty")
+        tokens = tuple(
+            token for token in (self.api_token, self.review_token, self.admin_token) if token
+        )
+        if len(set(tokens)) != len(tokens):
+            raise ConfigurationError("authentication tokens must be distinct")
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> RuntimeConfig:
@@ -169,21 +178,32 @@ class EmbeddingConfig:
     """Narrow embedding-model view shared by training and serving."""
 
     model_id: str = str(EMBEDDING_DEFAULTS["model_id"])
+    backend: str = str(EMBEDDING_DEFAULTS["backend"])
     device: str = str(EMBEDDING_DEFAULTS["device"])
     batch_size: int = int(EMBEDDING_DEFAULTS["batch_size"])
     process_workers: int = int(EMBEDDING_DEFAULTS["process_workers"])
     torch_dtype: str = str(EMBEDDING_DEFAULTS["torch_dtype"])
     revision: str = str(EMBEDDING_DEFAULTS["revision"])
+    max_length: int = int(EMBEDDING_DEFAULTS["optimization"]["max_length"])
+    padding_strategy: str = str(EMBEDDING_DEFAULTS["optimization"]["padding_strategy"])
 
     def __post_init__(self) -> None:
         if not self.model_id:
             raise ConfigurationError("embedding model_id must not be empty")
+        if self.backend not in EMBEDDING_BACKENDS:
+            raise ConfigurationError(f"embedding backend must be one of {EMBEDDING_BACKENDS}")
         if self.batch_size < 1 or self.process_workers < 1:
             raise ConfigurationError("embedding batch_size and process_workers must be positive")
-        if self.device != F2LLM_MPS_DEVICE:
-            raise ConfigurationError("neural embedding is locked to MPS")
+        if self.backend == "pytorch_mps" and self.device != F2LLM_MPS_DEVICE:
+            raise ConfigurationError("PyTorch embedding backend is locked to MPS")
         if self.torch_dtype != F2LLM_MPS_TORCH_DTYPE:
             raise ConfigurationError("neural embedding is locked to FP16")
+        if self.max_length < 0:
+            raise ConfigurationError("embedding max_length must not be negative")
+        if self.padding_strategy not in {"longest", "max_length"}:
+            raise ConfigurationError("embedding padding_strategy must be longest or max_length")
+        if self.padding_strategy == "max_length" and self.max_length < 1:
+            raise ConfigurationError("max_length padding requires a positive max_length")
 
 
 @dataclass(frozen=True, slots=True)
@@ -204,6 +224,23 @@ class PerformanceConfig:
         ):
             if value is not None and value < 1:
                 raise ConfigurationError(f"{name} must be positive when configured")
+
+
+@dataclass(frozen=True, slots=True)
+class StorageConfig:
+    """Canonical disk-admission and workspace lifecycle policy."""
+
+    reserve_ratio: float = float(STORAGE_DEFAULTS["reserve_ratio"])
+    reserve_minimum_bytes: int = int(STORAGE_DEFAULTS["reserve_minimum_bytes"])
+    workspace_stale_seconds: int = int(STORAGE_DEFAULTS["workspace_stale_seconds"])
+
+    def __post_init__(self) -> None:
+        if not 0.0 <= self.reserve_ratio < 1.0:
+            raise ConfigurationError("storage reserve_ratio must be between 0 and 1")
+        if self.reserve_minimum_bytes < 0:
+            raise ConfigurationError("storage reserve_minimum_bytes must not be negative")
+        if self.workspace_stale_seconds < 1:
+            raise ConfigurationError("storage workspace_stale_seconds must be positive")
 
 
 @dataclass(frozen=True, slots=True)

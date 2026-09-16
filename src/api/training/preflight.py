@@ -29,6 +29,8 @@ CORE_MODULES = {
 OPTIONAL_MODULES = {
     "lightgbm": "lightgbm",
     "sentence_transformers": "sentence_transformers",
+    "mlx": "mlx",
+    "mlx_lm": "mlx_lm",
     "usearch": "usearch",
     "pyarrow": "pyarrow",
     "gradio": "gradio",
@@ -45,21 +47,33 @@ class Preflight:
         ]
         if missing:
             raise RuntimeError(f"missing required training packages: {', '.join(missing)}")
-        configure_mps_runtime()
-        device = (
-            require_mps_device(self.config.device)
-            if self.config.model_family != "off"
-            else resolve_device(self.config.device)
-        )
-        configure_torch_threads(model_thread_budget())
-        diagnostics = self._diagnostics(device)
         backends = {
             name: util.find_spec(module) is not None for name, module in OPTIONAL_MODULES.items()
         }
-        neural_enabled = self.config.model_family != "off" and backends["sentence_transformers"]
+        if self.config.embedding_backend == "pytorch_mps":
+            configure_mps_runtime()
+            device = (
+                require_mps_device(self.config.device)
+                if self.config.model_family != "off"
+                else resolve_device(self.config.device)
+            )
+            configure_torch_threads(model_thread_budget())
+            neural_available = backends["sentence_transformers"]
+        else:
+            device = self.config.device
+            neural_available = backends["mlx"] and backends["mlx_lm"]
+        diagnostics = self._diagnostics(device)
+        neural_enabled = self.config.model_family != "off" and neural_available
         if self.config.model_family != "off" and not neural_enabled:
-            raise RuntimeError("neural model requested but sentence-transformers is unavailable")
-        return RuntimeInfo(device, diagnostics, backends, neural_enabled)
+            required = (
+                "sentence-transformers"
+                if self.config.embedding_backend == "pytorch_mps"
+                else "mlx and mlx-lm"
+            )
+            raise RuntimeError(f"neural model requested but {required} is unavailable")
+        return RuntimeInfo(
+            device, diagnostics, backends, neural_enabled, self.config.embedding_backend
+        )
 
     @staticmethod
     def _diagnostics(device: str) -> dict[str, Any]:
@@ -77,6 +91,8 @@ class Preflight:
             "lightgbm",
             "torch",
             "sentence-transformers",
+            "mlx",
+            "mlx-lm",
             "usearch",
         ):
             try:

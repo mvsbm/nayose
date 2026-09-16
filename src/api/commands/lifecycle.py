@@ -31,11 +31,11 @@ from api.infrastructure.bundles.release import (  # noqa: E402
 )
 from api.infrastructure.retrieval.block_index import BLOCK_INDEX_ARTIFACT  # noqa: E402
 from api.infrastructure.runtime.model_gate import evaluate_f2llm_candidate  # noqa: E402
-from api.infrastructure.runtime.performance import (  # noqa: E402
-    cpu_thread_budget,
-    model_thread_budget,
-    native_thread_environment,
+from api.infrastructure.runtime.resource_manager import (  # noqa: E402
+    ResourceManager,
+    resource_state_dir,
 )
+from api.infrastructure.runtime.workload_storage import bundle_demand, training_demand  # noqa: E402
 from nayose.config import (  # noqa: E402
     F2LLM_330M_MODEL_ID,
     F2LLM_MPS_BATCH_SIZE,
@@ -152,17 +152,25 @@ def _env_for(args: argparse.Namespace) -> dict[str, str]:
     _validate_locked_profile(args)
     config = load_config()
     locked = args.model_family in {"f2llm", "f2llm_330m"}
-    workers = F2LLM_MPS_PROCESS_WORKERS if locked else None
-    cpu_threads = cpu_thread_budget(workers=workers)
-    model_threads = cpu_threads if locked else model_thread_budget()
+    manager = ResourceManager(resource_state_dir(Path(args.models_dir)))
+    plan = manager.plan(
+        workload="training",
+        requested_device=args.device,
+        backend=config.embedding.backend,
+        locked_mps=locked,
+        settings=config.performance,
+        require_accelerator=False,
+        storage_demand=training_demand(Path(args.data_dir)).demand,
+    )
+    embedding = embedding_model_id(args.model_family, args.embedding_model)
     snapshot = Path(args.data_dir).resolve()
     data_dir = (snapshot / "current").resolve() if (snapshot / "current").exists() else snapshot
     env = {
-        **native_thread_environment(workers=workers),
+        **plan.env(),
         "NAYOSE_DATA_DIR": str(data_dir),
         "NAYOSE_OUTPUT_DIR": str(Path(args.models_dir).resolve()),
         "NAYOSE_SEED": str(args.seed),
-        "NAYOSE_DEVICE": args.device,
+        "NAYOSE_DEVICE": plan.device,
         "NAYOSE_PAIR_MODEL": args.pair_model,
         "NAYOSE_MODEL_FAMILY": pipeline_model_family(args.model_family),
         "NAYOSE_EXACT_MODE": args.exact_mode,
@@ -171,8 +179,6 @@ def _env_for(args: argparse.Namespace) -> dict[str, str]:
         "NAYOSE_STRICT_BACKENDS": "1"
         if locked
         else ("1" if config.training.strict_backends else "0"),
-        "NAYOSE_CPU_THREADS": str(cpu_threads),
-        "NAYOSE_MODEL_THREADS": str(model_threads),
         "NAYOSE_INDEX_BACKEND": config.retrieval.index_backend,
         "NAYOSE_LOW_MEMORY_MODELS": "1",
         "NAYOSE_ALLOW_SVD_FALLBACK": "0"
@@ -192,7 +198,6 @@ def _env_for(args: argparse.Namespace) -> dict[str, str]:
                 "NAYOSE_USE_DENSE": "1",
             }
         )
-    embedding = embedding_model_id(args.model_family, args.embedding_model)
     if embedding is not None:
         env["NAYOSE_EMBEDDING_MODEL"] = embedding
     return env
@@ -210,13 +215,46 @@ def run_pipeline(args: argparse.Namespace, env: dict[str, str]) -> float:
     )
     started = time.monotonic()
     child_environment = {**os.environ, **env}
-    subprocess.run(
-        [sys.executable, "-m", "api.training.worker"],
-        cwd=Path.cwd(),
-        env=child_environment,
-        check=True,
+    manager = ResourceManager(resource_state_dir(Path(env["NAYOSE_OUTPUT_DIR"])))
+    config = load_config()
+    plan = manager.plan(
+        workload="training",
+        requested_device=env["NAYOSE_DEVICE"],
+        backend=config.embedding.backend,
+        locked_mps=args.model_family in {"f2llm", "f2llm_330m"},
+        settings=config.performance,
+        storage_demand=training_demand(Path(env["NAYOSE_DATA_DIR"])).demand,
     )
+    with manager.session(plan) as session:
+        process = subprocess.Popen(
+            [sys.executable, "-m", "api.training.worker"],
+            cwd=Path.cwd(),
+            env=child_environment,
+            start_new_session=True,
+        )
+        session.register_process(process.pid)
+        returncode = process.wait()
+        if returncode:
+            raise subprocess.CalledProcessError(returncode, process.args)
     return time.monotonic() - started
+
+
+def _materialize_with_resources(args: argparse.Namespace, environment: dict[str, str]) -> Path:
+    config = load_config()
+    manager = ResourceManager(resource_state_dir(Path(args.models_dir)))
+    neural = embedding_model_id(args.model_family, getattr(args, "embedding_model", None))
+    locked = args.model_family in {"f2llm", "f2llm_330m"}
+    plan = manager.plan(
+        workload="materialization",
+        requested_device=args.device if neural else "cpu",
+        backend=config.embedding.backend if neural else None,
+        locked_mps=locked,
+        settings=config.performance,
+        storage_demand=bundle_demand("materialization").demand,
+    )
+    with manager.session(plan):
+        manager.configure(plan, config.performance)
+        return materialize_latest_runtime_artifacts(args, environment)
 
 
 def materialize_latest_runtime_artifacts(
@@ -238,7 +276,12 @@ def materialize_latest_runtime_artifacts(
     if environment:
         os.environ.update(environment)
     try:
-        materialize_runtime_artifacts(runs[0], data, config_snapshot=load_config())
+        materialize_environment = dict(os.environ)
+        if materialize_environment.get("NAYOSE_DEVICE", "mps") != F2LLM_MPS_DEVICE:
+            materialize_environment["NAYOSE_DEVICE"] = F2LLM_MPS_DEVICE
+        materialize_runtime_artifacts(
+            runs[0], data, config_snapshot=load_config(materialize_environment)
+        )
     finally:
         for key, value in previous.items():
             if value is None:
@@ -461,7 +504,7 @@ def main() -> int:
     if args.no_verify:
         print("bundle verification skipped; leaving models/current unchanged")
         return 0
-    materialize_latest_runtime_artifacts(args, env)
+    _materialize_with_resources(args, env)
     run = verify_bundle(args)
     verify_performance(args, run)
     promote_bundle(args, run)

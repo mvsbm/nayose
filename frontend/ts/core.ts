@@ -11,7 +11,10 @@ export interface Route {
 export function parseRoute(hash: string): Route {
   const parts = hash.replace(/^#\/?/, "").split("?")[0]!.split("/").filter((p) => p.length > 0);
   const name = parts[0] && isRouteName(parts[0]) ? parts[0] : "search";
-  return { name, args: parts.slice(1) };
+  const decode = (part: string): string => {
+    try { return decodeURIComponent(part); } catch { return part; }
+  };
+  return { name, args: parts.slice(1).map(decode) };
 }
 
 export function checkedKey(run: string, left: string, right: string): string {
@@ -44,14 +47,14 @@ export async function pollJob(
   const deadline = Date.now() + timeoutSec * 1000;
   onUpdate?.(job);
   while (Date.now() < deadline && !signal?.aborted) {
-    if (job.stage === "complete" || job.stage === "failed" || job.stage === "cancelled") return job;
+    if (job.stage === "complete" || job.stage === "failed" || job.stage === "cancelled") return { ...job, poll_status: "terminal" };
     job = await getStatus();
-    if (signal?.aborted) return job;
+    if (signal?.aborted) return { ...job, poll_status: "cancelled" };
     onUpdate?.(job);
-    if (job.stage === "complete" || job.stage === "failed" || job.stage === "cancelled") return job;
+    if (job.stage === "complete" || job.stage === "failed" || job.stage === "cancelled") return { ...job, poll_status: "terminal" };
     await waitForPoll(signal);
   }
-  return job;
+  return { ...job, poll_status: signal?.aborted ? "cancelled" : "timeout" };
 }
 
 function waitForPoll(signal?: AbortSignal): Promise<void> {

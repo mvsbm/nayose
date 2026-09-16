@@ -8,12 +8,21 @@ import numpy as np
 import pandas as pd
 from sklearn.preprocessing import normalize
 
+from api.infrastructure.runtime.embedding_cache import (
+    EMBEDDING_FIELD_SCHEMA_VERSION,
+    EMBEDDING_PREPROCESSING_VERSION,
+    cache_paths,
+    text_fingerprint,
+)
+from api.infrastructure.runtime.embedding_cache import (
+    load as load_embedding_cache,
+)
 from api.infrastructure.runtime.embedding_runtime import (
     close_query_encoder,
     configure_query_encoder,
     encode_queries,
 )
-from api.infrastructure.runtime.performance import require_mps_device, resolve_device
+from api.infrastructure.runtime.performance import resolve_device
 from nayose.config import ConfigSnapshot, load_config
 
 _ENCODE_CHUNK_SIZE = 1024
@@ -33,9 +42,11 @@ class BundleRetriever:
         config_snapshot: ConfigSnapshot | None = None,
     ):
         self.index = engine._index
+        self._data_dir = getattr(getattr(engine, "config", None), "data_dir", run_dir.parent)
         self.settings = manifest.get("config", {})
         self._config_snapshot = config_snapshot
         self._config = config_snapshot or load_config()
+        self._fingerprint = str(manifest.get("data_fingerprint", ""))
         self._exact_mode = exact_mode
         self.svd = None
         self.model_id = manifest.get("embedding_model")
@@ -48,8 +59,9 @@ class BundleRetriever:
             elif self.model_id:
                 configure_query_encoder(
                     str(self.model_id),
-                    device=require_mps_device(self._config.embedding.device),
+                    device=self._config.embedding.device,
                     batch_size=self._config.embedding.batch_size,
+                    settings=self._config.embedding,
                 )
                 self.mode = "neural"
             else:
@@ -78,6 +90,9 @@ class BundleRetriever:
     def encode_many(self, texts: list[str]) -> np.ndarray:
         if self.index.reference_embeddings is None:
             raise RuntimeError("dense query encoding is unavailable")
+        cached = self._load_cached_queries(texts) if getattr(self, "mode", "") == "neural" else None
+        if cached is not None:
+            return cached
         if len(texts) > _ENCODE_CHUNK_SIZE:
             return np.vstack(
                 [
@@ -93,6 +108,53 @@ class BundleRetriever:
         expected = self.index.reference_embeddings.shape[1]
         if values.shape != (len(texts), expected) or not np.isfinite(values).all():
             raise ValueError("query embedding does not match reference dimensions")
+        return values
+
+    def _load_cached_queries(self, texts: list[str]) -> np.ndarray | None:
+        if not texts or getattr(self, "mode", "") != "neural":
+            return None
+        model_id = str(self.model_id or "")
+        embedding = self._config.embedding
+        backend = embedding.backend if embedding.backend != "pytorch_mps" else None
+        vector_path, metadata_path = cache_paths(self._data_dir, model_id, "query", backend=backend)
+        fingerprint = text_fingerprint(texts)
+        modern = {
+            "model_id": model_id,
+            "model_revision": embedding.revision or "unresolved",
+            "data_fingerprint": self._fingerprint,
+            "text_fingerprint": fingerprint,
+            "preprocessing_version": EMBEDDING_PREPROCESSING_VERSION,
+            "field_schema_version": EMBEDDING_FIELD_SCHEMA_VERSION,
+            "kind": "query",
+            "rows": len(texts),
+            "device": embedding.device,
+            "torch_dtype": embedding.torch_dtype,
+            "batch_size": embedding.batch_size,
+            "backend": embedding.backend,
+            "max_length": embedding.max_length,
+            "padding_strategy": embedding.padding_strategy,
+        }
+        cached = load_embedding_cache(vector_path, metadata_path, modern)
+        if cached is None and backend is None:
+            cached = load_embedding_cache(
+                vector_path,
+                metadata_path,
+                {
+                    "model_id": model_id,
+                    "data_fingerprint": self._fingerprint,
+                    "query_text_fingerprint": fingerprint,
+                    "rows": len(texts),
+                    "device": embedding.device,
+                    "torch_dtype": embedding.torch_dtype,
+                    "batch_size": embedding.batch_size,
+                },
+            )
+        if cached is None:
+            return None
+        values = np.asarray(cached, dtype=np.float32)
+        expected = self.index.reference_embeddings.shape[1]
+        if values.shape != (len(texts), expected) or not np.isfinite(values).all():
+            return None
         return values
 
     def encode(self, text: str) -> np.ndarray:

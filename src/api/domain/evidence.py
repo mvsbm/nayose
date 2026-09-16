@@ -41,9 +41,16 @@ def visible_record(record: dict[str, Any]) -> dict[str, str]:
     return {field: text(record.get(field)) for field in VISIBLE_FIELDS}
 
 
-def compare_fields(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
+def compare_fields(
+    left: dict[str, Any],
+    right: dict[str, Any],
+    *,
+    normalized_left: dict[str, Any] | None = None,
+    normalized_right: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     a, b = visible_record(left), visible_record(right)
-    na, nb = normalize_record(a), normalize_record(b)
+    na = normalized_left or normalize_record(a)
+    nb = normalized_right or normalize_record(b)
     result = {}
     for field, key in NORMALIZED_FIELDS.items():
         av, bv = a[field], b[field]

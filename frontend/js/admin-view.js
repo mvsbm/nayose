@@ -1,32 +1,38 @@
+import { disposable } from "./lifecycle.js";
 import { esc } from "./schema.js";
 import { pollJob } from "./core.js";
-import { bindGenerationControls, cloneGenerationControls, resetGenerationControls, syncControlOutputs } from "./admin-controls.js";
+import { bindGenerationControls, cloneGenerationControls, generationControlsHash, resetGenerationControls, syncControlOutputs } from "./admin-controls.js";
 import { renderAdminPage } from "./admin-render.js";
 import { renderPreview } from "./admin-preview.js";
 import { bindPanelLayout } from "./panel-layout.js";
 import { bindDatasetExplorer, createDatasetExplorerState, refreshDatasetGenerations } from "./admin-dataset.js";
+import { errorKey, presentError } from "./api-error.js";
+import { renderJobStatus } from "./admin-job.js";
+import { asyncError, asyncIdle, asyncLoading, asyncReady } from "./async-state.js";
 function unavailableCard(store) {
     const wrapper = document.createElement("div");
     wrapper.className = "panel";
-    wrapper.innerHTML = `<div class="empty"><h3>${esc(store.t("adminDisabledTitle"))}</h3><p>${esc(store.t("adminDisabledHelp"))}</p></div>`;
+    wrapper.innerHTML = `<div class="empty"><h3>${esc(store.t("adminDisabledTitle"))}</h3><p>${esc(store.t("adminDisabledHelp"))}</p><button id="admin-retry" type="button" class="more">${esc(store.t("retry"))}</button></div>`;
     return wrapper;
 }
 export async function mountAdmin(el, port, store, scope) {
     const lifetime = scope;
+    el.innerHTML = `<div class="panel" role="status" aria-live="polite" aria-label="${esc(store.t("loading"))}"><div class="skel skel-tall"><div class="card"></div></div></div>`;
     let state;
     let catalog;
     try {
-        [state, catalog] = await Promise.all([port.adminState(), port.adminGenerationConfig()]);
+        [state, catalog] = await Promise.all([port.adminState(lifetime.signal), port.adminGenerationConfig(lifetime.signal)]);
         if (lifetime?.isDisposed)
             return;
     }
     catch {
         el.replaceChildren(unavailableCard(store));
+        el.querySelector("#admin-retry")?.addEventListener("click", () => window.location.reload());
         return;
     }
     let config = null;
     try {
-        config = await port.adminConfig();
+        config = await port.adminConfig(lifetime.signal);
         if (lifetime?.isDisposed)
             return;
     }
@@ -35,7 +41,7 @@ export async function mountAdmin(el, port, store, scope) {
     }
     let generations = [];
     try {
-        generations = await port.adminGenerations();
+        generations = await port.adminGenerations(lifetime.signal);
         if (lifetime?.isDisposed)
             return;
     }
@@ -47,15 +53,17 @@ export async function mountAdmin(el, port, store, scope) {
         config,
         catalog,
         controls: cloneGenerationControls(catalog.defaults),
-        preview: { preview: null, pending: false, error: "", sampleQuality: "average", sampleChannel: "paper_ocr" },
+        preview: { preview: null, request: { kind: "idle" }, controlsHash: "", sampleQuality: "average", sampleChannel: "paper_ocr" },
         note: "",
-        busy: false,
+        request: asyncIdle(),
         confirm: false,
         jobStatus: {},
         dataset: createDatasetExplorerState(generations),
     };
+    const adminBusy = () => ui.request.kind === "loading";
     let previewTimer;
     let previewRequest = 0;
+    let previewController;
     let panelLayout;
     let datasetBinding;
     lifetime.add({ dispose: () => datasetBinding?.dispose() });
@@ -64,54 +72,61 @@ export async function mountAdmin(el, port, store, scope) {
             return;
         const output = el.querySelector("#gen-preview");
         if (output) {
-            output.setAttribute("aria-busy", String(ui.preview.pending));
+            output.setAttribute("aria-busy", String(ui.preview.request.kind === "loading"));
             output.innerHTML = renderPreview(ui.preview, store);
         }
         const generate = el.querySelector("#gen-go");
+        const previewPending = ui.preview.request.kind === "loading";
         if (generate)
-            generate.disabled = ui.busy || ui.preview.pending || !ui.preview.preview;
+            generate.disabled = adminBusy() || previewPending || !ui.preview.preview || ui.preview.controlsHash !== generationControlsHash(ui.controls);
         const refresh = el.querySelector("#gen-preview-go");
         if (refresh)
-            refresh.disabled = ui.preview.pending;
-        el.querySelector("#gen-sample-quality")?.addEventListener("change", event => {
-            ui.preview.sampleQuality = event.target.value;
-            updatePreviewDom();
-        });
-        el.querySelector("#gen-sample-channel")?.addEventListener("change", event => {
-            ui.preview.sampleChannel = event.target.value;
-            updatePreviewDom();
-        });
+            refresh.disabled = previewPending;
+        const quality = el.querySelector("#gen-sample-quality");
+        if (quality && quality.dataset.bound !== "true") {
+            quality.dataset.bound = "true";
+            quality.addEventListener("change", event => { ui.preview.sampleQuality = event.target.value; updatePreviewDom(); });
+        }
+        const channel = el.querySelector("#gen-sample-channel");
+        if (channel && channel.dataset.bound !== "true") {
+            channel.dataset.bound = "true";
+            channel.addEventListener("change", event => { ui.preview.sampleChannel = event.target.value; updatePreviewDom(); });
+        }
     };
     const previewError = (error) => {
-        const message = String(error.message ?? error);
-        return message === "preview_schema_mismatch"
+        const key = errorKey(error);
+        return key === "preview_schema_mismatch"
             ? store.t("previewSchemaMismatch")
-            : `${store.t("previewError")}: ${message}`;
+            : `${store.t("previewError")}: ${presentError(error, store.t.bind(store))}`;
     };
     const requestPreview = (immediate = false) => {
         if (lifetime?.isDisposed)
             return;
-        ui.preview.pending = true;
-        ui.preview.error = "";
+        ui.preview.request = asyncLoading(String(previewRequest + 1));
+        ui.preview.controlsHash = "";
+        previewController?.abort();
+        previewController = new AbortController();
         updatePreviewDom();
-        if (previewTimer)
-            clearTimeout(previewTimer);
+        lifetime.clearTimeout(previewTimer);
         const run = () => {
             if (lifetime?.isDisposed)
                 return;
             const request = ++previewRequest;
             const controls = cloneGenerationControls(ui.controls);
-            void port.adminGenerationPreview(controls).then(result => {
+            const signal = previewController?.signal;
+            void port.adminGenerationPreview(controls, signal).then(result => {
                 if (lifetime?.isDisposed || request !== previewRequest)
                     return;
                 ui.preview.preview = result;
-                ui.preview.pending = false;
+                ui.preview.request = asyncReady(result);
+                ui.preview.controlsHash = generationControlsHash(controls);
                 updatePreviewDom();
             }).catch(error => {
                 if (lifetime?.isDisposed || request !== previewRequest)
                     return;
-                ui.preview.pending = false;
-                ui.preview.error = previewError(error);
+                if (errorKey(error) === "request_cancelled")
+                    return;
+                ui.preview.request = asyncError(previewError(error), String(request));
                 updatePreviewDom();
             });
         };
@@ -127,27 +142,20 @@ export async function mountAdmin(el, port, store, scope) {
         void paint();
     };
     const renderJob = (out, job, selector) => {
-        const progress = job.progress;
-        if (progress?.pct != null) {
-            const eta = progress.eta_seconds ?? 0;
-            const mmss = `${Math.floor(eta / 60)}:${String(eta % 60).padStart(2, "0")}`;
-            out.innerHTML = `<span class="meter"><i style="width:${Math.min(100, Math.max(0, progress.pct))}%"></i></span> ${esc(store.t("phase_" + (progress.phase ?? "generating")))} ${Math.round(progress.pct)}% · ${esc(store.t("etaShort", { t: mmss }))} · ${progress.done?.toLocaleString() ?? ""}/${progress.total?.toLocaleString() ?? ""}`;
-        }
-        else {
-            out.textContent = `${store.t(job.stage)} · ${store.t("elapsed", { s: (job.elapsed_ms / 1000).toFixed(1) })}`;
-        }
-        ui.jobStatus[selector] = out.innerHTML;
+        const status = { job };
+        ui.jobStatus[selector] = status;
+        out.innerHTML = renderJobStatus(status, store);
     };
     const runJob = (action, params, outSelector) => {
-        if (lifetime?.isDisposed || ui.busy)
+        if (lifetime?.isDisposed || adminBusy())
             return;
-        ui.busy = true;
+        ui.request = asyncLoading(`job:${action}`);
         updatePreviewDom();
         const out = el.querySelector(outSelector);
         if (out)
             out.textContent = store.t("jobStarted");
         delete ui.jobStatus[outSelector];
-        port.adminStart(action, params).then(job => pollJob(() => port.adminJob(job.id), job, 600, current => {
+        port.adminStart(action, params, lifetime.signal).then(job => pollJob(() => port.adminJob(job.id, lifetime.signal), job, 600, current => {
             if (lifetime?.isDisposed)
                 return;
             if (out)
@@ -155,51 +163,68 @@ export async function mountAdmin(el, port, store, scope) {
         }, lifetime.signal).then(async (done) => {
             if (lifetime?.isDisposed)
                 return;
-            ui.busy = false;
-            if (done.stage === "complete") {
+            ui.request = asyncReady(undefined);
+            if (done.poll_status === "timeout") {
+                ui.note = store.t("jobStillRunning");
+                ui.jobStatus[outSelector] = { message: store.t("jobStillRunning") };
+            }
+            else if (done.poll_status === "cancelled") {
+                ui.note = store.t("cancelled");
+                ui.jobStatus[outSelector] = { message: store.t("cancelled") };
+            }
+            else if (done.stage === "complete") {
                 const result = done.result ?? {};
                 ui.note = `${store.t("jobDone")} ${String(result.run ?? result.generation ?? "")} (${String(result.fingerprint ?? "")})`;
-                ui.jobStatus[outSelector] = `${store.t("jobDone")} · ${(done.elapsed_ms / 1000).toFixed(1)}s`;
+                window.dispatchEvent(new Event("nayose:runs-changed"));
+                ui.jobStatus[outSelector] = { message: `${store.t("jobDone")} · ${(done.elapsed_ms / 1000).toFixed(1)}s` };
             }
             else {
                 const error = store.t(done.error ?? "matching_failed");
                 ui.note = `${error} ${store.t("errorNextStep")}`;
-                ui.jobStatus[outSelector] = `${error} ${store.t("errorNextStep")}`;
+                ui.jobStatus[outSelector] = { message: `${error} ${store.t("errorNextStep")}` };
             }
-            ui.state = await port.adminState();
+            ui.state = await port.adminState(lifetime.signal);
             try {
-                await refreshDatasetGenerations(ui.dataset, port);
+                await refreshDatasetGenerations(ui.dataset, port, lifetime.signal);
             }
             catch {
-                ui.dataset.error = store.t("datasetUnavailable");
+                ui.dataset.request = asyncError(store.t("datasetUnavailable"));
             }
             await paint();
         })).catch(error => {
             if (lifetime?.isDisposed)
                 return;
-            ui.busy = false;
-            note(`${store.t(String(error.message ?? error))} ${store.t("errorNextStep")}`);
+            ui.request = asyncError(`${presentError(error, store.t.bind(store))} ${store.t("errorNextStep")}`);
+            note(`${presentError(error, store.t.bind(store))} ${store.t("errorNextStep")}`);
         });
     };
     const apply = (action, params, okKey) => {
-        port.adminAction(action, params)
-            .then(() => note(store.t(okKey)))
-            .then(() => port.adminState().then(next => { ui.state = next; void paint(); }))
-            .catch(error => note(`${store.t(String(error.message ?? error))} ${store.t("errorNextStep")}`));
+        if (lifetime.isDisposed || adminBusy())
+            return;
+        ui.request = asyncLoading(`action:${action}`);
+        void paint();
+        port.adminAction(action, params, lifetime.signal)
+            .then(() => { ui.note = store.t(okKey); return port.adminState(lifetime.signal); })
+            .then(next => { ui.state = next; ui.request = asyncReady(undefined); })
+            .catch(error => {
+            ui.request = asyncError(`${presentError(error, store.t.bind(store))} ${store.t("errorNextStep")}`);
+            ui.note = `${presentError(error, store.t.bind(store))} ${store.t("errorNextStep")}`;
+        })
+            .finally(() => { void paint(); });
     };
     const paint = async () => {
         if (lifetime?.isDisposed)
             return;
         const previousDetails = new Set([...el.querySelectorAll("details[id]")].filter(details => details.open).map(details => details.id));
         const preserveDetails = el.querySelector("details[id]") !== null;
-        el.innerHTML = renderAdminPage({ state: ui.state, config: ui.config, catalog: ui.catalog, controls: ui.controls, preview: ui.preview, busy: ui.busy, note: ui.note, jobStatus: ui.jobStatus, dataset: ui.dataset }, store);
+        el.innerHTML = renderAdminPage({ state: ui.state, config: ui.config, catalog: ui.catalog, controls: ui.controls, preview: ui.preview, request: ui.request, confirm: ui.confirm, note: ui.note, dataset: ui.dataset }, store);
         if (preserveDetails) {
             el.querySelectorAll("details[id]").forEach(details => { details.open = previousDetails.has(details.id); });
         }
-        for (const [selector, html] of Object.entries(ui.jobStatus)) {
+        for (const [selector, status] of Object.entries(ui.jobStatus)) {
             const output = el.querySelector(selector);
             if (output)
-                output.innerHTML = html;
+                output.innerHTML = renderJobStatus(status, store);
         }
         bindGenerationControls(el, ui.catalog, ui.controls, store, () => requestPreview());
         el.querySelector("#gen-reset")?.addEventListener("click", () => resetGenerationControls(el, ui.catalog, ui.controls, ui.catalog.defaults, store, () => requestPreview(true)));
@@ -225,7 +250,7 @@ export async function mountAdmin(el, port, store, scope) {
         el.querySelector("#reload-go")?.addEventListener("click", () => apply("reload_engine", {}, "engineReloaded"));
         el.querySelector("#dz-confirm")?.addEventListener("change", event => {
             ui.confirm = event.target.checked;
-            el.querySelectorAll("#dz-promote, #dz-prune, #dz-reset").forEach(button => { button.disabled = !ui.confirm; });
+            el.querySelectorAll("#dz-promote, #dz-prune, #dz-reset").forEach(button => { button.disabled = !ui.confirm || adminBusy(); });
         });
         const runValue = () => el.querySelector("#dz-run").value;
         el.querySelector("#dz-promote")?.addEventListener("click", () => apply("promote", { run_id: runValue() }, "promoted"));
@@ -233,6 +258,11 @@ export async function mountAdmin(el, port, store, scope) {
         el.querySelector("#dz-reset")?.addEventListener("click", () => apply("reset_decisions", { run_id: runValue() }, "decisionsReset"));
         updatePreviewDom();
     };
+    lifetime.add(disposable(() => {
+        previewController?.abort();
+        lifetime.clearTimeout(previewTimer);
+    }));
+    lifetime.add(disposable(store.on("locale", () => void paint())));
     await paint();
     requestPreview(true);
 }

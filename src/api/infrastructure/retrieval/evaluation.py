@@ -5,14 +5,16 @@ from __future__ import annotations
 import statistics
 import time
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
 
-from api.domain.normalize import normalize_name, normalize_record
+from api.domain.evidence import VISIBLE_FIELDS
+from api.domain.features import compute_pair_features_frame
+from api.domain.normalize import normalize_frame, normalize_name, normalize_record
 from api.infrastructure.matching.scoring import CandidateAggregator, DecisionPolicy, PairScorer
 from api.infrastructure.retrieval.ablation import (
     _LARGE_ENTITY_MIN_RECORDS,
@@ -59,6 +61,10 @@ class EvaluationCaches:
     field_frames: dict[str, list[pd.DataFrame]]
     record_vectors: np.ndarray | None
     completed: dict[str, dict[str, Any]]
+    normalized_records: dict[int, tuple[Any, ...]] = field(default_factory=dict)
+    normalized_columns: tuple[str, ...] = ()
+    normalized_frame: pd.DataFrame | None = None
+    normalized_positions: dict[int, int] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -215,8 +221,14 @@ def _query_row(
     scorer: PairScorer,
     aggregator: CandidateAggregator,
     policy: DecisionPolicy,
+    normalized: pd.DataFrame,
+    raw_candidates: pd.DataFrame,
+    features: pd.DataFrame | None = None,
+    scores: np.ndarray | None = None,
 ) -> tuple[dict[str, Any], int, int, int]:
-    candidates = _ranked_rows(frame, context.reference, context.record_to_entity)
+    candidates = _ranked_rows(
+        frame, context.reference, context.record_to_entity, raw=raw_candidates
+    )
     target = context.targets.get(query_id, set())
     top_entity, auto, action = _score_auto(
         query,
@@ -226,6 +238,10 @@ def _query_row(
         scorer=scorer,
         aggregator=aggregator,
         policy=policy,
+        normalized=normalized,
+        features=features,
+        scores=scores,
+        raw=raw_candidates,
     )
     is_correct = bool(top_entity and top_entity in target)
     auto_count = int(bool(auto))
@@ -275,16 +291,146 @@ def _query_row(
     return row, auto_count, auto_correct, auto_count - auto_correct
 
 
+def _normalized_candidate_frames(
+    context: EvaluationContext,
+    frames: list[pd.DataFrame],
+    caches: EvaluationCaches | None = None,
+) -> list[pd.DataFrame]:
+    candidate_arrays = [
+        frame["candidate_index"].to_numpy(dtype=np.int64, copy=False)
+        for frame in frames
+        if not frame.empty
+    ]
+    if not candidate_arrays:
+        return [pd.DataFrame() for _ in frames]
+    unique_candidates = np.unique(np.concatenate(candidate_arrays))
+    if caches is None:
+        raw = context.reference.iloc[unique_candidates].reindex(
+            columns=VISIBLE_FIELDS, fill_value=""
+        )
+        normalized = normalize_frame(raw.reset_index(drop=True), "record_id")
+        positions = pd.Series(
+            np.arange(len(unique_candidates), dtype=np.int64), index=unique_candidates
+        )
+        return [
+            normalized.iloc[
+                positions.loc[frame["candidate_index"].to_numpy(dtype=np.int64)].to_numpy()
+            ].reset_index(drop=True)
+            if not frame.empty
+            else pd.DataFrame()
+            for frame in frames
+        ]
+    missing = np.asarray(
+        [
+            candidate
+            for candidate in unique_candidates
+            if int(candidate) not in caches.normalized_positions
+        ],
+        dtype=np.int64,
+    )
+    if len(missing):
+        raw = context.reference.iloc[missing].reindex(columns=VISIBLE_FIELDS, fill_value="")
+        normalized = normalize_frame(raw.reset_index(drop=True), "record_id")
+        start = len(caches.normalized_frame) if caches.normalized_frame is not None else 0
+        caches.normalized_frame = (
+            normalized
+            if caches.normalized_frame is None
+            else pd.concat([caches.normalized_frame, normalized], ignore_index=True)
+        )
+        caches.normalized_columns = tuple(normalized.columns)
+        for offset, (candidate, row) in enumerate(
+            zip(missing, normalized.itertuples(index=False, name=None), strict=True)
+        ):
+            caches.normalized_positions[int(candidate)] = start + offset
+            caches.normalized_records[int(candidate)] = tuple(row)
+    if caches.normalized_frame is None or not caches.normalized_columns:
+        raise ValueError("normalized candidate cache has no schema")
+    positions = [
+        np.asarray(
+            [caches.normalized_positions[int(candidate)] for candidate in frame["candidate_index"]],
+            dtype=np.int64,
+        )
+        if not frame.empty
+        else np.empty(0, dtype=np.int64)
+        for frame in frames
+    ]
+    combined = caches.normalized_frame.take(np.concatenate(positions)).reset_index(drop=True)
+    offsets: np.ndarray = np.cumsum([0, *map(len, positions)], dtype=np.int64)
+    return [
+        combined.iloc[offsets[position] : offsets[position + 1]].reset_index(drop=True)
+        if len(values)
+        else pd.DataFrame()
+        for position, values in enumerate(positions)
+    ]
+
+
+def _raw_candidate_frames(
+    reference: pd.DataFrame, frames: Sequence[pd.DataFrame]
+) -> list[pd.DataFrame]:
+    """Materialize one batch of candidate records with a single dataframe take."""
+    positions = [
+        frame["candidate_index"].to_numpy(dtype=np.int64, copy=False)
+        if not frame.empty
+        else np.empty(0, dtype=np.int64)
+        for frame in frames
+    ]
+    if not any(len(values) for values in positions):
+        return [pd.DataFrame() for _ in frames]
+    combined = reference.take(np.concatenate(positions)).reset_index(drop=True)
+    offsets: np.ndarray = np.cumsum([0, *map(len, positions)], dtype=np.int64)
+    return [
+        combined.iloc[offsets[position] : offsets[position + 1]].reset_index(drop=True)
+        if len(values)
+        else pd.DataFrame()
+        for position, values in enumerate(positions)
+    ]
+
+
 def _score_batch(
     context: EvaluationContext,
     batch_items: list[tuple[str, dict[str, Any]]],
     batch_queries: list[dict[str, str]],
     frames: list[pd.DataFrame],
+    normalized_frames: list[pd.DataFrame],
+    raw_candidate_frames: list[pd.DataFrame],
     retrieval_ms: float,
     scorer: PairScorer,
     aggregator: CandidateAggregator,
     policy: DecisionPolicy,
 ) -> BatchResult:
+    feature_frames = [pd.DataFrame() for _ in frames]
+    feature_positions = [position for position, frame in enumerate(frames) if not frame.empty]
+    if feature_positions:
+        left = pd.concat(
+            [
+                pd.DataFrame([batch_queries[position]] * len(frames[position]))
+                for position in feature_positions
+            ],
+            ignore_index=True,
+        )
+        right = pd.concat(
+            [normalized_frames[position] for position in feature_positions], ignore_index=True
+        )
+        retrieval = pd.concat(
+            [frames[position] for position in feature_positions], ignore_index=True
+        )
+        combined_features = compute_pair_features_frame(left, right, retrieval)
+        feature_offsets: np.ndarray = np.cumsum(
+            [0, *[len(frames[position]) for position in feature_positions]], dtype=np.int64
+        )
+        for offset, position in enumerate(feature_positions):
+            feature_frames[position] = combined_features.iloc[
+                feature_offsets[offset] : feature_offsets[offset + 1]
+            ].reset_index(drop=True)
+    else:
+        combined_features = pd.DataFrame()
+        feature_offsets = np.zeros(1, dtype=np.int64)
+    combined_scores = (
+        scorer.score(combined_features) if not combined_features.empty else np.empty(0)
+    )
+    score_offsets: np.ndarray = np.zeros(len(frames) + 1, dtype=np.int64)
+    for _offset, position in enumerate(feature_positions):
+        score_offsets[position + 1 :] += len(frames[position])
     rows: list[dict[str, Any]] = []
     auto_total = auto_correct = false_auto = 0
     latencies: list[float] = []
@@ -301,6 +447,10 @@ def _score_batch(
             scorer,
             aggregator,
             policy,
+            normalized=normalized_frames[position],
+            raw_candidates=raw_candidate_frames[position],
+            features=feature_frames[position],
+            scores=combined_scores[score_offsets[position] : score_offsets[position + 1]],
         )
         rows.append(row)
         auto_total += auto_count
@@ -364,8 +514,19 @@ def _evaluate_mode(
         retrieval_started = time.perf_counter()
         frames = _retrieve_batch_frames(context, caches, name, start, batch_queries)
         retrieval_ms = (time.perf_counter() - retrieval_started) * 1000 / max(len(batch_items), 1)
+        normalized_frames = _normalized_candidate_frames(context, frames, caches)
+        raw_candidate_frames = _raw_candidate_frames(context.reference, frames)
         result = _score_batch(
-            context, batch_items, batch_queries, frames, retrieval_ms, scorer, aggregator, policy
+            context,
+            batch_items,
+            batch_queries,
+            frames,
+            normalized_frames,
+            raw_candidate_frames,
+            retrieval_ms,
+            scorer,
+            aggregator,
+            policy,
         )
         rows.extend(result.rows)
         auto_total += result.auto_total

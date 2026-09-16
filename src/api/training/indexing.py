@@ -31,7 +31,7 @@ from api.infrastructure.runtime.embedding_cache import (
 from api.infrastructure.runtime.embedding_cache import (
     save as save_embedding_cache,
 )
-from api.infrastructure.runtime.performance import require_mps_device
+from api.infrastructure.runtime.embedding_runtime import load_embedding_model
 from api.training.contracts import NormalizedCorpus, RuntimeInfo
 from api.training.retrieval import CandidateGraphConfig, build_candidate_graph
 from nayose.config import TrainingConfig
@@ -62,6 +62,7 @@ class TrainingCandidateIndex:
     dense_backend: str = "disabled"
     svd: Any | None = None
     _query_model: Any | None = None
+    data_fingerprint: str = ""
 
     def exact_candidates(self, query: pd.Series) -> dict[int, set[str]]:
         found: dict[int, set[str]] = {}
@@ -124,9 +125,7 @@ class TrainingCandidateIndex:
                 np.float32
             )
         else:
-            model = self._query_model or _load_embedding_model(self.config, self.runtime.device)
-            self._query_model = model
-            vectors = _encode_texts(model, texts, self.config, query=True)
+            vectors = self._query_embeddings(texts)
         if self.dense_backend == "usearch":
             matches = self.dense_nn.search(vectors, min(k, len(self.reference)))
             ids = np.asarray(matches.keys, dtype=np.int32)
@@ -142,39 +141,118 @@ class TrainingCandidateIndex:
             _release_accelerator()
         return ids.astype(np.int32), scores.astype(np.float32)
 
+    def _query_embeddings(self, texts: list[str]) -> np.ndarray:
+        model_id = self.config.model_spec()["embedding"]
+        if not model_id:
+            raise RuntimeError("dense query encoding has no embedding model")
+        encoded_texts = _prefixed_texts(texts, self.config, query=True)
+        cache_backend = (
+            self.config.embedding_backend
+            if self.config.embedding_backend != "pytorch_mps"
+            else None
+        )
+        vector_path, metadata_path = cache_paths(
+            self.config.data_dir, model_id, "query", backend=cache_backend
+        )
+        expected = _embedding_cache_metadata(
+            self.config,
+            self.runtime,
+            model_id,
+            encoded_texts,
+            fingerprint=self.data_fingerprint,
+            kind="query",
+        )
+        cached = load_embedding_cache(vector_path, metadata_path, expected)
+        if cached is None and cache_backend is None:
+            cached = load_embedding_cache(
+                vector_path,
+                metadata_path,
+                {
+                    "model_id": model_id,
+                    "data_fingerprint": self.data_fingerprint,
+                    "query_text_fingerprint": text_fingerprint(texts),
+                    "rows": len(texts),
+                    "device": self.runtime.device,
+                    "torch_dtype": self.config.torch_dtype,
+                    "batch_size": self.config.neural_batch_size,
+                },
+            )
+        if cached is not None:
+            return np.asarray(cached, dtype=np.float32)
+        model = self._query_model or _load_embedding_model(self.config, self.runtime.device)
+        self._query_model = model
+        values = np.asarray(
+            model.encode(
+                encoded_texts,
+                batch_size=min(self.config.neural_batch_size, max(len(encoded_texts), 1)),
+                show_progress_bar=False,
+                normalize_embeddings=True,
+                convert_to_numpy=True,
+            ),
+            dtype=np.float32,
+        )
+        save_embedding_cache(vector_path, metadata_path, values, expected)
+        return values
+
     def release_query_model(self) -> None:
         self._query_model = None
         gc.collect()
 
 
 def _load_embedding_model(config: TrainingConfig, device: str) -> Any:
-    from sentence_transformers import SentenceTransformer
-
     model_id = config.model_spec()["embedding"]
     if not model_id:
         return None
-    kwargs: dict[str, Any] = {
-        "device": require_mps_device(device) if device == "mps" else device,
-        "model_kwargs": {"torch_dtype": _torch_dtype(device)},
+    return load_embedding_model(
+        model_id,
+        device,
+        backend=config.embedding_backend,
+        max_length=config.embedding_max_length,
+        padding_strategy=config.embedding_padding_strategy,
+        revision=config.embedding_revision,
+        truncate_dim=config.embedding_dim,
+    )
+
+
+def _prefixed_texts(texts: list[str], config: TrainingConfig, *, query: bool) -> list[str]:
+    spec = config.model_spec()
+    prefix = spec["query_prefix"] if query else spec["document_prefix"]
+    return [prefix + value for value in texts]
+
+
+def _embedding_cache_metadata(
+    config: TrainingConfig,
+    runtime: RuntimeInfo,
+    model_id: str,
+    texts: list[str],
+    *,
+    fingerprint: str,
+    kind: str,
+) -> dict[str, Any]:
+    return {
+        "model_id": model_id,
+        "model_revision": config.embedding_revision
+        or runtime.embedding_model_revision
+        or "unresolved",
+        "data_fingerprint": fingerprint,
+        "text_fingerprint": text_fingerprint(texts),
+        "preprocessing_version": EMBEDDING_PREPROCESSING_VERSION,
+        "field_schema_version": EMBEDDING_FIELD_SCHEMA_VERSION,
+        "kind": kind,
+        "rows": len(texts),
+        "device": runtime.device,
+        "torch_dtype": config.torch_dtype,
+        "batch_size": config.neural_batch_size,
+        "backend": config.embedding_backend,
+        "max_length": config.embedding_max_length,
+        "padding_strategy": config.embedding_padding_strategy,
     }
-    if config.model_family == "qwen":
-        kwargs["truncate_dim"] = config.embedding_dim
-    return SentenceTransformer(model_id, **kwargs)
-
-
-def _torch_dtype(device: str) -> Any:
-    import torch
-
-    return torch.float16 if device == "mps" else torch.float32
 
 
 def _encode_texts(
     model: Any, texts: list[str], config: TrainingConfig, *, query: bool
 ) -> np.ndarray:
-    spec = config.model_spec()
-    values = list(texts)
-    prefix = spec["query_prefix"] if query else spec["document_prefix"]
-    values = [prefix + value for value in values]
+    values = _prefixed_texts(texts, config, query=query)
     return np.asarray(
         model.encode(
             values,
@@ -221,7 +299,10 @@ def _load_or_encode_embeddings(
     model_id = config.model_spec()["embedding"]
     if not model_id:
         return None, None
-    vector_path, metadata_path = cache_paths(config.data_dir, model_id, "reference")
+    cache_backend = config.embedding_backend if config.embedding_backend != "pytorch_mps" else None
+    vector_path, metadata_path = cache_paths(
+        config.data_dir, model_id, "reference", backend=cache_backend
+    )
     if not config.strict_backends:
         cached = _load_legacy_cache(
             vector_path, metadata_path, model_id, fingerprint, len(corpus.reference)
@@ -239,20 +320,39 @@ def _load_or_encode_embeddings(
     model = _load_embedding_model(config, runtime.device)
     dimensions = int(model.get_embedding_dimension())
     texts = corpus.reference.retrieval_text.astype(str).tolist()
-    provenance = {
-        "model_id": model_id,
-        "model_revision": model_revision(model),
-        "data_fingerprint": fingerprint,
-        "text_fingerprint": text_fingerprint(texts),
-        "preprocessing_version": EMBEDDING_PREPROCESSING_VERSION,
-        "field_schema_version": EMBEDDING_FIELD_SCHEMA_VERSION,
-        "rows": len(texts),
-        "dimensions": dimensions,
-        "device": runtime.device,
-        "torch_dtype": config.torch_dtype,
-        "batch_size": config.neural_batch_size,
-    }
+    provenance = _embedding_cache_metadata(
+        config,
+        runtime,
+        model_id,
+        _prefixed_texts(texts, config, query=False),
+        fingerprint=fingerprint,
+        kind="reference",
+    )
+    provenance.update(
+        {
+            "model_revision": config.embedding_revision or model_revision(model),
+            "dimensions": dimensions,
+        }
+    )
     cached = load_embedding_cache(vector_path, metadata_path, provenance)
+    if cached is None and cache_backend is None:
+        legacy_keys = {
+            "model_id",
+            "data_fingerprint",
+            "text_fingerprint",
+            "preprocessing_version",
+            "field_schema_version",
+            "rows",
+            "dimensions",
+            "device",
+            "torch_dtype",
+            "batch_size",
+        }
+        cached = load_embedding_cache(
+            vector_path,
+            metadata_path,
+            {key: value for key, value in provenance.items() if key in legacy_keys},
+        )
     if cached is None:
         values: np.ndarray = np.empty((len(texts), dimensions), dtype=np.float32)
         for start in range(0, len(texts), config.neural_batch_size):
@@ -311,6 +411,7 @@ def build_index(
         vectorizer,
         batch_size=config.sparse_batch_size,
         query_feature_cap=DEFAULT_QUERY_FEATURE_CAP,
+        inverted_memory_budget=config.inverted_memory_budget,
     )
     embeddings, revision = _load_or_encode_embeddings(corpus, config, runtime, fingerprint)
     dense_nn: Any | None = None
@@ -346,6 +447,7 @@ def build_index(
         dense_nn,
         dense_backend,
         svd,
+        data_fingerprint=fingerprint,
     )
     return index, revision
 

@@ -68,7 +68,7 @@ Do not claim:
 | Pitfall | Cause | Fix |
 |---|---|---|
 | Clicking 照合 "does nothing" for ~1–2 min | cold engine load (374k bundle) | `NAYOSE_WARM_EMBED=1` + keep the tab warm; or demo the smoke bundle |
-| 401s with `NAYOSE_API_TOKEN` set | the web UI previously sent no token | the transport now attaches `Authorization: Bearer <nayose.token>` from browser localStorage — set it on the demo machine (`localStorage.setItem("nayose.token", "…")`) or run the GUI behind a proxy that injects it |
+| 401s with `NAYOSE_API_TOKEN` set | the web UI previously sent no token | the transport now attaches `Authorization: Bearer <nayose.token>` from browser session storage — set it on the demo machine (`sessionStorage.setItem("nayose.token", "…")`) or run the GUI behind a proxy that injects it |
 | エラー: モデルを読み込めません | `models/current` and `data/current` fingerprint mismatch | train/serve against the SAME generation — `nayose model train` points `models/current` at the generation it trained on |
 | Search finds nothing for a typed name | bundle-specific nameset | use サンプルデータを入力 or search by entity ID (`N000…`) |
 

@@ -10,23 +10,48 @@ export function disposable(dispose) {
     };
 }
 export class DisposableStore {
-    items = [];
+    items = new Set();
+    timeouts = new Map();
     disposed = false;
     add(item) {
         if (this.disposed)
             item.dispose();
         else
-            this.items.push(item);
+            this.items.add(item);
         return item;
+    }
+    remove(item) {
+        this.items.delete(item);
     }
     addEventListener(target, type, listener, options) {
         target.addEventListener(type, listener, options);
         this.add(disposable(() => target.removeEventListener(type, listener, options)));
     }
     addTimeout(callback, delayMs) {
-        const timer = window.setTimeout(callback, delayMs);
-        this.add(disposable(() => window.clearTimeout(timer)));
+        let owned;
+        const timer = window.setTimeout(() => {
+            if (owned)
+                this.remove(owned);
+            this.timeouts.delete(timer);
+            callback();
+        }, delayMs);
+        owned = this.add(disposable(() => {
+            window.clearTimeout(timer);
+            this.timeouts.delete(timer);
+        }));
+        if (!this.disposed)
+            this.timeouts.set(timer, owned);
         return timer;
+    }
+    clearTimeout(timer) {
+        if (timer === undefined)
+            return;
+        window.clearTimeout(timer);
+        const owned = this.timeouts.get(timer);
+        if (owned) {
+            this.remove(owned);
+            this.timeouts.delete(timer);
+        }
     }
     addInterval(callback, delayMs) {
         const timer = window.setInterval(callback, delayMs);
@@ -40,7 +65,10 @@ export class DisposableStore {
         if (this.disposed)
             return;
         this.disposed = true;
-        for (const item of this.items.splice(0).reverse())
+        const items = [...this.items].reverse();
+        this.items.clear();
+        this.timeouts.clear();
+        for (const item of items)
             item.dispose();
     }
 }

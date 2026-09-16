@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import numpy as np
@@ -13,6 +14,19 @@ from api.infrastructure.retrieval.dense_views import (
     dense_view_queries,
     selected_dense_views,
 )
+
+
+def retrieve_sparse_and_dense(
+    sparse_retrieve: Callable[[list[str], int], list[tuple[np.ndarray, np.ndarray]]],
+    dense_retrieve: Callable[[], None],
+    texts: list[str],
+    top_k: int,
+) -> list[tuple[np.ndarray, np.ndarray]]:
+    """Overlap CPU sparse retrieval with the independent dense branch."""
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        sparse_future = executor.submit(sparse_retrieve, texts, top_k)
+        dense_retrieve()
+        return sparse_future.result()
 
 
 def retrieve_dense_candidates(
@@ -39,17 +53,19 @@ def retrieve_dense_candidates(
     texts = ([record_text] if include_record_dense else []) + [text for _, text in view_requests]
     if not texts:
         return
+    unique_texts, positions = _deduplicate_texts(texts)
     if dense_svd is not None:
-        vectors = normalize(dense_svd.transform(vectorizer.transform(texts))).astype(
+        vectors = normalize(dense_svd.transform(vectorizer.transform(unique_texts))).astype(
             np.float32, copy=False
         )
     else:
-        vectors = encode_queries(texts, reference_embeddings.shape[1])
+        vectors = encode_queries(unique_texts, reference_embeddings.shape[1])
 
     view_offset = 1 if include_record_dense else 0
     if include_record_dense:
-        _apply_record_dense(dense_nn, vectors[0], states, limit)
-    for vector, (view, _) in zip(vectors[view_offset:], view_requests, strict=True):
+        _apply_record_dense(dense_nn, vectors[positions[0]], states, limit)
+    for position, (view, _) in zip(positions[view_offset:], view_requests, strict=True):
+        vector = vectors[position]
         artifact = dense_views[view]
         matches = artifact.index.search(vector.reshape(1, -1), limit)
         keys = np.asarray(matches.keys, dtype=np.int32).reshape(-1)
@@ -75,14 +91,27 @@ def retrieve_dense_candidates_many(
         raise ValueError("dense query batch and state count differ")
     if not queries:
         return
-    record_texts = [str(query.get("retrieval_text", "")) for query in queries]
     view_requests: dict[str, list[tuple[int, int]]] = {}
-    texts = list(record_texts) if include_record_dense else []
+    texts: list[str] = []
+    text_positions: dict[str, int] = {}
+
+    def add_text(text: str) -> int:
+        position = text_positions.get(text)
+        if position is None:
+            position = len(texts)
+            text_positions[text] = position
+            texts.append(text)
+        return position
+
+    record_positions = (
+        [add_text(str(query.get("retrieval_text", ""))) for query in queries]
+        if include_record_dense
+        else []
+    )
     for query_index, query in enumerate(queries):
         for view in selected_dense_views(query, dense_views):
             for text in dense_view_queries(query, view):
-                view_requests.setdefault(view, []).append((query_index, len(texts)))
-                texts.append(text)
+                view_requests.setdefault(view, []).append((query_index, add_text(text)))
     if dense_svd is not None:
         vectors = normalize(dense_svd.transform(vectorizer.transform(texts))).astype(
             np.float32, copy=False
@@ -92,7 +121,7 @@ def retrieve_dense_candidates_many(
     if vectors.ndim != 2 or vectors.shape != (len(texts), reference_embeddings.shape[1]):
         raise ValueError("dense query batch has an invalid embedding shape")
     if include_record_dense:
-        record_keys, record_scores = _search_many(dense_nn, vectors[: len(queries)], limit)
+        record_keys, record_scores = _search_many(dense_nn, vectors[record_positions], limit)
         for query_index, (keys, scores) in enumerate(zip(record_keys, record_scores, strict=True)):
             _apply_record_dense_scores(states[query_index], keys, scores)
     for view, requests in view_requests.items():
@@ -113,6 +142,20 @@ def _search_many(index: Any, vectors: np.ndarray, limit: int) -> tuple[np.ndarra
     if keys.ndim != 2 or scores.shape != keys.shape or keys.shape[0] != len(vectors):
         raise ValueError("dense batch search returned an invalid result shape")
     return keys, scores
+
+
+def _deduplicate_texts(texts: list[str]) -> tuple[list[str], list[int]]:
+    unique: list[str] = []
+    positions: list[int] = []
+    position_by_text: dict[str, int] = {}
+    for text in texts:
+        position = position_by_text.get(text)
+        if position is None:
+            position = len(unique)
+            position_by_text[text] = position
+            unique.append(text)
+        positions.append(position)
+    return unique, positions
 
 
 def _apply_record_dense_scores(

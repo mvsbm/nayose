@@ -1,13 +1,14 @@
 import type { DatasetGeneration, DatasetPort, DatasetRows, DatasetSummary } from "./port.js";
+import { isVisibleDatasetColumn } from "./dataset-adapter.js";
 import type { Store } from "./store.js";
-import { disposable, type Disposable } from "./lifecycle.js";
+import { disposable, DisposableStore, type Disposable } from "./lifecycle.js";
 import { esc } from "./schema.js";
+import { asyncError, asyncIdle, asyncLoading, asyncReady, type AsyncState } from "./async-state.js";
+import { formatNumber } from "./shared.js";
 import {
-  observeLockedColumns,
   readColumnFilters,
   renderColumnPicker,
   renderDatasetGrid,
-  syncLockedColumns,
 } from "./dataset-grid.js";
 
 export type DatasetTable = "reference" | "queries" | "agencies";
@@ -22,7 +23,6 @@ export interface DatasetExplorerState {
   query: string;
   columnFilters: Record<string, string>;
   visibleColumns: string[];
-  lockedColumns: string[];
   cursor?: string;
   cursorHistory: Array<string | undefined>;
   offset: number;
@@ -30,8 +30,7 @@ export interface DatasetExplorerState {
   summary: DatasetSummary | null;
   summaries: Record<string, DatasetSummary>;
   rows: DatasetRows | null;
-  pending: boolean;
-  error: string;
+  request: AsyncState<DatasetRows>;
   open: boolean;
 }
 
@@ -53,7 +52,6 @@ export function createDatasetExplorerState(generations: DatasetGeneration[]): Da
     query: "",
     columnFilters: {},
     visibleColumns: [],
-    lockedColumns: [],
     cursor: undefined,
     cursorHistory: [],
     offset: 0,
@@ -61,8 +59,7 @@ export function createDatasetExplorerState(generations: DatasetGeneration[]): Da
     summary: null,
     summaries: {},
     rows: null,
-    pending: false,
-    error: "",
+    request: asyncIdle(),
     open: true,
   };
 }
@@ -74,7 +71,7 @@ function localizedGeneration(generation: DatasetGeneration, store: Store): strin
 
 function generationDescription(generation: DatasetGeneration, store: Store): string {
   const localized = store.locale === "ja" ? generation.description_ja : generation.description_en;
-  return localized || `${generation.id} · ${generation.fingerprint || "no fingerprint"}`;
+  return localized || `${generation.id} · ${generation.fingerprint || store.t("noFingerprint")}`;
 }
 
 function tableDescriptor(state: DatasetExplorerState): TableDescriptor | undefined {
@@ -82,11 +79,11 @@ function tableDescriptor(state: DatasetExplorerState): TableDescriptor | undefin
 }
 
 function allColumns(state: DatasetExplorerState): string[] {
-  return tableDescriptor(state)?.columns ?? state.rows?.columns ?? [];
+  return (tableDescriptor(state)?.columns ?? state.rows?.columns ?? []).filter(isVisibleDatasetColumn);
 }
 
-function number(value: number): string {
-  return value.toLocaleString();
+function number(value: number, store: Store): string {
+  return formatNumber(value, store.locale);
 }
 
 
@@ -103,7 +100,7 @@ function renderDatasetTabs(state: DatasetExplorerState, store: Store): string {
     const generation = state.generations.find(item => item.id === id);
     if (!generation) return "";
     const selected = id === state.generationId;
-    return `<button class="dataset-tabs-tab" type="button" role="tab" aria-selected="${selected}" data-dataset-tab="${esc(id)}">${esc(localizedGeneration(generation, store))}</button>`;
+    return `<button class="dataset-tabs-tab" id="dataset-tab-${esc(id)}" type="button" role="tab" aria-selected="${selected}" aria-controls="dataset-panel" data-dataset-tab="${esc(id)}">${esc(localizedGeneration(generation, store))}</button>`;
   }).join("");
   return `<div class="dataset-tabs" role="tablist" aria-label="${esc(store.t("activeDataset"))}">${tabs}</div>`;
 }
@@ -116,7 +113,7 @@ function renderDatasetSummary(state: DatasetExplorerState, store: Store, columns
   const descriptor = tableDescriptor(state);
   const generation = state.generations.find(item => item.id === state.generationId) ?? state.generations[0];
   if (!summary || !generation) return "";
-  return `<section class="dataset-info"><h3>${esc(localizedGeneration(generation, store))}</h3><p class="members">${esc(generationDescription(generation, store))}</p><div class="kpi"><div class="card"><span class="l">${t("datasetFingerprint")}</span><div class="v">${esc(summary.fingerprint || "—")}</div></div><div class="card"><span class="l">${t("datasetCreated")}</span><div class="v">${esc(summary.created_at || "—")}</div></div><div class="card"><span class="l">${t("datasetTableRows")}</span><div class="v">${number(descriptor?.rows ?? 0)}</div></div><div class="card"><span class="l">${t("datasetColumns")}</span><div class="v">${number(columns.length)}</div></div></div><p class="members">${esc(descriptor?.description ?? "")}</p></section>`;
+  return `<section class="dataset-info"><h3>${esc(localizedGeneration(generation, store))}</h3><p class="members">${esc(generationDescription(generation, store))}</p><div class="kpi"><div class="card"><span class="l">${t("datasetFingerprint")}</span><div class="v">${esc(summary.fingerprint || "—")}</div></div><div class="card"><span class="l">${t("datasetCreated")}</span><div class="v">${esc(summary.created_at || "—")}</div></div><div class="card"><span class="l">${t("datasetTableRows")}</span><div class="v">${number(descriptor?.rows ?? 0, store)}</div></div><div class="card"><span class="l">${t("datasetColumns")}</span><div class="v">${number(columns.length, store)}</div></div></div><p class="members">${esc(descriptor?.description ?? "")}</p></section>`;
 }
 
 function renderTableOptions(state: DatasetExplorerState, store: Store): string {
@@ -127,13 +124,15 @@ function renderTableOptions(state: DatasetExplorerState, store: Store): string {
 }
 
 function renderDatasetToolbar(state: DatasetExplorerState, store: Store, t: Translate): string {
-  return `<div class="toolbar"><label>${t("datasetTable")} <select id="dataset-table">${renderTableOptions(state, store)}</select></label><label class="dataset-grid-search">${t("datasetSearch")} <input id="dataset-filter" type="search" value="${esc(state.query)}" placeholder="${t("datasetSearchPlaceholder")}"></label><button id="dataset-load" class="more" type="button" ${state.pending ? "disabled" : ""}>${t("inspectDataset")}</button></div>`;
+  const pending = state.request.kind === "loading";
+  return `<div class="toolbar"><label>${t("datasetTable")} <select id="dataset-table">${renderTableOptions(state, store)}</select></label><label class="dataset-grid-search">${t("datasetSearch")} <input id="dataset-filter" type="search" value="${esc(state.query)}" placeholder="${t("datasetSearchPlaceholder")}"></label><button id="dataset-load" class="more" type="button" ${pending ? "disabled" : ""}>${t("inspectDataset")}</button></div>`;
 }
 
 function renderDatasetPaging(state: DatasetExplorerState, total: number, exact: boolean, first: number, last: number, t: Translate): string {
   const range = exact ? t("datasetRange", { first, last, total }) : t("datasetRangeUnknown", { first, last });
-  const nextDisabled = state.rows?.has_more === false || (!state.rows?.has_more && exact && last >= total) || state.pending;
-  return `<div class="toolbar"><span class="members" role="status" aria-live="polite">${range}</span><button id="dataset-prev" class="more" type="button" ${state.offset === 0 || state.pending ? "disabled" : ""}>${t("previous")}</button><button id="dataset-next" class="more" type="button" ${nextDisabled ? "disabled" : ""}>${t("next")}</button></div>`;
+  const pending = state.request.kind === "loading";
+  const nextDisabled = state.rows?.has_more === false || (!state.rows?.has_more && exact && last >= total) || pending;
+  return `<div class="toolbar"><span class="members" role="status" aria-live="polite">${range}</span><button id="dataset-prev" class="more" type="button" ${state.offset === 0 || pending ? "disabled" : ""}>${t("previous")}</button><button id="dataset-next" class="more" type="button" ${nextDisabled ? "disabled" : ""}>${t("next")}</button></div>`;
 }
 
 export function renderDatasetExplorer(state: DatasetExplorerState, store: Store): string {
@@ -145,13 +144,14 @@ export function renderDatasetExplorer(state: DatasetExplorerState, store: Store)
   const first = state.rows?.rows.length ? state.offset + 1 : 0;
   const last = state.rows?.rows.length ? state.offset + state.rows.rows.length : 0;
   const exact = state.rows?.total_exact !== false && total >= 0;
-  return `<details id="dataset-explorer"${state.open ? " open" : ""}><summary>${t("datasetExplorer")}</summary><p>${t("datasetExplorerHelp")}</p>${renderDatasetPicker(state, store, t)}${renderDatasetTabs(state, store)}${renderDatasetToolbar(state, store, t)}${renderDatasetSummary(state, store, columns, t)}${renderColumnPicker(state, store, columns, t)}<div class="dataset-grid-scroll" tabindex="0" role="region" aria-label="${t("datasetRowsCaption", { n: ariaRows })}" aria-busy="${state.pending}">${renderDatasetGrid(state, store, columns, t)}</div>${renderDatasetPaging(state, total, exact, first, last, t)}${state.error ? `<p class="notice" role="alert">${esc(state.error)}</p>` : ""}</details>`;
+  const pending = state.request.kind === "loading";
+  const error = state.request.kind === "error" ? state.request.message : "";
+  return `<details id="dataset-explorer"${state.open ? " open" : ""}><summary>${t("datasetExplorer")}</summary><p>${t("datasetExplorerHelp")}</p>${renderDatasetPicker(state, store, t)}${renderDatasetTabs(state, store)}${renderDatasetToolbar(state, store, t)}${renderDatasetSummary(state, store, columns, t)}${renderColumnPicker(state, store, columns, t)}<div id="dataset-panel" role="tabpanel" aria-labelledby="dataset-tab-${esc(state.generationId)}" class="dataset-grid-scroll" tabindex="0" aria-label="${t("datasetRowsCaption", { n: ariaRows })}" aria-busy="${pending}">${renderDatasetGrid({ request: state.request, rows: state.rows, visibleColumns: state.visibleColumns, columnFilters: state.columnFilters }, store, columns, t)}</div>${renderDatasetPaging(state, total, exact, first, last, t)}${error ? `<p class="notice" role="alert">${esc(error)}</p>` : ""}</details>`;
 }
 
 function reconcileColumns(state: DatasetExplorerState, columns: string[]): void {
   if (!state.visibleColumns.length) return;
   state.visibleColumns = state.visibleColumns.filter(column => columns.includes(column));
-  state.lockedColumns = state.lockedColumns.filter(column => state.visibleColumns.includes(column));
 }
 
 async function load(
@@ -163,15 +163,14 @@ async function load(
   signal: AbortSignal,
 ): Promise<void> {
   if (!state.generationId) return;
-  state.pending = true;
-  state.error = "";
+  state.request = asyncLoading(String(requestId));
   paint();
   try {
     const generationId = state.generationId;
     const cachedSummary = state.summaries[generationId];
     const summaryPromise: Promise<DatasetSummary> = cachedSummary
       ? Promise.resolve(cachedSummary)
-      : port.adminDatasetSummary(generationId);
+      : port.adminDatasetSummary(generationId, signal);
     const [summary, rows] = await Promise.all([
       summaryPromise,
       port.adminDatasetRows(generationId, state.table, state.query, state.offset, state.limit, state.columnFilters, false, state.cursor, signal),
@@ -181,12 +180,13 @@ async function load(
     state.summary = summary;
     reconcileColumns(state, allColumns(state));
     state.rows = rows;
+    state.request = asyncReady(rows);
   } catch (error) {
     if (requestId !== currentRequest()) return;
-    state.error = String((error as Error).message ?? error);
+    state.request = asyncError(String((error as Error).message ?? error), String(requestId));
   } finally {
     if (requestId !== currentRequest()) return;
-    state.pending = false;
+    if (state.request.kind === "loading") state.request = asyncIdle();
     paint();
   }
 }
@@ -198,11 +198,12 @@ export function bindDatasetExplorer(
   store: Store,
 ): Disposable {
   let requestId = 0;
+  const timerStore = new DisposableStore();
   let filterTimer: number | undefined;
   let activeController: AbortController | undefined;
   let disposed = false;
   let paintVersion = 0;
-  let stopLockedColumnObserver = (): void => undefined;
+  let frame: number | undefined;
   const paint = (): void => {
     if (disposed) return;
     const version = ++paintVersion;
@@ -210,15 +211,7 @@ export function bindDatasetExplorer(
     if (details) state.open = details.open;
     host.innerHTML = renderDatasetExplorer(state, store);
     bind();
-    stopLockedColumnObserver();
-    const sync = (): void => syncLockedColumns(host, state.lockedColumns);
-    const observe = (): void => {
-      if (disposed || version !== paintVersion) return;
-      sync();
-      stopLockedColumnObserver = observeLockedColumns(host, sync);
-    };
-    if (typeof requestAnimationFrame === "function") requestAnimationFrame(observe);
-    else window.setTimeout(observe, 0);
+    if (frame !== undefined && typeof cancelAnimationFrame === "function") cancelAnimationFrame(frame);
   };
   const reload = (): void => {
     if (disposed) return;
@@ -234,7 +227,6 @@ export function bindDatasetExplorer(
     state.rows = null;
     state.offset = 0;
     state.visibleColumns = [];
-    state.lockedColumns = [];
     state.cursor = undefined;
     state.cursorHistory = [];
     state.columnFilters = {};
@@ -257,7 +249,6 @@ export function bindDatasetExplorer(
       state.offset = 0;
       state.rows = null;
       state.visibleColumns = [];
-      state.lockedColumns = [];
       state.cursor = undefined;
       state.cursorHistory = [];
       state.columnFilters = {};
@@ -273,8 +264,8 @@ export function bindDatasetExplorer(
       }
     });
     host.querySelector<HTMLInputElement>("#dataset-filter")?.addEventListener("input", event => {
-      window.clearTimeout(filterTimer);
-      filterTimer = window.setTimeout(() => {
+      timerStore.clearTimeout(filterTimer);
+      filterTimer = timerStore.addTimeout(() => {
         state.query = (event.target as HTMLInputElement).value.trim();
         state.offset = 0;
         state.cursor = undefined;
@@ -311,14 +302,6 @@ export function bindDatasetExplorer(
       if (input.checked) visible.add(column);
       else if (visible.size > 1) visible.delete(column);
       state.visibleColumns = columns.filter(item => visible.has(item));
-      state.lockedColumns = state.lockedColumns.filter(item => state.visibleColumns.includes(item));
-      paint();
-    }));
-    host.querySelectorAll<HTMLInputElement>("[data-column-lock]").forEach(input => input.addEventListener("change", () => {
-      const column = input.dataset.columnLock ?? "";
-      state.lockedColumns = input.checked
-        ? [...state.lockedColumns.filter(item => item !== column), column]
-        : state.lockedColumns.filter(item => item !== column);
       paint();
     }));
     host.querySelector<HTMLButtonElement>("#dataset-prev")?.addEventListener("click", () => {
@@ -337,18 +320,18 @@ export function bindDatasetExplorer(
     });
   };
   bind();
-  if (state.generationId && !state.rows && !state.pending) reload();
+  if (state.generationId && !state.rows && state.request.kind !== "loading") reload();
   return disposable(() => {
     disposed = true;
     requestId += 1;
     activeController?.abort();
-    window.clearTimeout(filterTimer);
-    stopLockedColumnObserver();
+    timerStore.dispose();
+    if (frame !== undefined && typeof cancelAnimationFrame === "function") cancelAnimationFrame(frame);
   });
 }
 
-export async function refreshDatasetGenerations(state: DatasetExplorerState, port: DatasetPort): Promise<void> {
-  state.generations = await port.adminGenerations();
+export async function refreshDatasetGenerations(state: DatasetExplorerState, port: DatasetPort, signal?: AbortSignal): Promise<void> {
+  state.generations = await port.adminGenerations(signal);
   const current = state.generations.find(generation => generation.current) ?? state.generations[0];
   const selected = state.selectedGenerationIds.filter(id => state.generations.some(generation => generation.id === id));
   state.selectedGenerationIds = selected.length ? selected : current ? [current.id] : [];
@@ -356,9 +339,9 @@ export async function refreshDatasetGenerations(state: DatasetExplorerState, por
   state.summary = null;
   state.summaries = {};
   state.rows = null;
+  state.request = asyncIdle();
   state.offset = 0;
   state.visibleColumns = [];
-  state.lockedColumns = [];
   state.cursor = undefined;
   state.cursorHistory = [];
   state.columnFilters = {};

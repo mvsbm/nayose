@@ -171,7 +171,7 @@ def normalize_frame(frame: pd.DataFrame, id_column: str) -> pd.DataFrame:
     out = frame.copy()
     out["n_name_strict"] = out["name_kanji"].map(normalize_name_strict)
     out["n_name_loose"] = out["name_kanji"].map(normalize_name)
-    out["n_name_signature"] = out["name_kanji"].map(normalize_name_signature)
+    out["n_name_signature"] = out["n_name_loose"].map(lambda value: "".join(sorted(value)))
     out["n_kana"] = out["name_kana"].map(normalize_kana)
     out["n_romaji"] = out["name_romaji"].map(normalize_romaji)
     out["n_dob"] = out["date_birth"].map(normalize_dob)

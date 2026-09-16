@@ -198,13 +198,17 @@ const MATCH_RESULT = {
 };
 
 let dom;
+let activeDestroy;
 beforeEach(async () => {
+  activeDestroy?.();
+  activeDestroy = undefined;
   dom = new JSDOM(readFileSync(join(ROOT, "index.html"), "utf8"), { url: "http://localhost/", pretendToBeVisual: true });
   const { window } = dom;
   globalThis.window = window;
   globalThis.document = window.document;
   globalThis.location = window.location;
   globalThis.localStorage = window.localStorage;
+  globalThis.sessionStorage = window.sessionStorage;
   window.scrollTo = () => {};
   window.HTMLElement.prototype.scrollIntoView = () => {};
 });
@@ -213,7 +217,8 @@ let bootSeq = 0;
 async function boot(opts = {}) {
   const { boot } = await import(join(ROOT, "js/app.js") + "?boot=" + bootSeq++);
   const runs = opts.runs ?? [{ id: "run_fake", current: true, fingerprint: "abc" }];
-  await boot({ port: opts.port ?? mockPort, store: opts.store, runs, healthIntervalMs: 0 });
+  const app = await boot({ port: opts.port ?? mockPort, store: opts.store, runs, healthIntervalMs: 0 });
+  activeDestroy = app.destroy;
   await new Promise((r) => setTimeout(r, 60));
 }
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -225,14 +230,14 @@ test("default route = search (task-first), run selector populated", async () => 
   assert.match(document.querySelector("#run-fp").textContent, /abc/);
 });
 
-test("navigation shell separates activity workspaces and persists the sidebar state", async () => {
+test("navigation shell uses one route-driven sidebar and persists its state", async () => {
   await boot();
   const shell = document.querySelector(".shell");
   const toggle = document.querySelector("#nav-toggle");
   const nav = document.querySelector("#primary-navigation");
   const resizer = document.querySelector("#nav-resizer");
-  assert.equal(document.querySelector(".app-bar-title #nav-toggle"), null, "desktop collapse control remains in the top-left title");
-  assert.ok(document.querySelector(".app-bar-actions #nav-toggle"), "mobile navigation control is missing");
+  assert.ok(document.querySelector(".app-bar > #nav-toggle"), "navigation control is missing from the toolbar");
+  assert.equal(document.querySelector("#activity-navigation"), null, "redundant activity navigation must not return");
   assert.equal(document.querySelector("#status-strip").hidden, false, "status bar starts present");
   assert.equal(toggle.getAttribute("aria-expanded"), "true");
   assert.equal(toggle.dataset.navCollapsed, "false");
@@ -246,7 +251,7 @@ test("navigation shell separates activity workspaces and persists the sidebar st
   resizer.dispatchEvent(new window.KeyboardEvent("keydown", { key: "End", bubbles: true }));
   assert.equal(resizer.getAttribute("aria-valuenow"), "420");
   assert.equal(nav.hasAttribute("inert"), false);
-  assert.equal(document.querySelector('.activity-bar a[aria-current="page"]').dataset.activity, "match");
+  assert.equal(document.querySelector('.side a[aria-current="page"]').dataset.nav, "search");
 
   toggle.click();
   assert.equal(shell.dataset.navCollapsed, "true");
@@ -255,20 +260,15 @@ test("navigation shell separates activity workspaces and persists the sidebar st
   assert.equal(nav.hasAttribute("inert"), true);
   assert.equal(localStorage.getItem("nayose.navigationCollapsed"), "true");
 
-  document.querySelector('.activity-bar a[data-activity="review"]').click();
+  toggle.click();
+  assert.equal(shell.dataset.navCollapsed, "false", "toolbar control did not restore the sidebar");
+  document.querySelector('.side a[data-nav="review"]').click();
   await wait(30);
   assert.equal(window.location.hash, "#/review");
-  assert.equal(shell.dataset.navCollapsed, "false", "activity selection reopens the primary sidebar");
-  assert.equal(document.querySelector('.activity-bar a[aria-current="page"]').dataset.activity, "review");
+  assert.equal(document.querySelector('.side a[aria-current="page"]').dataset.nav, "review");
 
   document.dispatchEvent(new window.KeyboardEvent("keydown", { key: "b", ctrlKey: true, bubbles: true }));
   assert.equal(shell.dataset.navCollapsed, "true", "Ctrl+B did not collapse the primary sidebar");
-
-  const reviewActivity = document.querySelector('.activity-bar a[data-activity="review"]');
-  reviewActivity.click();
-  assert.equal(shell.dataset.navCollapsed, "false", "active workspace icon did not expand the sidebar");
-  reviewActivity.click();
-  assert.equal(shell.dataset.navCollapsed, "true", "active workspace icon did not collapse the sidebar");
 });
 
 test("navigation drawer is keyboard-safe on mobile and restores toggle focus", async () => {
@@ -345,7 +345,7 @@ test("search: typing renders live cards and selection loads detail in place", as
   assert.match(hits[0].textContent, /類似検索（文字ベース） 91%/, "semantic similarity chip rendered when present");
   hits[0].dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true, cancelable: true }));
   await wait(30);
-  assert.equal(window.location.hash, "#/search?entity=N000000001");
+  assert.equal(window.location.hash, "#/search?q=%E4%BD%90%E8%97%A4&entity=N000000001");
   assert.equal(document.querySelector("#search-detail").hidden, false);
   assert.equal(document.querySelector("#search-detail [data-selected-entity]").dataset.selectedEntity, "N000000001");
   assert.match(document.querySelector("#search-detail").textContent, /佐藤 太郎/);
@@ -410,7 +410,7 @@ test("palette: dialog semantics, focus trap/restore, and action vocabulary", asy
   assert.equal(document.querySelector(".shell").dataset.navCollapsed, "true");
 });
 
-test("review: rows render, 既読 toggles store + localStorage, 取り消し undoes", async () => {
+test("review: rows render, 既読 toggles run-scoped server state, 取り消し undoes", async () => {
   await boot();
   window.location.hash = "#/review";
   await wait(100);
@@ -424,13 +424,17 @@ test("review: rows render, 既読 toggles store + localStorage, 取り消し und
   assert.match(rows[0].querySelector("button.check").textContent, /記録済|Recorded/);
   assert.strictEqual(document.querySelectorAll("#view tbody tr")[1], sibling, "toggle re-rendered a sibling row");
   assert.equal(sibling.outerHTML, siblingHtml, "toggle changed an unrelated row");
-  const stored = JSON.parse(localStorage.getItem("nayose.checked") ?? "[]");
-  assert.equal(stored.length, 1);
+  await wait(600);
+  assert.equal(mockPort.savedDecisions.length, 1, "checked decision was not persisted for the active run");
   document.querySelector("#undo").click();
-  assert.match(rows[0].querySelector("button.check").textContent, /既読|Reviewed/);
-  await wait(20);
-  const after = JSON.parse(localStorage.getItem("nayose.checked") ?? "[]");
-  assert.equal(after.length, 0, "undo restored");
+  assert.match(document.querySelector("#view tbody button.check").textContent, /既読|Reviewed/);
+  await wait(80);
+  document.querySelector("#view tbody button.check").click();
+  document.dispatchEvent(new window.KeyboardEvent("keydown", { key: "z", metaKey: true, bubbles: true }));
+  await wait(80);
+  assert.match(document.querySelector("#view tbody button.check").textContent, /既読|Reviewed/, "Command-Z did not undo the review decision");
+  await wait(600);
+  assert.equal(mockPort.savedDecisions.length, 0, "undo restored the server decision state");
 });
 
 test("confusion: scenario row renders; click drills decisions", async () => {
@@ -448,11 +452,41 @@ test("confusion: scenario row renders; click drills decisions", async () => {
 
 test("server decisions restore checked state at boot (cross-machine persistence)", async () => {
   mockPort.savedDecisions = [{ left: "R0000000000", right: "R0000000001" }];
-  await boot();
-  window.location.hash = "#/review";
-  await wait(100);
-  const firstRow = document.querySelector("#view tbody tr");
-  assert.ok(firstRow.classList.contains("checked"), "restored decision marked checked");
+  try {
+    await boot();
+    window.location.hash = "#/review";
+    await wait(100);
+    const firstRow = document.querySelector("#view tbody tr");
+    assert.ok(firstRow.classList.contains("checked"), "restored decision marked checked");
+  } finally {
+    mockPort.savedDecisions = [];
+  }
+});
+
+test("run changes reload only the selected run and cannot persist stale decisions", async () => {
+  const originalLoad = mockPort.loadDecisions;
+  const loaded = [];
+  mockPort.savedDecisions = [];
+  mockPort.loadDecisions = (run) => {
+    loaded.push(run);
+    return Promise.resolve({ items: run === "runB" ? [{ left: "R0000000002", right: "R0000000003" }] : [], revision: 0 });
+  };
+  try {
+    await boot({ runs: [{ id: "runA", current: true, fingerprint: "a" }, { id: "runB", current: false, fingerprint: "b" }] });
+    window.location.hash = "#/review";
+    await wait(100);
+    document.querySelector("#view tbody button.check").click();
+    document.querySelector("#run").value = "runB";
+    document.querySelector("#run").dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+    await wait(120);
+    assert.equal(mockPort._run, "runB");
+    assert.deepEqual([...mockPort.savedDecisions], [], "old-run edits leaked into the new run");
+    assert.ok(document.querySelectorAll("#view tbody tr")[1].classList.contains("checked"), "new-run decisions were not restored");
+    assert.deepEqual(loaded.slice(-2), ["runA", "runB"]);
+  } finally {
+    mockPort.loadDecisions = originalLoad;
+    mockPort.savedDecisions = [];
+  }
 });
 
 test("decision conflicts are visible and can reload the server revision", async () => {
@@ -471,6 +505,22 @@ test("decision conflicts are visible and can reload the server revision", async 
   await wait(600);
   mockPort.decisionRevision = 0;
   mockPort.savedDecisions = [];
+});
+
+test("decision save failures remain visible and offer a retry", async () => {
+  const originalSave = mockPort.saveDecisions;
+  mockPort.saveDecisions = async () => { throw new Error("request_timeout"); };
+  try {
+    await boot();
+    window.location.hash = "#/review";
+    await wait(100);
+    document.querySelector("#view tbody button.check").click();
+    await wait(650);
+    assert.ok(document.querySelector("#decision-save-error"), "save failure was hidden");
+    assert.ok(document.querySelector("#decision-retry"), "save failure had no recovery action");
+  } finally {
+    mockPort.saveDecisions = originalSave;
+  }
 });
 
 test("cross-run diff view renders metrics delta table", async () => {
@@ -493,16 +543,16 @@ test("metrics: KPI cards + bars render from port", async () => {
   await wait(100);
   const cards = [...document.querySelectorAll("#view .kpi .card")];
   assert.equal(cards.length, 2);
-  assert.ok(cards[0].querySelector(".meter i"), "progress meter present");
+  assert.ok(cards[0].querySelector("progress.meter"), "accessible progress meter present");
 });
 test("MemoProxy: memoizes reads, clears on run switch, never caches mutations", async () => {
   const { MemoProxy } = await import(join(ROOT, "js/infra.js"));
-  const calls = { entities: 0, recommend: 0, saveDecisions: 0 };
+  const calls = { entities: 0, recommend: 0, saveDecisions: 0, health: 0 };
   const inner = {
     run() {},
     entities: async () => { calls.entities++; return []; },
     entity: async () => ({}),
-    health: async () => ({}),
+    health: async () => { calls.health++; return {}; },
     review: async () => ({ total: 0, rows: [], histogram: [], pair_auto_threshold: null }),
     metrics: async () => ({ kpis: [], extras: {} }),
     metricsFor: async () => ({ kpis: [], extras: {} }),
@@ -528,6 +578,9 @@ test("MemoProxy: memoizes reads, clears on run switch, never caches mutations", 
   proxy.run("r2");
   await proxy.entities("x");
   assert.equal(calls.entities, 3, "run switch invalidates the cache");
+  await proxy.health();
+  await proxy.health();
+  assert.equal(calls.health, 2, "health must not be cached during polling");
 });
 
 test("language toggle persists, translates navigation and keeps customer input", async () => {
@@ -755,7 +808,7 @@ test("admin workspace: open nav, presets, settings apply + audit rows render", a
   assert.equal(document.querySelector("#dz-prune").disabled, true, "destructive buttons locked until confirmed");
 });
 
-test("dataset viewer selects datasets, filters columns, and locks columns", async () => {
+test("dataset viewer selects datasets and filters visible columns", async () => {
   const originalGenerations = mockPort.adminGenerations;
   const originalSummary = mockPort.adminDatasetSummary;
   const originalRows = mockPort.adminDatasetRows;
@@ -787,10 +840,8 @@ test("dataset viewer selects datasets, filters columns, and locks columns", asyn
     document.querySelector("#dataset-prev").click();
     await wait(80);
     assert.equal(calls.at(-1).after, undefined, "previous page did not restore the cursor history");
-    const lock = document.querySelector('[data-column-lock="name_kanji"]');
-    lock.click();
-    await wait(20);
-    assert.ok(document.querySelector('[data-column="name_kanji"].dataset-grid-column-locked'));
+    assert.equal(document.querySelector('[data-column-lock="name_kanji"]'), null, "dataset grid must not expose a non-functional sticky-column control");
+    assert.equal(document.querySelector('[data-column="name_kanji"].dataset-grid-column-locked'), null, "table cells must not use sticky-column classes");
     const filter = document.querySelector('[data-column-filter="name_kanji"]');
     filter.value = "佐藤";
     document.querySelector("#dataset-filter-apply").click();
@@ -887,10 +938,13 @@ test("data entry wizard: match check -> register -> undo", async () => {
   await wait(120);
   const name = document.querySelector('[data-field="name_kanji"]');
   assert.ok(name, "entry form rendered");
+  assert.equal(document.querySelector('[aria-current="step"]')?.dataset.entryStep, "1");
   name.value = "手入力 太郎";
   name.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
   document.querySelector("#de-check").click();
+  assert.equal(document.querySelector('[aria-current="step"]')?.dataset.entryStep, "2");
   await wait(150);
+  assert.equal(document.querySelector('[aria-current="step"]')?.dataset.entryStep, "3");
   assert.equal(document.querySelector("#de-register").disabled, false, "register enabled after match check");
   document.querySelector("#de-register").click();
   await wait(100);
@@ -935,16 +989,18 @@ test("ApiAdapter is the sole transport and attaches the bearer token", async () 
     return { ok: true, json: async () => String(url).includes("/api/entities") ? { rows: [], semantic: false } : [] };
   };
   try {
+    sessionStorage.removeItem("nayose.token");
     localStorage.removeItem("nayose.token");
     await new ApiAdapter().runs();
     const plain = calls[0].headers instanceof Headers ? calls[0].headers.get("Authorization") : calls[0].headers?.Authorization;
     assert.equal(plain, null, "no token => no auth header");
-    localStorage.setItem("nayose.token", "sekret");
+    sessionStorage.setItem("nayose.token", "sekret");
     await new ApiAdapter().entities("x");
     const authed = calls[1].headers instanceof Headers ? calls[1].headers.get("Authorization") : calls[1].headers?.Authorization;
     assert.equal(authed, "Bearer sekret", "token attached by the transport, not by views");
   } finally {
     globalThis.fetch = realFetch;
+    sessionStorage.removeItem("nayose.token");
     localStorage.removeItem("nayose.token");
   }
 });
@@ -1044,9 +1100,9 @@ test("admin generate renders a live progress meter + ETA from job progress", asy
     await wait(200); // pending tick (pct 42, ETA 1:30) is rendered during polling
     const out = document.querySelector("#gen-job");
     assert.ok(out.querySelector(".meter"), "meter rendered during progress");
-    assert.equal(out.querySelector(".meter i").style.width, "42%", "meter reflects streamed pct");
+    assert.equal(out.querySelector(".meter").getAttribute("value"), "42", "meter reflects streamed pct");
     assert.match(out.textContent, /観測・汚染生成 42%|1:30/);
-    await wait(1200); // next poll resolves complete -> status preserved after paint
+    await wait(1800); // next poll resolves complete -> status preserved after paint
     assert.match(document.querySelector("#gen-job").textContent, /完了|jobDone/i);
   } finally {
     mockPort.adminStart = original;

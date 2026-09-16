@@ -69,6 +69,12 @@ finite vectors in 723.7 seconds (about 37.6 queries/second). Equivalent CPU work
 was projected at roughly 10–12 hours. This is an observed development measurement,
 not an SLO; reference embeddings remain generation-local and fingerprint-bound.
 
+An optional MLX adapter is available for Apple Silicon through the canonical
+`[embedding] backend` setting. On the development M4, a warm 124-text batch
+measured 1.91 seconds on MLX GPU versus 3.30 seconds on PyTorch MPS, while MLX
+CPU measured 6.02 seconds. These are encoder-only observations; MLX remains a
+canary backend until same-fingerprint retrieval and decision parity is certified.
+
 The current promoted bundle contains record, name, address, and alias dense views,
 plus the in-memory inverted sparse strategy. Larger-corpus sparse variants and
 materialized CSC artifacts require separate capacity measurements; neither 2M

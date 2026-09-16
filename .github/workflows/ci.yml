@@ -25,6 +25,10 @@ jobs:
         run: uv sync --frozen --extra matcher --extra performance --extra serve --extra dev
       - name: Frontend deps
         run: npm --prefix frontend ci
+      - name: Check generated architecture diagrams
+        run: uv run python scripts/generate_architecture_diagrams.py --check
+      - name: Check release packaging invariants
+        run: uv run python scripts/check_release_candidate.py
       - name: Audit (authoritative)
         run: |
           mkdir -p /tmp/nayose-metrics

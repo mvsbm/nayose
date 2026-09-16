@@ -1,11 +1,12 @@
 // E2E infrastructure (Playwright): the only entry point to browser automation.
 // Journeys use these helpers instead of raw browser primitives. This module
-// owns waits, navigation, fresh contexts, and transport observation. Bundles
-// are copied to a temporary root so runtime artifacts are never mutated.
-import { spawn } from "node:child_process";
+// owns waits, navigation, fresh contexts, and transport observation. Immutable
+// bundles use copy-on-write clones; mutable state stays in an owned temp root.
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import {
+  constants,
   copyFileSync,
   cpSync,
   createWriteStream,
@@ -68,6 +69,27 @@ function fingerprint12(dir, file) {
   }
 }
 
+function storagePreflight(path) {
+  const budget = Number(process.env.NAYOSE_E2E_STORAGE_BUDGET ?? 1_073_741_824);
+  const result = spawnSync(PYTHON, [
+    "-m", "api.cli", "resource", "plan",
+    "--path", path,
+    "--workload", "browser-e2e",
+    "--scratch-bytes", String(budget),
+  ], {
+    cwd: ROOT,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      PYTHONPATH: [join(ROOT, "src"), process.env.PYTHONPATH].filter(Boolean).join(process.platform === "win32" ? ";" : ":"),
+    },
+  });
+  if (result.status !== 0) {
+    throw new Error(`E2E storage preflight failed: ${(result.stderr || result.stdout).trim()}`);
+  }
+  return JSON.parse(result.stdout);
+}
+
 function prepare() {
   const envModels = process.env.NAYOSE_E2E_MODELS || join(ROOT, "models");
   const envData = process.env.NAYOSE_E2E_DATA || join(ROOT, "data");
@@ -101,15 +123,16 @@ function prepare() {
       );
     }
   }
+  storagePreflight(tmpdir());
   const root = mkdtempSync(join(tmpdir(), "nayose-e2e-"));
   const models = join(root, "models");
   const data = join(root, "data");
   mkdirSync(join(models, "runs"), { recursive: true });
-  cpSync(run.src, join(models, "runs", run.name), { recursive: true });
+  cpSync(run.src, join(models, "runs", run.name), { recursive: true, mode: constants.COPYFILE_FICLONE_FORCE });
   symlinkSync(join("runs", run.name), join(models, "current"), "dir");
-  cpSync(gen.src, data, { recursive: true });
+  cpSync(gen.src, data, { recursive: true, mode: constants.COPYFILE_FICLONE_FORCE });
   mkdirSync(join(root, "generations"), { recursive: true });
-  cpSync(gen.src, join(root, "generations", gen.name), { recursive: true });
+  cpSync(gen.src, join(root, "generations", gen.name), { recursive: true, mode: constants.COPYFILE_FICLONE_FORCE });
   const modelManifest = join(models, "runs", run.name, "run_manifest.json");
   const dataManifest = join(root, "generations", gen.name, "generation_manifest.json");
   const dataPayload = JSON.parse(readFileSync(dataManifest, "utf8"));
@@ -128,30 +151,66 @@ function prepare() {
 export function startServer(models, data, port = PORT) {
   return new Promise((resolve, reject) => {
     const logPath = FIXTURE.root ? join(FIXTURE.root, "server.log") : null;
+    const serverEnvironment = Object.fromEntries(
+      Object.entries(process.env).filter(
+        ([key]) => !key.startsWith("NAYOSE_E2E_") && key !== "NAYOSE_MANUAL_DIR",
+      ),
+    );
     const proc = spawn(PYTHON, ["-m", "api.main"], {
       cwd: ROOT,
       env: {
-        ...process.env,
+        ...serverEnvironment,
         NAYOSE_MODELS_DIR: models,
         NAYOSE_DATA_DIR: data,
         NAYOSE_DASH_PORT: String(port),
         NAYOSE_DATA_ROOT: FIXTURE.root, // admin generate targets the isolated fixture
-        NAYOSE_MANUAL_DIR: join(FIXTURE.root, "manual"), // data entry lives in the fixture
-        NAYOSE_WARM_EMBED: "1", // warm the engine at boot: deterministic cold-start cost
+        NAYOSE_OPERATIONAL_DB: join(FIXTURE.root, "operational.sqlite3"),
+        NAYOSE_WARM_EMBED: process.env.NAYOSE_E2E_WARM_EMBED ?? "0",
+        NAYOSE_CPU_THREADS: process.env.NAYOSE_E2E_CPU_THREADS ?? "1",
+        NAYOSE_MODEL_THREADS: process.env.NAYOSE_E2E_MODEL_THREADS ?? "1",
+        NAYOSE_NATIVE_THREAD_CAP: process.env.NAYOSE_E2E_THREAD_CAP ?? "1",
+        OMP_NUM_THREADS: process.env.NAYOSE_E2E_OMP_THREADS ?? "1",
+        OPENBLAS_NUM_THREADS: process.env.NAYOSE_E2E_OMP_THREADS ?? "1",
+        MKL_NUM_THREADS: process.env.NAYOSE_E2E_OMP_THREADS ?? "1",
+        VECLIB_MAXIMUM_THREADS: process.env.NAYOSE_E2E_OMP_THREADS ?? "1",
+        PYTHONPATH: [join(ROOT, "src"), process.env.PYTHONPATH].filter(Boolean).join(process.platform === "win32" ? ";" : ":"),
       },
       stdio: ["ignore", "ignore", "pipe"],
     });
     if (logPath) proc.stderr.pipe(createWriteStream(logPath, { flags: "a" }));
-    // the fixture server warms the 374k engine in lifespan (~2min) before readiness
+    let settled = false;
+    const fail = (error) => {
+      if (settled) return;
+      settled = true;
+      reject(error);
+    };
+    proc.once("error", error => fail(error));
+    proc.once("exit", (code, signal) => {
+      fail(new Error(`api server exited before readiness (code=${code}, signal=${signal ?? "none"})`));
+    });
+    // Warmup is opt-in because the browser contract does not depend on model
+    // warmup and native backends may fail before HTTP readiness.
     const deadline = Date.now() + 240000;
     const poll = async () => {
       try {
         const res = await fetch(`${BASE}/api/runs`);
-        if (res.ok) return resolve(proc);
+        if (res.ok) {
+          if (!settled) {
+            settled = true;
+            resolve(proc);
+          }
+          return;
+        }
       } catch {}
+      if (settled) return;
       if (Date.now() > deadline) {
         proc.kill();
-        return reject(new Error("api server did not become healthy; check the bundle fixture"));
+        if (FIXTURE.root) {
+          const artifacts = join(FIXTURE.root, "artifacts");
+          mkdirSync(artifacts, { recursive: true });
+          writeFileSync(join(artifacts, "startup-error.txt"), "API server did not become healthy\n");
+        }
+        return fail(new Error("api server did not become healthy; check the bundle fixture"));
       }
       setTimeout(poll, 250);
     };
@@ -162,7 +221,8 @@ export function startServer(models, data, port = PORT) {
 export const FIXTURE = ENABLED ? prepare() : { root: null, models: null, data: null };
 
 export async function launchBrowser() {
-  return chromium.launch();
+  const executablePath = process.env.NAYOSE_E2E_BROWSER_PATH;
+  return chromium.launch(executablePath ? { executablePath } : undefined);
 }
 
 async function waitBoot(page) {
@@ -183,8 +243,16 @@ export async function waitVisible(page, selector, timeout = 15000) {
   await page.waitForSelector(selector, { state: "visible", timeout });
 }
 
+export async function waitHidden(page, selector, timeout = 15000) {
+  await page.waitForSelector(selector, { state: "hidden", timeout });
+}
+
 export async function waitBodyText(page, needle, timeout = 15000) {
   await page.waitForFunction((text) => document.body.textContent.includes(text), needle, { timeout });
+}
+
+export async function waitBodyPattern(page, pattern, timeout = 15000) {
+  await page.waitForFunction((source) => new RegExp(source).test(document.body.textContent || ""), pattern.source, { timeout });
 }
 
 export async function waitAttribute(page, selector, attribute, value, timeout = 15000) {
@@ -223,6 +291,30 @@ export async function waitInputValue(page, selector, value, timeout = 15000) {
   await page.waitForFunction(
     ({ selector, value }) => document.querySelector(selector)?.value === value,
     { selector, value },
+    { timeout },
+  );
+}
+
+export async function waitChecked(page, selector, checked = true, timeout = 15000) {
+  await page.waitForFunction(
+    ({ selector, checked }) => document.querySelector(selector)?.checked === checked,
+    { selector, checked },
+    { timeout },
+  );
+}
+
+export async function waitUiSettled(page, timeout = 15000) {
+  await page.waitForFunction(
+    () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+    undefined,
+    { timeout },
+  );
+  await page.waitForFunction(
+    () => {
+      const view = document.querySelector("#view");
+      return Boolean(view) && view.getAttribute("aria-busy") !== "true" && !view.querySelector('[aria-busy="true"]') && !view.querySelector(".is-loading");
+    },
+    undefined,
     { timeout },
   );
 }
@@ -384,8 +476,15 @@ function writeBrowserMetrics(metricsPath) {
   renameSync(temporary, metricsPath);
 }
 
-// Default: remove the whole fixture; artifacts rescued to a stable path first.
+// The two E2E modules share one fixture; cleanup is deferred until both modules exit.
+let cleanupScheduled = false;
 export function cleanupFixture() {
+  if (!FIXTURE.root || cleanupScheduled) return;
+  cleanupScheduled = true;
+  process.once("exit", cleanupFixtureNow);
+}
+
+function cleanupFixtureNow() {
   if (!FIXTURE.root) return;
   const metricsPath = process.env.NAYOSE_E2E_METRICS;
   if (metricsPath) writeBrowserMetrics(metricsPath);

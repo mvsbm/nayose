@@ -6,6 +6,12 @@ import argparse
 from pathlib import Path
 
 from api.infrastructure.bundles.materialization import materialize_runtime_artifacts
+from api.infrastructure.runtime.resource_manager import (
+    ResourceManager,
+    plan_for_bundle,
+    resource_state_dir,
+)
+from api.infrastructure.runtime.workload_storage import bundle_demand
 from nayose.config import load_config
 
 
@@ -21,12 +27,23 @@ def main() -> int:
     args = parse_args()
     run = Path(args.run_dir).resolve()
     data = Path(args.data_dir).resolve()
-    materialize_runtime_artifacts(
+    config = load_config()
+    manager = ResourceManager(resource_state_dir(run))
+    plan = plan_for_bundle(
+        manager,
+        config,
         run,
-        data,
-        index_backend=args.index_backend,
-        config_snapshot=load_config(),
+        workload="materialization",
+        storage_demand=bundle_demand("materialization").demand,
     )
+    with manager.session(plan):
+        manager.configure(plan, config.performance)
+        materialize_runtime_artifacts(
+            run,
+            data,
+            index_backend=args.index_backend,
+            config_snapshot=config,
+        )
     print(f"materialized target-platform artifacts for {run}")
     return 0
 

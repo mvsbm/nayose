@@ -10,7 +10,7 @@ export async function fetchJson(path, init) {
     const timeout = setTimeout(() => controller.abort(), 20000);
     const headers = new Headers(init?.headers ?? {});
     try {
-        const token = localStorage.getItem("nayose.token");
+        const token = sessionStorage.getItem("nayose.token");
         if (token)
             headers.set("Authorization", `Bearer ${token}`);
     }
@@ -20,7 +20,10 @@ export async function fetchJson(path, init) {
         const response = await fetch(path, { ...init, headers, signal: controller.signal });
         if (!response.ok) {
             const detail = await response.json().catch(() => null);
-            throw new ApiError(typeof detail?.detail === "string" ? detail.detail : `HTTP ${response.status}`);
+            throw new ApiError(typeof detail?.detail === "string" ? detail.detail : `HTTP ${response.status}`, {
+                status: response.status,
+                requestId: response.headers.get("x-request-id") ?? undefined,
+            });
         }
         return await response.json();
     }

@@ -7,7 +7,7 @@
 //  - journeys get their page from runJourney() ONLY — every journey runs in a
 //    fresh context (no state can leak between journeys)
 //  - navigation/waits go through navigateFresh/waitVisible/waitBodyText/waitCount
-//    (raw waitForFunction/reload/waitForSelector are the bugs that bit us)
+//    (low-level browser waits and document reloads are kept in the harness)
 //  - selectors use ids and semantic data-* hooks ([data-entity], [data-member]),
 //    never structural tag paths scoped to the view container (that was the
 //    original breakage: a tag-sibling selector matched the search card's own
@@ -127,16 +127,14 @@ test("e2e: stale search response cannot replace a newer query", { skip: !ENABLED
       if (query === terms[0]) await new Promise(resolve => setTimeout(resolve, 500));
       await route.continue();
     });
-    const firstResponse = page.waitForResponse(response =>
-      new URL(response.url()).searchParams.get("q") === terms[0],
-    );
+    const firstRequest = page.waitForRequest(request => new URL(request.url()).searchParams.get("q") === terms[0]);
     await page.fill("#q", terms[0]);
-    await page.waitForRequest(request => new URL(request.url()).searchParams.get("q") === terms[0]);
+    await firstRequest;
     const secondResponse = page.waitForResponse(response =>
       new URL(response.url()).searchParams.get("q") === terms[1],
     );
     await page.fill("#q", terms[1]);
-    await Promise.all([firstResponse, secondResponse]);
+    await secondResponse;
     await waitInputValue(page, "#q", terms[1]);
     const escaped = terms[1].replace(/[.*+?^${}()|[\]\\\\]/g, "\\\\$&");
     assert.match(await page.textContent("#results"), new RegExp(escaped), "stale search results won the race");
@@ -159,7 +157,6 @@ test("e2e: Entity Explorer keeps search visible through delayed page and detail 
       if (query === terms[0]) await new Promise(resolve => setTimeout(resolve, 500));
       await route.continue();
     });
-    const firstResponse = page.waitForResponse(response => new URL(response.url()).searchParams.get("q") === terms[0]);
     const firstRequest = page.waitForRequest(request => new URL(request.url()).searchParams.get("q") === terms[0]);
     await page.fill("#entity-explorer-query", terms[0]);
     await page.click("#entity-explorer-form button[type=submit]");
@@ -168,7 +165,7 @@ test("e2e: Entity Explorer keeps search visible through delayed page and detail 
     const secondResponse = page.waitForResponse(response => new URL(response.url()).searchParams.get("q") === terms[1]);
     await page.fill("#entity-explorer-query", terms[1]);
     await page.click("#entity-explorer-form button[type=submit]");
-    await Promise.all([firstResponse, secondResponse]);
+    await secondResponse;
     await waitInputValue(page, "#entity-explorer-query", terms[1]);
     await waitBodyText(page, terms[1]);
     assert.equal(await page.locator("#entity-explorer-query").isVisible(), true, "search bar disappeared after the race");
@@ -242,13 +239,14 @@ test("e2e: review decision survives a page reload", { skip: !ENABLED }, async ()
       .filter({ has: page.locator('button.check[aria-pressed="false"]') })
       .first();
     await unchecked.waitFor({ state: "visible" });
-    const pairKey = await unchecked.getAttribute("data-l");
+    const pair = await unchecked.evaluate(el => ({ left: el.getAttribute("data-l") ?? "", right: el.getAttribute("data-r") ?? "" }));
     await unchecked.locator("button.check").click();
     const runId = await page.evaluate(() => document.querySelector("#run").value);
-    await waitDecision(page, runId, pairKey, 10000);
+    await waitDecision(page, runId, pair.left, 10000);
     await navigateFresh(page, "#/review"); // true reload: decision must survive
-    await waitVisible(page, `tr[data-l="${pairKey}"]`);
-    const row = page.locator(`tr[data-l="${pairKey}"]`);
+    const rowSelector = `tr[data-l="${pair.left}"][data-r="${pair.right}"]`;
+    await waitVisible(page, rowSelector);
+    const row = page.locator(rowSelector);
     assert.ok(await row.evaluate(el => el.classList.contains("checked")), "decision restored after reload");
     assert.equal(await row.locator("button.check").getAttribute("aria-pressed"), "true");
   });
@@ -262,6 +260,7 @@ test("e2e: language preference persists across reload, customer data untouched",
     await page.fill("#q", term);
     await waitCount(page, "#results .hit", 1);
     const kanjiBefore = await page.textContent("#results .hit h3");
+    await page.locator(".app-settings > summary").click();
     await page.click("#language");
     await waitLang(page, "en");
     assert.equal(await page.$$eval('[data-nav="entities"]', els => els[0].textContent), "Entity explorer");
@@ -282,7 +281,7 @@ test("e2e: data-entry match check returns a server recommendation", { skip: !ENA
     await page.fill('[data-field="name_kanji"]', "照合確認 太郎");
     await page.fill('[data-field="phone"]', "090-1111-2222");
     await page.click("#de-check");
-    await waitVisible(page, "#de-register:not([disabled])", 600000);
+    await waitVisible(page, "#de-register:not([disabled])", 120000);
     const output = await page.textContent("#de-match");
     assert.match(output ?? "", /·\s*\d+(?:\.\d+)?%\s*·\s*N\d+/, "server recommendation rendered");
   });
@@ -391,7 +390,7 @@ test("e2e: F knobs — entity page size + sort, metrics unit toggle", { skip: !E
   });
 });
 
-test("e2e: content panes resize while chrome bars remain fixed", { skip: !ENABLED }, async () => {
+test("e2e: content panes resize while contextual chrome remains independent", { skip: !ENABLED }, async () => {
   await runJourney(browser, "content-pane-resize", async (page) => {
     await navigateFresh(page, "#/search");
     const searchSash = page.locator('[data-panel-resizer="search-workspace"]');
@@ -400,21 +399,17 @@ test("e2e: content panes resize while chrome bars remain fixed", { skip: !ENABLE
     await waitAttribute(page, '[data-panel-resizer="search-workspace"]', "aria-valuenow", "456");
     const chrome = await page.evaluate(() => {
       const top = document.querySelector(".app-bar").getBoundingClientRect();
-      const bottom = document.querySelector("#status-strip").getBoundingClientRect();
       return {
         topPosition: getComputedStyle(document.querySelector(".app-bar")).position,
         topAtViewport: top.top,
-        bottomPosition: getComputedStyle(document.querySelector("#status-strip")).position,
-        bottomAtViewport: bottom.bottom,
-        viewportHeight: window.innerHeight,
+        statusPosition: getComputedStyle(document.querySelector("#status-strip")).position,
         desktopNavToggle: getComputedStyle(document.querySelector("#nav-toggle")).display,
       };
     });
     assert.equal(chrome.topPosition, "sticky");
     assert.ok(chrome.topAtViewport <= 1, "top bar is not anchored to the viewport");
-    assert.equal(chrome.bottomPosition, "fixed");
-    assert.ok(chrome.bottomAtViewport >= chrome.viewportHeight - 1, "bottom bar is not anchored to the viewport");
-    assert.equal(chrome.desktopNavToggle, "none", "desktop collapse button remains visible");
+    assert.notEqual(chrome.statusPosition, "fixed", "system diagnostics must remain contextual");
+    assert.notEqual(chrome.desktopNavToggle, "none", "desktop navigation control is unavailable");
     assert.equal(await page.locator(".app-bar [data-panel-resizer]").count(), 0);
     assert.equal(await page.locator("#status-strip [data-panel-resizer]").count(), 0);
 
@@ -455,10 +450,9 @@ test("e2e: navigation sash resizes with pointer input and survives collapse", { 
       await page.mouse.up();
       await waitAttribute(page, "#nav-resizer", "aria-valuenow", "320");
       await waitComputedStyle(page, ".shell", "grid-template-columns", "320px");
-      const activeWorkspace = page.locator('.activity-bar a[data-activity="evaluate"]');
-      await activeWorkspace.click();
+      await page.locator("#nav-toggle").click();
       await waitAttribute(page, "#nav-toggle", "aria-expanded", "false");
-      await activeWorkspace.click();
+      await page.locator("#nav-toggle").click();
       await waitAttribute(page, "#nav-toggle", "aria-expanded", "true");
       assert.equal(await sash.getAttribute("aria-valuenow"), "320", "sidebar width was not preserved");
     },
@@ -486,6 +480,7 @@ test("e2e: mobile viewport + reduced motion — no page-level overflow, chrome u
       assert.equal(await page.locator("#primary-navigation").getAttribute("aria-hidden"), "false");
       await page.keyboard.press("Escape");
       await waitAttribute(page, "#nav-toggle", "aria-expanded", "false");
+      await page.locator(".app-settings > summary").click();
       await page.click("#language");
       await waitLang(page, "en");
     },

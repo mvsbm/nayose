@@ -9,6 +9,7 @@ from collections.abc import Mapping
 import numpy as np
 import pandas as pd
 from rapidfuzz.fuzz import ratio
+from rapidfuzz.process import cpdist
 
 
 def _fuzzy(a: str, b: str) -> float:
@@ -112,7 +113,33 @@ def compute_pair_features_frame(
     left, right = left.reset_index(drop=True), right.reset_index(drop=True)
     if len(left) != len(right):
         raise ValueError("left and right frames must have equal lengths")
-    out = pd.DataFrame(index=np.arange(len(left)))
+    size = len(left)
+    if not size:
+        return pd.DataFrame(columns=PAIR_FEATURE_COLS)
+
+    left_values = {
+        column: left[column].to_numpy(dtype=object, copy=False)
+        for column in (
+            "n_party_type",
+            "n_name_strict",
+            "n_name_loose",
+            "n_name_signature",
+            "n_kana",
+            "n_romaji",
+            "n_dob",
+            "n_postal",
+            "n_address",
+            "n_phone",
+            "n_phone_suffix8",
+            "n_email",
+            "n_email_local",
+            "n_email_domain",
+        )
+    }
+    right_values = {
+        column: right[column].to_numpy(dtype=object, copy=False) for column in left_values
+    }
+    output: dict[str, np.ndarray] = {}
 
     exact_specs = {
         "type_exact": "n_party_type",
@@ -128,29 +155,38 @@ def compute_pair_features_frame(
         "email_exact": "n_email",
     }
     for feature, column in exact_specs.items():
-        out[feature] = (
-            left[column].ne("") & right[column].ne("") & left[column].eq(right[column])
-        ).astype(np.float32)
-
-    def fuzzy_array(left_values: pd.Series, right_values: pd.Series) -> np.ndarray:
-        return np.fromiter(
-            (_fuzzy(a, b) for a, b in zip(left_values, right_values, strict=True)),
-            dtype=np.float32,
-            count=len(left_values),
+        populated = (left_values[column] != "") & (right_values[column] != "")
+        output[feature] = (populated & (left_values[column] == right_values[column])).astype(
+            np.float32
         )
 
-    out["name_similarity"] = np.maximum(
-        fuzzy_array(left.n_name_loose, right.n_name_loose),
-        fuzzy_array(left.n_name_signature, right.n_name_signature),
+    def fuzzy_array(column: str) -> np.ndarray:
+        values = np.asarray(
+            cpdist(
+                left_values[column],
+                right_values[column],
+                scorer=ratio,
+                score_multiplier=0.01,
+                dtype=np.float32,
+                workers=1,
+            ),
+            dtype=np.float32,
+        )
+        populated = (left_values[column] != "") & (right_values[column] != "")
+        return np.where(populated, values, 0.0).astype(np.float32, copy=False)
+
+    output["name_similarity"] = np.maximum(
+        fuzzy_array("n_name_loose"), fuzzy_array("n_name_signature")
     )
-    out["kana_similarity"] = fuzzy_array(left.n_kana, right.n_kana)
-    out["romaji_similarity"] = fuzzy_array(left.n_romaji, right.n_romaji)
-    out["address_similarity"] = fuzzy_array(left.n_address, right.n_address)
-    out["email_local_similarity"] = fuzzy_array(left.n_email_local, right.n_email_local)
-    out["email_domain_exact"] = (
-        left.n_email_domain.ne("")
-        & right.n_email_domain.ne("")
-        & left.n_email_domain.eq(right.n_email_domain)
+    output["kana_similarity"] = fuzzy_array("n_kana")
+    output["romaji_similarity"] = fuzzy_array("n_romaji")
+    output["address_similarity"] = fuzzy_array("n_address")
+    output["email_local_similarity"] = fuzzy_array("n_email_local")
+    domain_populated = (left_values["n_email_domain"] != "") & (
+        right_values["n_email_domain"] != ""
+    )
+    output["email_domain_exact"] = (
+        domain_populated & (left_values["n_email_domain"] == right_values["n_email_domain"])
     ).astype(np.float32)
 
     frequency_maps = frequency_maps or {}
@@ -160,12 +196,15 @@ def compute_pair_features_frame(
         ("phone_frequency_weight", "n_phone"),
         ("email_frequency_weight", "n_email"),
     ):
-        frequencies = (
-            left[column].map(frequency_maps.get(column, {}).get).fillna(0).to_numpy(np.float32)
+        frequencies: np.ndarray = np.fromiter(
+            (frequency_maps.get(column, {}).get(value, 0) for value in left_values[column]),
+            dtype=np.float32,
+            count=size,
         )
-        out[feature] = out[column.removeprefix("n_") + "_exact"] / np.log2(frequencies + 2.0)
+        exact = output[column.removeprefix("n_") + "_exact"]
+        output[feature] = exact / np.log2(frequencies + 2.0)
 
-    agreement_columns = [
+    agreement_columns = (
         "name_loose_exact",
         "kana_exact",
         "romaji_exact",
@@ -174,27 +213,23 @@ def compute_pair_features_frame(
         "address_exact",
         "phone_exact",
         "email_exact",
-    ]
-    out["agreement_count"] = out[agreement_columns].sum(axis=1)
-    evidence = pd.DataFrame(
-        {
-            "name": np.maximum.reduce(
-                [
-                    out.name_similarity.to_numpy(),
-                    out.kana_similarity.to_numpy(),
-                    out.romaji_similarity.to_numpy(),
-                ]
-            )
-            >= 0.82,
-            "birth": out.dob_exact.eq(1),
-            "address": np.maximum(out.address_similarity, out.postal_exact) >= 0.82,
-            "phone": np.maximum(out.phone_exact, out.phone_suffix_exact) >= 1,
-            "email": np.maximum(out.email_exact, out.email_local_similarity) >= 0.90,
-        }
     )
-    out["evidence_family_count"] = evidence.sum(axis=1)
+    output["agreement_count"] = np.sum(
+        np.stack([output[column] for column in agreement_columns]), axis=0, dtype=np.float32
+    )
+    best_name = np.maximum.reduce(
+        [output["name_similarity"], output["kana_similarity"], output["romaji_similarity"]]
+    )
+    evidence_count = (
+        (best_name >= 0.82).astype(np.float32)
+        + output["dob_exact"]
+        + (np.maximum(output["address_similarity"], output["postal_exact"]) >= 0.82)
+        + (np.maximum(output["phone_exact"], output["phone_suffix_exact"]) >= 1)
+        + (np.maximum(output["email_exact"], output["email_local_similarity"]) >= 0.90)
+    )
+    output["evidence_family_count"] = evidence_count.astype(np.float32, copy=False)
 
-    identity_columns = [
+    identity_columns = (
         "n_name_loose",
         "n_kana",
         "n_romaji",
@@ -203,53 +238,48 @@ def compute_pair_features_frame(
         "n_address",
         "n_phone",
         "n_email",
-    ]
-    both_populated = sum(
-        (left[column].ne("") & right[column].ne("")).astype(int) for column in identity_columns
     )
-    out["both_populated_count"] = both_populated
-    out["missing_fraction"] = 1.0 - both_populated / len(identity_columns)
-    out["type_conflict"] = (
-        left.n_party_type.ne("")
-        & right.n_party_type.ne("")
-        & left.n_party_type.ne(right.n_party_type)
-    ).astype(np.float32)
-    out["dob_conflict"] = (
-        left.n_dob.ne("") & right.n_dob.ne("") & left.n_dob.ne(right.n_dob)
-    ).astype(np.float32)
-    out["postal_conflict"] = (
-        left.n_postal.ne("") & right.n_postal.ne("") & left.n_postal.ne(right.n_postal)
-    ).astype(np.float32)
-    best_name = np.maximum.reduce(
-        [
-            out.name_similarity.to_numpy(),
-            out.kana_similarity.to_numpy(),
-            out.romaji_similarity.to_numpy(),
-        ]
+    both_populated: np.ndarray = np.zeros(size, dtype=np.float32)
+    for column in identity_columns:
+        both_populated += ((left_values[column] != "") & (right_values[column] != "")).astype(
+            np.float32
+        )
+    output["both_populated_count"] = both_populated
+    output["missing_fraction"] = 1.0 - both_populated / len(identity_columns)
+    for feature, column in (
+        ("type_conflict", "n_party_type"),
+        ("dob_conflict", "n_dob"),
+        ("postal_conflict", "n_postal"),
+    ):
+        populated = (left_values[column] != "") & (right_values[column] != "")
+        output[feature] = (populated & (left_values[column] != right_values[column])).astype(
+            np.float32
+        )
+    output["name_dob_evidence"] = best_name * output["dob_exact"]
+    output["name_address_evidence"] = best_name * np.maximum(
+        output["address_similarity"], output["postal_exact"]
     )
-    out["name_dob_evidence"] = best_name * out.dob_exact
-    out["name_address_evidence"] = best_name * np.maximum(out.address_similarity, out.postal_exact)
     for column in ("sparse_score", "dense_score", "exact_count", "reranker_score"):
-        out[column] = (
+        output[column] = (
             retrieval[column].to_numpy(np.float32)
             if retrieval is not None and column in retrieval
-            else 0.0
+            else np.zeros(size, dtype=np.float32)
         )
     if retrieval is not None and "channel_count" in retrieval:
-        out["channel_count"] = retrieval.channel_count.to_numpy(np.float32)
+        output["channel_count"] = retrieval["channel_count"].to_numpy(np.float32)
     else:
-        out["channel_count"] = (
-            out.exact_count.gt(0).astype(np.float32)
-            + out.sparse_score.gt(0).astype(np.float32)
-            + out.dense_score.gt(0).astype(np.float32)
+        output["channel_count"] = (
+            (output["exact_count"] > 0).astype(np.float32)
+            + (output["sparse_score"] > 0).astype(np.float32)
+            + (output["dense_score"] > 0).astype(np.float32)
         )
     if retrieval is not None and "retrieval_score" in retrieval:
-        out["retrieval_score"] = retrieval.retrieval_score.to_numpy(np.float32)
+        output["retrieval_score"] = retrieval["retrieval_score"].to_numpy(np.float32)
     else:
-        out["retrieval_score"] = np.maximum(out.sparse_score, out.dense_score) + (
-            0.08 * out.exact_count.clip(upper=3)
-        )
-    return out[PAIR_FEATURE_COLS]
+        output["retrieval_score"] = np.maximum(
+            output["sparse_score"], output["dense_score"]
+        ) + 0.08 * np.minimum(output["exact_count"], 3)
+    return pd.DataFrame(output, columns=PAIR_FEATURE_COLS)
 
 
 def logit_clip(probability: np.ndarray, precision: float = 1e-6) -> np.ndarray:

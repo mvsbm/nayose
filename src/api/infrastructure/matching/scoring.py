@@ -65,6 +65,117 @@ class CandidateAggregator:
             canonical["name_kanji"].astype(str).to_numpy(copy=False),
             index=canonical["nayose_id"].astype(str).to_numpy(copy=False),
         )
+        self._canonical_sizes = (
+            canonical.set_index("nayose_id")["record_count"]
+            if "record_count" in canonical
+            else pd.Series(dtype=np.int64)
+        )
+
+    def build_decision_candidates(
+        self,
+        raw: pd.DataFrame,
+        features: pd.DataFrame,
+        scores: np.ndarray,
+        retrieval: pd.DataFrame,
+    ) -> list[dict[str, Any]]:
+        """Build only policy inputs when evidence JSON is not requested."""
+        if raw.empty:
+            return []
+        record_ids = raw["record_id"].astype(str).to_numpy()
+        entity_ids = np.asarray(
+            [self.engine._record_to_nayose.get(record_id, "") for record_id in record_ids],
+            dtype=object,
+        )
+        groups: dict[str, list[int]] = {}
+        for position, entity_id in enumerate(entity_ids):
+            if entity_id:
+                groups.setdefault(str(entity_id), []).append(position)
+        feature_values = {
+            column: features[column].to_numpy(dtype=np.float64, copy=False)
+            for column in features.columns
+        }
+        retrieval_values = {
+            column: retrieval[column].to_numpy(dtype=np.float64, copy=False)
+            for column in retrieval.columns
+            if column in {"dense_score", "retrieval_score", "channel_count"}
+        }
+        agencies = (
+            raw["agency_id"].astype(str).to_numpy()
+            if "agency_id" in raw
+            else np.full(len(raw), "", dtype=object)
+        )
+        pair_scores = np.asarray(scores, dtype=np.float64)
+        name_exact = np.maximum(
+            feature_values["name_strict_exact"], feature_values["name_loose_exact"]
+        )
+        stable_exact = np.maximum(feature_values["dob_exact"], feature_values["email_exact"])
+        dense_scores = retrieval_values.get("dense_score", np.zeros(len(raw)))
+        candidates: list[dict[str, Any]] = []
+        for entity_id, positions in groups.items():
+            ordered = sorted(positions, key=lambda pos: (-float(pair_scores[pos]), record_ids[pos]))
+            top: np.ndarray = np.asarray(ordered[:3], dtype=np.int64)
+            candidate = {
+                "nayose_id": entity_id,
+                "name": str(self._canonical_names.get(entity_id, "")),
+                "probability": float(pair_scores[ordered].mean()),
+                "support": len(ordered),
+                "identity_anchor_count": int(stable_exact[top].max(initial=0.0)),
+                "identity_anchor_safe": int((name_exact[top] * stable_exact[top] > 0).any()),
+                "reference_density": len(ordered) / max(len(raw), 1),
+                "max_dense_similarity": float(dense_scores[ordered].max(initial=0.0)),
+                "max_pair_probability": float(pair_scores[top[0]]),
+                "second_pair_probability": float(pair_scores[top[1]]) if len(top) > 1 else 0.0,
+                "mean_top3_probability": float(pair_scores[top].mean()),
+                "record_score_margin": float(pair_scores[top[0]] - pair_scores[top[1]])
+                if len(top) > 1
+                else float(pair_scores[top[0]]),
+                "support_record_count": len(ordered),
+                "support_agency_count": len(set(agencies[ordered])),
+                "candidate_entity_size": int(self._canonical_sizes.get(entity_id, len(ordered))),
+                "max_name_similarity": float(feature_values["name_similarity"][ordered].max()),
+                "max_kana_similarity": float(feature_values["kana_similarity"][ordered].max()),
+                "max_romaji_similarity": float(feature_values["romaji_similarity"][ordered].max()),
+                "max_address_similarity": float(
+                    feature_values["address_similarity"][ordered].max()
+                ),
+                "any_name_exact": float(name_exact[ordered].max()),
+                "any_dob_exact": float(feature_values["dob_exact"][ordered].max()),
+                "any_phone_exact": float(feature_values["phone_exact"][ordered].max()),
+                "any_email_exact": float(feature_values["email_exact"][ordered].max()),
+                "any_postal_exact": float(feature_values["postal_exact"][ordered].max()),
+                "any_identity_anchor": float(
+                    (name_exact[ordered] * stable_exact[ordered] > 0).max()
+                ),
+                "max_evidence_family_count": float(
+                    feature_values["evidence_family_count"][top].max()
+                ),
+                "max_retrieval_score": float(
+                    retrieval_values.get("retrieval_score", np.zeros(len(raw)))[ordered].max()
+                ),
+                "max_channel_count": float(
+                    retrieval_values.get("channel_count", np.zeros(len(raw)))[ordered].max()
+                ),
+                "hard_conflict_count": int(
+                    (
+                        (feature_values["type_conflict"][top] > 0)
+                        | (feature_values["dob_conflict"][top] > 0)
+                    ).sum()
+                ),
+                "review_or_auto_record_count": int(
+                    (pair_scores[ordered] >= self.engine.config.entity_review_threshold).sum()
+                ),
+                "best_record_id": record_ids[top[0]],
+                "best_record_probability": float(pair_scores[top[0]]),
+                "best_exact_blocks": str(retrieval.iloc[top[0]].get("exact_blocks", "")),
+            }
+            candidates.append(candidate)
+        if hasattr(self.engine, "score_entity_candidates"):
+            entity_scores = self.engine.score_entity_candidates(candidates)
+            for candidate, score in zip(candidates, entity_scores, strict=True):
+                candidate["probability"] = float(score)
+        return sorted(
+            candidates, key=lambda candidate: (-candidate["probability"], candidate["nayose_id"])
+        )
 
     def build(
         self,
@@ -73,6 +184,7 @@ class CandidateAggregator:
         features: pd.DataFrame,
         scores: np.ndarray,
         retrieval: pd.DataFrame,
+        normalized: pd.DataFrame | None = None,
     ) -> list[dict[str, Any]]:
         engine = self.engine
         groups: dict[str, list[dict[str, Any]]] = {}
@@ -87,7 +199,13 @@ class CandidateAggregator:
                     {
                         "record": visible_record(row),
                         "score": float(scores[i]),
-                        "comparisons": compare_fields(record, row),
+                        "comparisons": compare_fields(
+                            record,
+                            row,
+                            normalized_right=(
+                                normalized.iloc[i].to_dict() if normalized is not None else None
+                            ),
+                        ),
                         "features": {k: float(v) for k, v in features.iloc[i].items()},
                         "retrieval_edges": self._retrieval_edges(row, entity_id, retrieval_row),
                         "retrieval": {
@@ -117,12 +235,6 @@ class CandidateAggregator:
                         },
                     }
                 )
-        canonical = engine._canonical
-        canonical_sizes = (
-            canonical.set_index("nayose_id")["record_count"]
-            if "record_count" in canonical
-            else pd.Series(dtype=np.int64)
-        )
         candidates: list[dict[str, Any]] = []
         for entity_id, evidence in groups.items():
             evidence.sort(key=lambda e: (-e["score"], e["record"]["record_id"]))
@@ -175,7 +287,7 @@ class CandidateAggregator:
                 "support_agency_count": len(
                     {item["record"].get("agency_id", "") for item in evidence}
                 ),
-                "candidate_entity_size": int(canonical_sizes.get(entity_id, len(evidence))),
+                "candidate_entity_size": int(self._canonical_sizes.get(entity_id, len(evidence))),
                 "max_name_similarity": max(
                     float(item["features"].get("name_similarity", 0.0)) for item in evidence
                 ),

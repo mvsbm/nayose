@@ -481,6 +481,42 @@ def test_pair_feature_agreement_missing_and_conflict():
     assert features["retrieval_score"][0] == pytest.approx(0.8 + 0.08 * 3)
 
 
+def test_pair_fuzzy_features_preserve_missing_value_semantics():
+    from api.domain.features import _fuzzy, compute_pair_features_frame
+
+    left = pd.DataFrame(
+        {
+            "n_party_type": ["person", "person", "person"],
+            "n_name_strict": ["sato", "", "tanaka"],
+            "n_name_loose": ["sato", "", "tanaka"],
+            "n_name_signature": ["aost", "", "aaknt"],
+            "n_kana": ["さとう", "", "たなか"],
+            "n_romaji": ["sato", "", "tanaka"],
+            "n_dob": ["", "", ""],
+            "n_postal": ["", "", ""],
+            "n_address": ["", "", ""],
+            "n_phone": ["", "", ""],
+            "n_phone_suffix8": ["", "", ""],
+            "n_email": ["", "", ""],
+            "n_email_local": ["", "", ""],
+            "n_email_domain": ["", "", ""],
+        }
+    )
+    right = left.copy()
+    right.loc[0, "n_name_loose"] = "satoo"
+    right.loc[2, "n_name_loose"] = "suzuki"
+
+    values = compute_pair_features_frame(left, right)
+
+    assert values.name_similarity.iloc[0] == pytest.approx(
+        max(_fuzzy("sato", "satoo"), _fuzzy("aost", "aost"))
+    )
+    assert values.name_similarity.iloc[1] == 0.0
+    assert values.name_similarity.iloc[2] == pytest.approx(
+        max(_fuzzy("tanaka", "suzuki"), _fuzzy("aaknt", "aaknt"))
+    )
+
+
 def test_entity_search_ranks_by_embedding_similarity():
     from api.infrastructure.retrieval.entity_search import EntitySearch
 
@@ -680,6 +716,55 @@ def test_matching_job_status_survives_service_restart(tmp_path):
 
     assert status["stage"] == "complete"
     assert status["result"]["action"] == "INSUFFICIENT_INPUT"
+
+
+def test_matching_persistence_conflict_retries_with_current_version(tmp_path, monkeypatch):
+    from api.application.matching import RecommendationService
+    from api.infrastructure.persistence.job_store import JobConflict
+
+    service = RecommendationService(
+        SimpleNamespace(resolve=lambda _run_id: tmp_path),
+        tmp_path,
+        loader=lambda *_: None,
+    )
+    try:
+        job = service.start("run", {})
+        stored = service.jobs._jobs[job["id"]]
+        original_save = service.jobs._job_store.save
+        calls = 0
+
+        def save(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise JobConflict("job state changed")
+            return original_save(*args, **kwargs)
+
+        monkeypatch.setattr(service.jobs._job_store, "save", save)
+        service.jobs._persist(stored)
+        assert calls == 2
+    finally:
+        service.close()
+
+
+def test_matching_heartbeat_persistence_conflict_is_recoverable(tmp_path, monkeypatch):
+    from api.application.matching import RecommendationService
+    from api.infrastructure.persistence.job_store import JobConflict
+
+    service = RecommendationService(
+        SimpleNamespace(resolve=lambda _run_id: tmp_path),
+        tmp_path,
+        loader=lambda *_: None,
+    )
+    try:
+
+        def conflict(_job):
+            raise JobConflict("job state changed")
+
+        monkeypatch.setattr(service.jobs, "_persist", conflict)
+        assert service.jobs._persist_heartbeat("job", {"id": "job", "_version": 1}) is False
+    finally:
+        service.close()
 
 
 def test_matching_job_cancellation_is_persisted(tmp_path):

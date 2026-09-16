@@ -29,7 +29,7 @@ export class CommandRegistry {
 }
 export function createWorkbenchCommands(routes) {
     const navigation = routes
-        .filter((route) => route.name !== "entity" && route.name !== "compare")
+        .filter((route) => route.menu)
         .map((route) => ({
         id: `navigate.${route.name}`,
         labelKey: route.titleKey,
@@ -38,11 +38,9 @@ export function createWorkbenchCommands(routes) {
             context.closePalette();
             context.navigate(route.path);
         },
-        when: route.name === "admin"
-            ? (context) => context.capabilities.admin
-            : route.name === "data-entry"
-                ? (context) => context.capabilities.dataEntry
-                : undefined,
+        when: "capability" in route
+            ? (context) => context.capabilities[route.capability]
+            : undefined,
     }));
     return [
         ...navigation,

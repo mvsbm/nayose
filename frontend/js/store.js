@@ -28,7 +28,14 @@ export class Store {
     thresholdOverride = null;
     decisionRevision = 0;
     decisionConflict = false;
+    decisionSaveError = "";
+    decisionLoadError = "";
     runs = [];
+    manualDraft = {};
+    manualMatchRecord = null;
+    manualMatchSummary = "";
+    manualImportRows = [];
+    manualImportReady = false;
     listeners = new Map();
     history = [];
     future = [];
@@ -51,6 +58,8 @@ export class Store {
     setDecisionSnapshot(snapshot, notify = true) {
         this.decisionRevision = snapshot.revision;
         this.decisionConflict = false;
+        this.decisionSaveError = "";
+        this.decisionLoadError = "";
         this.checked = new Set(snapshot.items.map((item) => checkedKey(this.run, item.left, item.right)));
         if (notify) {
             this.emit("checked");
@@ -60,6 +69,19 @@ export class Store {
     setDecisionConflict(conflict) {
         this.decisionConflict = conflict;
         this.emit("decisionConflict");
+    }
+    setDecisionSaveError(message) {
+        this.decisionSaveError = message;
+        this.emit("decisionSaveError");
+    }
+    retryDecisionSave() {
+        this.decisionSaveError = "";
+        this.emit("decisionSaveError");
+        this.emit("checked");
+    }
+    setDecisionLoadError(message) {
+        this.decisionLoadError = message;
+        this.emit("decisionLoadError");
     }
     setDecisionRevision(revision) {
         this.decisionRevision = revision;
@@ -81,6 +103,8 @@ export class Store {
             this.thresholdOverride = null;
             this.decisionRevision = 0;
             this.decisionConflict = false;
+            this.decisionSaveError = "";
+            this.decisionLoadError = "";
         }
         this.run = id;
         this.emit("run");
@@ -151,11 +175,12 @@ export class Store {
         this.history.push(cmd);
         return true;
     }
-    clearRunState() {
-        this.checked.clear();
+    clearRunState(notify = true) {
+        this.checked = new Set();
         this.history = [];
         this.future = [];
-        this.emit("checked");
+        if (notify)
+            this.emit("checked");
     }
     read(key) {
         try {

@@ -17,7 +17,7 @@ COPY frontend/ frontend/
 RUN python -m venv /opt/venv \
     && /opt/venv/bin/pip install -U pip "uv==0.9.27" \
     && UV_PROJECT_ENVIRONMENT=/opt/venv /opt/venv/bin/uv sync --frozen --no-dev --no-editable \
-        --extra matcher --extra performance --extra serve
+        --extra matcher --extra neural --extra performance --extra serve
 
 # ---- runtime: slim, non-root, drop privileges via su-exec ----
 FROM python:3.13-slim AS runtime
@@ -39,7 +39,7 @@ COPY --from=builder /src/pyproject.toml ./
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 # writable runtime dirs — volumes are mounted at runtime
-RUN mkdir -p /app/data /app/models && chown -R nayose:nayose /app
+RUN mkdir -p /app/data /app/models /app/runtime && chown -R nayose:nayose /app
 ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["python", "-m", "api.main"]
 EXPOSE 8000

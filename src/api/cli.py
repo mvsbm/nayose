@@ -16,12 +16,15 @@ Families:
   release     Validate or publish a release
   audit       Run repository, data, and CI quality checks
   benchmark   Measure runtime and process resources
+  resource    Inspect host capacity for bounded workloads
+  storage     Inspect and collect durable artifact storage
 
 Examples:
   nayose data generate --profile smoke
   nayose model train --data-dir data/current --models-dir models --seed 42
   nayose audit repo
   nayose benchmark runtime --iterations 20
+  nayose resource plan --path /tmp --workload e2e --scratch-bytes 536870912
 """
 
 _FAMILY_USAGE = {
@@ -30,6 +33,8 @@ _FAMILY_USAGE = {
     "release": "Usage: nayose release {status,validate,promote} [options]",
     "audit": "Use: nayose audit --help",
     "benchmark": "Use: nayose benchmark --help",
+    "resource": "Usage: nayose resource plan [options]",
+    "storage": "Usage: nayose storage {inspect,explain,gc} [options]",
 }
 
 _ROUTES = {
@@ -41,6 +46,10 @@ _ROUTES = {
     ("release", "promote"): ("api.commands.release", True),
     ("audit",): ("api.commands.quality", True),
     ("benchmark",): ("api.commands.benchmark", True),
+    ("resource", "plan"): ("api.commands.resources", False),
+    ("storage", "inspect"): ("api.commands.storage", True),
+    ("storage", "explain"): ("api.commands.storage", True),
+    ("storage", "gc"): ("api.commands.storage", True),
 }
 
 

@@ -42,6 +42,7 @@ from .config_views import (
     _FALSE_VALUES,
     _PIPELINE_MODEL_FAMILY,
     _TRUE_VALUES,
+    EMBEDDING_BACKENDS,
     EMBEDDING_DEFAULTS,
     F2LLM_330M_MODEL_ID,
     F2LLM_MPS_BATCH_SIZE,
@@ -54,6 +55,7 @@ from .config_views import (
     REPO_ROOT,
     RETRIEVAL_DEFAULTS,
     SERVING_DEFAULTS,
+    STORAGE_DEFAULTS,
     SUPPORTED_MODEL_FAMILIES,
     TOOLING_DEFAULTS,
     ConfigurationError,
@@ -63,6 +65,7 @@ from .config_views import (
     ReleaseConfig,
     RetrievalConfig,
     RuntimeConfig,
+    StorageConfig,
     ToolingConfig,
     default_data_dir,
     repository_root,
@@ -85,6 +88,7 @@ __all__ = [
     "DEFAULT_STALE_RATE",
     "DIFFICULTY",
     "EMAIL_DOMAINS",
+    "EMBEDDING_BACKENDS",
     "EMBEDDING_DEFAULTS",
     "EmbeddingConfig",
     "EVENT_NAMES",
@@ -110,6 +114,7 @@ __all__ = [
     "REPO_ROOT",
     "RETRIEVAL_DEFAULTS",
     "RuntimeConfig",
+    "StorageConfig",
     "SUPPORTED_MODEL_FAMILIES",
     "STALE_EVENT_NAMES",
     "SyntheticConfig",
@@ -145,6 +150,7 @@ def _validate_document(document: Mapping[str, Any]) -> None:
         "embedding",
         "performance",
         "retrieval",
+        "storage",
         "inference",
         "training",
         "release",
@@ -170,13 +176,16 @@ def _validate_document(document: Mapping[str, Any]) -> None:
         },
         "embedding": {
             "model_id",
+            "backend",
             "device",
             "batch_size",
             "process_workers",
             "torch_dtype",
             "revision",
+            "optimization",
         },
         "performance": {"process_workers", "cpu_threads", "model_threads", "native_thread_cap"},
+        "storage": {"reserve_ratio", "reserve_minimum_bytes", "workspace_stale_seconds"},
         "retrieval": {
             "use_dense",
             "dense_views",
@@ -251,6 +260,16 @@ def _validate_document(document: Mapping[str, Any]) -> None:
         if not isinstance(section, dict):
             raise ConfigurationError(f"configuration section [{name}] must be a table")
         _assert_keys(section, allowed, name)
+    embedding_optimization = document["embedding"].get("optimization")
+    if not isinstance(embedding_optimization, dict):
+        raise ConfigurationError("[embedding.optimization] must be a table")
+    _assert_keys(
+        embedding_optimization,
+        {"max_length", "padding_strategy"},
+        "embedding.optimization",
+    )
+    if document["embedding"].get("backend") not in EMBEDDING_BACKENDS:
+        raise ConfigurationError(f"embedding backend must be one of {EMBEDDING_BACKENDS}")
     model_specs = document["training"].get("model_specs")
     if not isinstance(model_specs, dict):
         raise ConfigurationError("[training.model_specs] must be a table")
@@ -397,6 +416,7 @@ class ConfigSnapshot:
     performance: PerformanceConfig
     retrieval: RetrievalConfig
     inference: InferenceConfig
+    storage: StorageConfig
     training: TrainingConfig
     generation: SyntheticConfig
     sources: DataSources
@@ -407,8 +427,9 @@ class ConfigSnapshot:
     @property
     def redacted(self) -> dict[str, Any]:
         value = to_plain(self)
-        if value["runtime"].get("api_token"):
-            value["runtime"]["api_token"] = "<redacted>"
+        for token_name in ("api_token", "review_token", "admin_token"):
+            if value["runtime"].get(token_name):
+                value["runtime"][token_name] = "<redacted>"
         return value
 
     @property
@@ -431,6 +452,8 @@ KNOWN_ENV_VARS = frozenset(
         "NAYOSE_BIND_HOST",
         "NAYOSE_DASH_PORT",
         "NAYOSE_API_TOKEN",
+        "NAYOSE_REVIEW_TOKEN",
+        "NAYOSE_ADMIN_TOKEN",
         "NAYOSE_AUTH_MODE",
         "NAYOSE_AUTH_SUBJECT_HEADER",
         "NAYOSE_AUTH_SCOPES_HEADER",
@@ -485,11 +508,27 @@ KNOWN_ENV_VARS = frozenset(
         "NAYOSE_PROCESS_WORKERS",
         "NAYOSE_CPU_THREADS",
         "NAYOSE_MODEL_THREADS",
+        "NAYOSE_STORAGE_RESERVE_RATIO",
+        "NAYOSE_STORAGE_RESERVE_MINIMUM_BYTES",
+        "NAYOSE_STORAGE_WORKSPACE_STALE_SECONDS",
         "WEB_CONCURRENCY",
         "NAYOSE_UI",
         "NAYOSE_METRICS_DIR",
         "NAYOSE_ARCHITECTURE_LEDGER",
         "NAYOSE_E2E",
+        "NAYOSE_E2E_BROWSER_PATH",
+        "NAYOSE_E2E_CPU_THREADS",
+        "NAYOSE_E2E_DATA",
+        "NAYOSE_E2E_KEEP",
+        "NAYOSE_E2E_METRICS",
+        "NAYOSE_E2E_MODELS",
+        "NAYOSE_E2E_MODEL_THREADS",
+        "NAYOSE_E2E_OMP_THREADS",
+        "NAYOSE_E2E_PORT",
+        "NAYOSE_E2E_STORAGE_BUDGET",
+        "NAYOSE_E2E_THREAD_CAP",
+        "NAYOSE_E2E_WARM_EMBED",
+        "NAYOSE_MACOS_RUNTIME_ALIGNED",
         "NAYOSE_OPERATIONAL_DB",
         "NAYOSE_SEED",
         "NAYOSE_PROFILE",
@@ -528,6 +567,8 @@ def _runtime_from_env(env: Mapping[str, str]) -> RuntimeConfig:
         bind_host=host,
         port=port,
         api_token=env.get("NAYOSE_API_TOKEN", "").strip(),
+        review_token=env.get("NAYOSE_REVIEW_TOKEN", "").strip(),
+        admin_token=env.get("NAYOSE_ADMIN_TOKEN", "").strip(),
         auth_mode=_env_text(env, "NAYOSE_AUTH_MODE", str(SERVING_DEFAULTS["auth_mode"])).casefold(),
         trusted_auth_subject_header=_env_text(
             env, "NAYOSE_AUTH_SUBJECT_HEADER", str(SERVING_DEFAULTS["trusted_auth_subject_header"])
@@ -548,15 +589,17 @@ def _runtime_from_env(env: Mapping[str, str]) -> RuntimeConfig:
 
 
 def _embedding_from_env(env: Mapping[str, str]) -> EmbeddingConfig:
+    optimization = EMBEDDING_DEFAULTS["optimization"]
     return EmbeddingConfig(
         model_id=_env_text(env, "NAYOSE_EMBEDDING_MODEL", str(EMBEDDING_DEFAULTS["model_id"])),
+        backend=str(EMBEDDING_DEFAULTS["backend"]),
         device=_env_text(env, "NAYOSE_DEVICE", str(EMBEDDING_DEFAULTS["device"])),
-        batch_size=_env_int(env, "NAYOSE_NEURAL_BATCH", int(EMBEDDING_DEFAULTS["batch_size"]), 1),
-        process_workers=_env_int(
-            env, "NAYOSE_PROCESS_WORKERS", int(EMBEDDING_DEFAULTS["process_workers"]), 1
-        ),
+        batch_size=int(EMBEDDING_DEFAULTS["batch_size"]),
+        process_workers=int(EMBEDDING_DEFAULTS["process_workers"]),
         torch_dtype=str(EMBEDDING_DEFAULTS["torch_dtype"]),
         revision=env.get("NAYOSE_EMBEDDING_REVISION", str(EMBEDDING_DEFAULTS["revision"])).strip(),
+        max_length=int(optimization["max_length"]),
+        padding_strategy=str(optimization["padding_strategy"]),
     )
 
 
@@ -574,6 +617,33 @@ def _performance_from_env(env: Mapping[str, str]) -> PerformanceConfig:
         ),
         native_thread_cap=_env_optional_int(
             env, "NAYOSE_NATIVE_THREAD_CAP", int(PERFORMANCE_DEFAULTS["native_thread_cap"])
+        ),
+    )
+
+
+def performance_from_environment(
+    environ: Mapping[str, str] | None = None,
+) -> PerformanceConfig:
+    """Resolve process settings without applying serving-only device policy."""
+    return _performance_from_env(os.environ if environ is None else environ)
+
+
+def _storage_from_env(env: Mapping[str, str]) -> StorageConfig:
+    return StorageConfig(
+        reserve_ratio=_env_float(
+            env, "NAYOSE_STORAGE_RESERVE_RATIO", float(STORAGE_DEFAULTS["reserve_ratio"])
+        ),
+        reserve_minimum_bytes=_env_int(
+            env,
+            "NAYOSE_STORAGE_RESERVE_MINIMUM_BYTES",
+            int(STORAGE_DEFAULTS["reserve_minimum_bytes"]),
+            0,
+        ),
+        workspace_stale_seconds=_env_int(
+            env,
+            "NAYOSE_STORAGE_WORKSPACE_STALE_SECONDS",
+            int(STORAGE_DEFAULTS["workspace_stale_seconds"]),
+            1,
         ),
     )
 
@@ -649,6 +719,10 @@ def _training_from_env(
         data_dir=_path(_env_text(env, "NAYOSE_DATA_DIR", str(runtime.data_dir))),
         output_dir=_path(_env_text(env, "NAYOSE_OUTPUT_DIR", str(runtime.models_dir))),
         device=_env_text(env, "NAYOSE_DEVICE", embedding.device),
+        embedding_backend=embedding.backend,
+        embedding_max_length=embedding.max_length,
+        embedding_padding_strategy=embedding.padding_strategy,
+        embedding_revision=embedding.revision,
         model_family=family,
         embedding_model=env.get("NAYOSE_EMBEDDING_MODEL") or None,
         strict_backends=_flag(
@@ -684,6 +758,7 @@ def _training_from_env(
         sparse_batch_size=_env_int(
             env, "NAYOSE_SPARSE_BATCH", int(TRAINING_DEFAULTS["sparse_batch_size"]), 1
         ),
+        inverted_memory_budget=int(RETRIEVAL_DEFAULTS["inverted_memory_budget"]),
         neural_batch_size=embedding.batch_size,
         rerank_top_k=_env_int(env, "NAYOSE_RERANK_TOPK", int(TRAINING_DEFAULTS["rerank_top_k"]), 1),
         rerank_pair_limit=_env_int(
@@ -775,12 +850,14 @@ def load_config(environ: Mapping[str, str] | None = None) -> ConfigSnapshot:
     performance = _performance_from_env(env)
     retrieval = _retrieval_from_env(env)
     inference = _inference_from_env(env)
+    storage = _storage_from_env(env)
     return ConfigSnapshot(
         runtime=runtime,
         embedding=embedding,
         performance=performance,
         retrieval=retrieval,
         inference=inference,
+        storage=storage,
         training=_training_from_env(env, embedding, runtime),
         generation=_generation_from_env(env),
         sources=DataSources(),
@@ -849,6 +926,7 @@ def configuration_summary(snapshot: ConfigSnapshot) -> dict[str, Any]:
             "embedding": plain["embedding"],
             "performance": plain["performance"],
             "retrieval": plain["retrieval"],
+            "storage": plain["storage"],
             "inference": plain["inference"],
             "training": training,
             "generation": plain["generation"],

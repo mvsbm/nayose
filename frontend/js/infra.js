@@ -1,13 +1,92 @@
 import { adaptDatasetRows } from "./dataset-adapter.js";
 import { ApiError } from "./api-error.js";
 import { fetchJson } from "./http.js";
-function adaptSearchResult(data) {
-    if (!data || typeof data !== "object" || !Array.isArray(data.rows))
-        throw new ApiError("search_schema_mismatch");
-    return data;
-}
 function isObject(value) {
     return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+function invalid(code) {
+    throw new ApiError(code);
+}
+function object(data, code) {
+    return isObject(data) ? data : invalid(code);
+}
+function array(data, code) {
+    return Array.isArray(data) ? data : invalid(code);
+}
+function finite(value) {
+    return typeof value === "number" && Number.isFinite(value);
+}
+function records(data, code) {
+    return data.map(item => isObject(item) ? item : invalid(code));
+}
+function adaptRunList(data) {
+    return records(array(data, "runs_schema_mismatch"), "runs_schema_mismatch").map(run => {
+        if (typeof run.id !== "string" || (run.path !== undefined && typeof run.path !== "string"))
+            invalid("runs_schema_mismatch");
+        return { ...run, path: typeof run.path === "string" ? run.path : "" };
+    });
+}
+function adaptAdminCapability(data) {
+    const result = object(data, "admin_capability_schema_mismatch");
+    if (typeof result.capable !== "boolean")
+        invalid("admin_capability_schema_mismatch");
+    return result;
+}
+function adaptSearchResult(data) {
+    const result = object(data, "search_schema_mismatch");
+    const rows = records(array(result.rows, "search_schema_mismatch"), "search_schema_mismatch");
+    if (rows.some(row => typeof row.nayose_id !== "string" || typeof row.name_kanji !== "string") || typeof result.semantic !== "boolean")
+        invalid("search_schema_mismatch");
+    for (const key of ["exact", "semantic_results", "nearest"]) {
+        if (result[key] !== undefined) {
+            const candidates = records(array(result[key], "search_schema_mismatch"), "search_schema_mismatch");
+            if (candidates.some(row => typeof row.nayose_id !== "string" || typeof row.name_kanji !== "string"))
+                invalid("search_schema_mismatch");
+        }
+    }
+    return result;
+}
+function adaptEntityDetail(data) {
+    const result = object(data, "entity_schema_mismatch");
+    if (!isObject(result.entity) || !Array.isArray(result.members) || records(result.members, "entity_schema_mismatch").some(member => typeof member.record_id !== "string") || !finite(result.total) || !finite(result.offset) || !finite(result.limit) || !isObject(result.comparisons) || typeof result.merge_evidence_available !== "boolean")
+        invalid("entity_schema_mismatch");
+    return result;
+}
+function adaptHealth(data) {
+    const result = object(data, "health_schema_mismatch");
+    if (typeof result.status !== "string" || (result.run !== undefined && result.run !== null && typeof result.run !== "string") || (result.engine_warm !== undefined && typeof result.engine_warm !== "boolean") || (result.stats !== undefined && records(array(result.stats, "health_schema_mismatch"), "health_schema_mismatch").some(stat => typeof stat.endpoint !== "string" || !finite(stat.hits) || !finite(stat.total_ms))))
+        invalid("health_schema_mismatch");
+    return result;
+}
+function adaptMatchJob(data) {
+    const result = object(data, "job_schema_mismatch");
+    const stages = new Set(["queued", "validating", "loading", "retrieving", "scoring", "aggregating", "complete", "failed", "cancelled"]);
+    const progress = result.progress;
+    const validProgress = progress === undefined || progress === null || (isObject(progress) && (progress.phase === undefined || typeof progress.phase === "string") && (progress.pct === undefined || progress.pct === null || finite(progress.pct)) && (progress.eta_seconds === undefined || progress.eta_seconds === null || finite(progress.eta_seconds)) && (progress.done === undefined || finite(progress.done)) && (progress.total === undefined || finite(progress.total)));
+    if (typeof result.id !== "string" || typeof result.run_id !== "string" || typeof result.stage !== "string" || !stages.has(result.stage) || !finite(result.elapsed_ms) || !Array.isArray(result.timeline) || result.timeline.some(item => !isObject(item) || typeof item.stage !== "string" || !finite(item.elapsed_ms)) || !validProgress || (result.error !== null && result.error !== undefined && typeof result.error !== "string") || (result.result !== null && result.result !== undefined && !isObject(result.result)))
+        invalid("job_schema_mismatch");
+    return result;
+}
+function adaptMetrics(data) {
+    const result = object(data, "metrics_schema_mismatch");
+    if (!Array.isArray(result.kpis) || result.kpis.some(item => !Array.isArray(item) || item.length !== 2 || typeof item[0] !== "string" || !finite(item[1])) || !isObject(result.extras) || Object.values(result.extras).some(value => !finite(value)))
+        invalid("metrics_schema_mismatch");
+    return result;
+}
+function adaptReview(data) {
+    const result = object(data, "review_schema_mismatch");
+    if (!finite(result.total) || !Array.isArray(result.rows) || records(result.rows, "review_schema_mismatch").some(row => typeof row.left_record_id !== "string" || typeof row.right_record_id !== "string" || !finite(row.pair_probability)) || !Array.isArray(result.histogram) || result.histogram.some(item => !Array.isArray(item) || item.length !== 2 || !finite(item[0]) || !finite(item[1])))
+        invalid("review_schema_mismatch");
+    return result;
+}
+function adaptDecisionSnapshot(data) {
+    const result = object(data, "decisions_schema_mismatch");
+    if (!Array.isArray(result.items) || records(result.items, "decisions_schema_mismatch").some(item => typeof item.left !== "string" || typeof item.right !== "string") || !finite(result.revision))
+        invalid("decisions_schema_mismatch");
+    return result;
+}
+function adaptRecordObject(data, code) {
+    return object(data, code);
 }
 function adaptEntityExplorerPage(data) {
     if (!isObject(data))
@@ -15,7 +94,7 @@ function adaptEntityExplorerPage(data) {
     const page = data;
     const validSorts = new Set(["relevance", "records", "name", "last_seen"]);
     const validModes = new Set(["exact", "hybrid_fallback"]);
-    if (!Array.isArray(page.rows) || typeof page.total !== "number" || typeof page.offset !== "number" || typeof page.limit !== "number" || typeof page.query !== "string" || !validSorts.has(page.sort ?? "") || !validModes.has(page.search_mode ?? "") || typeof page.total_is_exact !== "boolean" || (page.cursor !== undefined && page.cursor !== null && typeof page.cursor !== "string") || (page.next_cursor !== undefined && page.next_cursor !== null && typeof page.next_cursor !== "string") || (page.has_more !== undefined && typeof page.has_more !== "boolean") || !isObject(page.filters) || !isObject(page.query_plan) || !isObject(page.search_trace)) {
+    if (!Array.isArray(page.rows) || page.rows.some(row => !isObject(row) || typeof row.nayose_id !== "string" || typeof row.name_kanji !== "string") || typeof page.total !== "number" || typeof page.offset !== "number" || typeof page.limit !== "number" || typeof page.query !== "string" || !validSorts.has(page.sort ?? "") || !validModes.has(page.search_mode ?? "") || typeof page.total_is_exact !== "boolean" || (page.cursor !== undefined && page.cursor !== null && typeof page.cursor !== "string") || (page.next_cursor !== undefined && page.next_cursor !== null && typeof page.next_cursor !== "string") || (page.has_more !== undefined && typeof page.has_more !== "boolean") || !isObject(page.filters) || !isObject(page.query_plan) || !isObject(page.search_trace)) {
         throw new ApiError("entity_explorer_schema_mismatch");
     }
     return page;
@@ -46,7 +125,7 @@ function adaptGenerationPreview(data) {
     if (!data || typeof data !== "object")
         throw new ApiError("preview_schema_mismatch");
     const preview = data;
-    if (!preview.samples || typeof preview.samples !== "object" || !preview.samples.average || !preview.time_window || !preview.dataset_impact || !Array.isArray(preview.examples)) {
+    if (!isObject(preview.samples) || !isObject(preview.samples.average) || !isObject(preview.time_window) || !isObject(preview.dataset_impact) || !isObject(preview.counts) || !Array.isArray(preview.examples) || preview.examples.some(example => !isObject(example)) || !Array.isArray(preview.events) || !Array.isArray(preview.query_mix) || !isObject(preview.missingness) || !Array.isArray(preview.warnings) || !isObject(preview.estimate_note) || !finite(preview.weighted_band_scale)) {
         throw new ApiError("preview_schema_mismatch");
     }
     return preview;
@@ -57,32 +136,52 @@ export class ApiAdapter {
         this.runId = id;
     }
     runs() {
-        return fetchJson("/api/runs").then(d => d);
+        return fetchJson("/api/runs").then(adaptRunList);
     }
     adminCapability() {
-        return fetchJson("/api/admin/capable").then(d => d);
+        return fetchJson("/api/admin/capable").then(adaptAdminCapability);
     }
-    adminConfig() {
-        return fetchJson("/api/admin/config").then(adaptAdminConfig);
+    adminConfig(signal) {
+        return fetchJson("/api/admin/config", { signal }).then(adaptAdminConfig);
     }
-    adminState() {
-        return fetchJson("/api/admin/state").then(d => d);
+    adminState(signal) {
+        return fetchJson("/api/admin/state", { signal }).then(d => {
+            const result = object(d, "admin_state_schema_mismatch");
+            if (!isObject(result.profile) || !isObject(result.settings) || !Array.isArray(result.runs) || !finite(result.manual_count) || !Array.isArray(result.audit))
+                invalid("admin_state_schema_mismatch");
+            return result;
+        });
     }
-    adminGenerationConfig() {
-        return fetchJson("/api/admin/generation-config").then(d => d);
+    adminGenerationConfig(signal) {
+        return fetchJson("/api/admin/generation-config", { signal }).then(d => {
+            const result = object(d, "generation_config_schema_mismatch");
+            if (!Array.isArray(result.profiles) || !Array.isArray(result.difficulties) || !Array.isArray(result.events) || !Array.isArray(result.channels) || !Array.isArray(result.query_scenarios) || !isObject(result.defaults) || !isObject(result.bounds))
+                invalid("generation_config_schema_mismatch");
+            return result;
+        });
     }
-    adminGenerationPreview(controls) {
+    adminGenerationPreview(controls, signal) {
         return fetchJson("/api/admin/generation-preview", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ controls }),
+            signal,
         }).then(adaptGenerationPreview);
     }
-    adminGenerations() {
-        return fetchJson("/api/admin/generations").then(d => d);
+    adminGenerations(signal) {
+        return fetchJson("/api/admin/generations", { signal }).then(d => records(array(d, "generations_schema_mismatch"), "generations_schema_mismatch").map(item => {
+            if (typeof item.id !== "string" || typeof item.created_at !== "string" || typeof item.fingerprint !== "string" || typeof item.current !== "boolean")
+                invalid("generations_schema_mismatch");
+            return item;
+        }));
     }
-    adminDatasetSummary(generationId) {
-        return fetchJson(`/api/admin/generations/${encodeURIComponent(generationId)}/summary`).then(d => d);
+    adminDatasetSummary(generationId, signal) {
+        return fetchJson(`/api/admin/generations/${encodeURIComponent(generationId)}/summary`, { signal }).then(d => {
+            const result = object(d, "dataset_summary_schema_mismatch");
+            if (typeof result.id !== "string" || typeof result.created_at !== "string" || typeof result.fingerprint !== "string" || !isObject(result.config) || !isObject(result.counts) || !Array.isArray(result.tables))
+                invalid("dataset_summary_schema_mismatch");
+            return result;
+        });
     }
     adminDatasetRows(generationId, table, query, offset, limit, filters = {}, includeTotal = false, after = "", signal) {
         const params = new URLSearchParams({
@@ -98,48 +197,68 @@ export class ApiAdapter {
             params.set("filters", JSON.stringify(filters));
         return fetchJson(`/api/admin/generations/${encodeURIComponent(generationId)}/records?${params}`, { signal }).then(adaptDatasetRows);
     }
-    adminStart(action, params) {
+    adminStart(action, params, signal) {
         return fetchJson("/api/admin/jobs", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ action, params }),
-        }).then(d => d);
+            signal,
+        }).then(adaptMatchJob);
     }
-    adminJob(id) {
-        return fetchJson(`/api/admin/jobs/${encodeURIComponent(id)}`).then(d => d);
+    adminJob(id, signal) {
+        return fetchJson(`/api/admin/jobs/${encodeURIComponent(id)}`, { signal }).then(adaptMatchJob);
     }
-    adminAction(action, params) {
+    adminAction(action, params, signal) {
         return fetchJson("/api/admin/actions", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ action, params }),
-        }).then(d => d);
+            signal,
+        }).then(d => adaptRecordObject(d, "admin_action_schema_mismatch"));
     }
-    manualList() {
-        return fetchJson("/api/data-entry").then(d => d);
+    manualList(signal) {
+        return fetchJson("/api/data-entry", { signal }).then(d => {
+            const result = object(d, "manual_list_schema_mismatch");
+            if (!finite(result.count) || !Array.isArray(result.rows) || records(result.rows, "manual_list_schema_mismatch").some(row => typeof row.record_id !== "string"))
+                invalid("manual_list_schema_mismatch");
+            return result;
+        });
     }
-    manualRegister(record) {
+    manualRegister(record, signal) {
         return fetchJson("/api/data-entry/register", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ record }),
-        }).then(d => d);
+            signal,
+        }).then(d => {
+            const result = object(d, "manual_register_schema_mismatch");
+            if (result.ok !== true || typeof result.record_id !== "string")
+                invalid("manual_register_schema_mismatch");
+            return result;
+        });
     }
-    manualImport(rows, dryRun) {
+    manualImport(rows, dryRun, signal) {
         return fetchJson("/api/data-entry/import", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ rows, dry_run: dryRun }),
-        }).then(d => d);
+            signal,
+        }).then(d => adaptRecordObject(d, "manual_import_schema_mismatch"));
     }
-    manualUndo(recordIds) {
+    manualUndo(recordIds, signal) {
         return fetchJson("/api/data-entry/undo", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ record_ids: recordIds }),
-        }).then(d => d);
+            signal,
+        }).then(d => {
+            const result = object(d, "manual_undo_schema_mismatch");
+            if (result.ok !== true || !finite(result.removed))
+                invalid("manual_undo_schema_mismatch");
+            return result;
+        });
     }
-    entities(q, limit, filters) {
+    entities(q, limit, filters, signal) {
         const params = new URLSearchParams({ q, run_id: this.runId });
         if (limit)
             params.set("limit", String(limit));
@@ -147,9 +266,9 @@ export class ApiAdapter {
             params.set("party_type", filters.party_type);
         if (filters?.min_record_count)
             params.set("min_record_count", String(filters.min_record_count));
-        return fetchJson(`/api/entities?${params.toString()}`).then(adaptSearchResult);
+        return fetchJson(`/api/entities?${params.toString()}`, { signal }).then(adaptSearchResult);
     }
-    entityExplorer(q, offset, limit, sort, filters, cursor) {
+    entityExplorer(q, offset, limit, sort, filters, cursor, signal) {
         const params = new URLSearchParams({ q, run_id: this.runId, offset: String(offset), limit: String(limit), sort });
         if (cursor)
             params.set("cursor", cursor);
@@ -157,65 +276,90 @@ export class ApiAdapter {
             params.set("party_type", filters.party_type);
         if (filters?.min_record_count)
             params.set("min_record_count", String(filters.min_record_count));
-        return fetchJson(`/api/entities/explorer?${params.toString()}`).then(adaptEntityExplorerPage);
+        return fetchJson(`/api/entities/explorer?${params.toString()}`, { signal }).then(adaptEntityExplorerPage);
     }
-    entityGraph(id, includePotential = false) {
-        return fetchJson(`/api/entity/${encodeURIComponent(id)}/graph?run_id=${encodeURIComponent(this.runId)}&include_potential=${includePotential ? "true" : "false"}`).then(adaptEntityGraph);
+    entityGraph(id, includePotential = false, signal) {
+        return fetchJson(`/api/entity/${encodeURIComponent(id)}/graph?run_id=${encodeURIComponent(this.runId)}&include_potential=${includePotential ? "true" : "false"}`, { signal }).then(adaptEntityGraph);
     }
-    normalizePreview(text) {
-        return fetchJson(`/api/normalize?text=${encodeURIComponent(text)}`).then(d => d);
+    normalizePreview(text, signal) {
+        return fetchJson(`/api/normalize?text=${encodeURIComponent(text)}`, { signal }).then(d => {
+            const result = object(d, "normalize_schema_mismatch");
+            if (Object.values(result).some(value => typeof value !== "string"))
+                invalid("normalize_schema_mismatch");
+            return result;
+        });
     }
-    entity(id, offset = 0, limit = 25) {
-        return fetchJson(`/api/entity/${encodeURIComponent(id)}?run_id=${encodeURIComponent(this.runId)}&offset=${offset}&limit=${limit}`).then((d) => d);
+    entity(id, offset = 0, limit = 25, signal) {
+        return fetchJson(`/api/entity/${encodeURIComponent(id)}?run_id=${encodeURIComponent(this.runId)}&offset=${offset}&limit=${limit}`, { signal }).then(adaptEntityDetail);
     }
-    health() {
-        return fetchJson("/api/health/details").then(d => d);
+    health(signal) {
+        return fetchJson("/api/health/details", { signal }).then(adaptHealth);
     }
-    matchSample() {
-        return fetchJson(`/api/match-sample?run_id=${encodeURIComponent(this.runId)}`).then(d => d);
+    matchSample(signal) {
+        return fetchJson(`/api/match-sample?run_id=${encodeURIComponent(this.runId)}`, { signal }).then(d => {
+            const result = object(d, "match_sample_schema_mismatch");
+            if (!isObject(result.record) || Object.values(result.record).some(value => typeof value !== "string"))
+                invalid("match_sample_schema_mismatch");
+            return result;
+        });
     }
-    startRecommendation(record, thresholds) {
+    startRecommendation(record, thresholds, signal) {
         return fetchJson("/api/recommendations", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ run_id: this.runId, record, ...(thresholds ? { thresholds } : {}) }),
-        }).then(d => d);
+            signal,
+        }).then(adaptMatchJob);
     }
-    recommendation(id) {
-        return fetchJson(`/api/recommendations/${encodeURIComponent(id)}`).then(d => d);
+    recommendation(id, signal) {
+        return fetchJson(`/api/recommendations/${encodeURIComponent(id)}`, { signal }).then(adaptMatchJob);
     }
-    review(minP, offset, limit, nayose) {
+    review(minP, offset, limit, nayose, signal) {
         const n = nayose ? `&nayose=${encodeURIComponent(nayose)}` : "";
-        return fetchJson(`/api/review?run_id=${encodeURIComponent(this.runId)}&min_p=${minP}&offset=${offset}&limit=${limit}${n}`).then((d) => d);
+        return fetchJson(`/api/review?run_id=${encodeURIComponent(this.runId)}&min_p=${minP}&offset=${offset}&limit=${limit}${n}`, { signal }).then(adaptReview);
     }
-    metrics() {
-        return this.metricsFor(this.runId);
+    metrics(signal) {
+        return this.metricsFor(this.runId, signal);
     }
-    metricsFor(run) {
-        return fetchJson(`/api/metrics?run_id=${encodeURIComponent(run)}`).then((d) => d);
+    metricsFor(run, signal) {
+        return fetchJson(`/api/metrics?run_id=${encodeURIComponent(run)}`, { signal }).then(adaptMetrics);
     }
-    confusion() {
-        return fetchJson(`/api/confusion?run_id=${encodeURIComponent(this.runId)}`).then((d) => d);
+    confusion(signal) {
+        return fetchJson(`/api/confusion?run_id=${encodeURIComponent(this.runId)}`, { signal }).then(d => {
+            const result = object(d, "confusion_schema_mismatch");
+            if (!isObject(result.pairs) || Object.values(result.pairs).some(value => !finite(value)) || !Array.isArray(result.scenarios) || result.scenarios.some(item => !isObject(item) || typeof item.scenario !== "string" || !isObject(item.actions) || Object.values(item.actions).some(value => !finite(value))) || !isObject(result.decisions))
+                invalid("confusion_schema_mismatch");
+            return result;
+        });
     }
-    compare(l, r) {
-        return fetchJson(`/api/compare?run_id=${encodeURIComponent(this.runId)}&left=${encodeURIComponent(l)}&right=${encodeURIComponent(r)}`).then((d) => d.rows);
+    compare(l, r, signal) {
+        return fetchJson(`/api/compare?run_id=${encodeURIComponent(this.runId)}&left=${encodeURIComponent(l)}&right=${encodeURIComponent(r)}`, { signal }).then(d => {
+            const result = object(d, "compare_schema_mismatch");
+            return records(array(result.rows, "compare_schema_mismatch"), "compare_schema_mismatch");
+        });
     }
     recommend(record) {
         return fetchJson("/api/recommend", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ run_id: this.runId, record }),
-        }).then((d) => d);
+        }).then(d => {
+            const result = object(d, "recommend_schema_mismatch");
+            if (typeof result.action !== "string" || !finite(result.top_probability) || !finite(result.margin) || !Array.isArray(result.candidates) || typeof result.reason !== "string" || !isObject(result.diagnostics) || typeof result.scoring_mode !== "string")
+                invalid("recommend_schema_mismatch");
+            return result;
+        });
     }
-    loadDecisions() {
-        return fetchJson(`/api/decisions?run_id=${encodeURIComponent(this.runId)}`).then((d) => d);
+    loadDecisions(runId = this.runId, signal) {
+        return fetchJson(`/api/decisions?run_id=${encodeURIComponent(runId)}`, { signal }).then(adaptDecisionSnapshot);
     }
-    saveDecisions(items, revision) {
+    saveDecisions(items, revision, runId = this.runId, signal) {
         const reviewer = items.find((i) => i.reviewer)?.reviewer ?? "";
         return fetchJson("/api/decisions", {
             method: "PUT",
             headers: { "Content-Type": "application/json", ...(reviewer ? { "X-Reviewer": reviewer } : {}) },
-            body: JSON.stringify({ run_id: this.runId, items, revision }),
+            body: JSON.stringify({ run_id: runId, items, revision }),
+            signal,
         }).then((data) => {
             const detail = data;
             if (typeof detail.revision !== "number")
@@ -224,135 +368,8 @@ export class ApiAdapter {
         });
     }
 }
-// Memoizes read operations by run, operation, and arguments. run() clears the
-// cache; mutations and command-adjacent reads pass through uncached.
-export class MemoProxy {
-    inner;
-    runId = "";
-    cache = new Map();
-    constructor(inner) {
-        this.inner = inner;
-        this.inner = inner;
-    }
-    run(id) {
-        this.runId = id;
-        this.cache.clear();
-        this.inner.run(id);
-    }
-    runs() {
-        return this.memo("runs", "", () => this.inner.runs());
-    }
-    adminCapability() {
-        return this.memo("adminCapability", "", () => this.inner.adminCapability());
-    }
-    adminConfig() {
-        return this.memo("adminConfig", "", () => this.inner.adminConfig());
-    }
-    adminState() {
-        // mutation-adjacent read: actions mutate server state, so always refetch
-        return this.inner.adminState();
-    }
-    adminGenerationConfig() {
-        return this.memo("adminGenerationConfig", "", () => this.inner.adminGenerationConfig());
-    }
-    adminGenerationPreview(controls) {
-        return this.inner.adminGenerationPreview(controls);
-    }
-    adminGenerations() {
-        return this.inner.adminGenerations();
-    }
-    adminDatasetSummary(generationId) {
-        return this.inner.adminDatasetSummary(generationId);
-    }
-    adminDatasetRows(generationId, table, query, offset, limit, filters, includeTotal, after, signal) {
-        return this.inner.adminDatasetRows(generationId, table, query, offset, limit, filters, includeTotal, after, signal);
-    }
-    adminStart(action, params) {
-        return this.inner.adminStart(action, params);
-    }
-    adminJob(id) {
-        return this.inner.adminJob(id);
-    }
-    adminAction(action, params) {
-        return this.inner.adminAction(action, params);
-    }
-    manualList() {
-        // mutation-adjacent read (register/import/undo), never cached
-        return this.inner.manualList();
-    }
-    manualRegister(record) {
-        return this.inner.manualRegister(record);
-    }
-    manualImport(rows, dryRun) {
-        return this.inner.manualImport(rows, dryRun);
-    }
-    manualUndo(recordIds) {
-        return this.inner.manualUndo(recordIds);
-    }
-    memo(op, key, fetchFn) {
-        const k = `${this.runId}|${op}|${key}`;
-        const hit = this.cache.get(k);
-        if (hit)
-            return hit;
-        const p = fetchFn().catch((e) => {
-            this.cache.delete(k);
-            throw e;
-        });
-        this.cache.set(k, p);
-        return p;
-    }
-    entities(q, limit, filters) {
-        return this.memo("entities", `${q}:${limit ?? 50}:${JSON.stringify(filters ?? {})}`, () => this.inner.entities(q, limit, filters));
-    }
-    entityExplorer(q, offset, limit, sort, filters, cursor) {
-        return this.memo("entityExplorer", `${q}:${offset}:${limit}:${sort}:${cursor ?? ""}:${JSON.stringify(filters ?? {})}`, () => this.inner.entityExplorer(q, offset, limit, sort, filters, cursor));
-    }
-    entityGraph(id, includePotential = false) {
-        return this.memo("entityGraph", `${id}:${includePotential}`, () => this.inner.entityGraph(id, includePotential));
-    }
-    normalizePreview(text) {
-        return this.memo("normalize", text, () => this.inner.normalizePreview(text));
-    }
-    entity(id, offset = 0, limit = 25) {
-        return this.memo("entity", `${id}:${offset}:${limit}`, () => this.inner.entity(id, offset, limit));
-    }
-    health() {
-        return this.memo("health", "", () => this.inner.health());
-    }
-    matchSample() {
-        return this.memo("matchSample", "", () => this.inner.matchSample());
-    }
-    startRecommendation(record, thresholds) {
-        return this.inner.startRecommendation(record, thresholds);
-    }
-    recommendation(id) {
-        return this.inner.recommendation(id);
-    }
-    review(minP, offset, limit, nayose) {
-        return this.memo("review", `${minP}:${offset}:${limit}:${nayose ?? ""}`, () => this.inner.review(minP, offset, limit, nayose));
-    }
-    metrics() {
-        return this.memo("metrics", this.runId, () => this.inner.metrics());
-    }
-    metricsFor(run) {
-        return this.memo("metrics", run, () => this.inner.metricsFor(run));
-    }
-    confusion() {
-        return this.memo("confusion", "", () => this.inner.confusion());
-    }
-    compare(l, r) {
-        return this.memo("compare", `${l}:${r}`, () => this.inner.compare(l, r));
-    }
-    recommend(record) {
-        return this.inner.recommend(record);
-    }
-    loadDecisions() {
-        return this.inner.loadDecisions();
-    }
-    saveDecisions(items, revision) {
-        return this.inner.saveDecisions(items, revision);
-    }
-}
+export { MemoProxy } from "./memo-proxy.js";
+import { MemoProxy } from "./memo-proxy.js";
 // Factory: composes the production port. A WASM data adapter can be swapped
 // in later by passing it as the transport (OCP: no composition changes needed).
 export function createPort(transport) {

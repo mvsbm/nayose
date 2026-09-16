@@ -313,6 +313,7 @@ class RunBundleWriter:
             if self.runtime.neural_enabled
             else None,
             "embedding_model_revision": self.runtime.embedding_model_revision,
+            "embedding_backend": self.runtime.embedding_backend,
             "embedding_preprocessing_version": (
                 "normalize-retrieval-v1" if self.runtime.neural_enabled else None
             ),
@@ -337,6 +338,9 @@ class RunBundleWriter:
             },
             "runtime_policy": {
                 "neural_device": self.runtime.device if self.runtime.neural_enabled else None,
+                "embedding_backend": (
+                    self.runtime.embedding_backend if self.runtime.neural_enabled else None
+                ),
                 "torch_dtype": self.config.torch_dtype if self.runtime.neural_enabled else None,
                 "neural_batch_size": self.config.neural_batch_size
                 if self.runtime.neural_enabled

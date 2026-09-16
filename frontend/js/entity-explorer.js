@@ -1,5 +1,6 @@
 import { asNumber } from "./core.js";
 import { esc } from "./schema.js";
+import { presentError } from "./api-error.js";
 import { bindPanelSplit } from "./panel-layout.js";
 const ENTITY_SPLIT_DEFAULT = 520;
 const ENTITY_SPLIT_MIN = 320;
@@ -11,11 +12,20 @@ function stateFromUrl() {
     const requestedSize = Number(params.get("size"));
     const requestedSort = params.get("sort");
     const requestedParty = params.get("party_type");
+    let cursorHistory = [];
+    try {
+        const parsed = JSON.parse(params.get("cursor_history") ?? "[]");
+        cursorHistory = Array.isArray(parsed) ? parsed.filter((item) => typeof item === "string").slice(-100) : [];
+    }
+    catch {
+        cursorHistory = [];
+    }
     const partyType = requestedParty === "person" || requestedParty === "company" ? requestedParty : "";
     return {
         query: params.get("q") ?? "",
         offset: Math.max(0, Math.floor(Number(params.get("offset")) || 0)),
         cursor: params.get("cursor") ?? "",
+        cursorHistory,
         size: PAGE_SIZES.includes(requestedSize) ? requestedSize : 50,
         sort: SORTS.includes(requestedSort) ? requestedSort : "records",
         partyType,
@@ -38,6 +48,8 @@ function hashFor(state, selected = state.selected) {
         params.set("offset", String(state.offset));
     if (state.cursor)
         params.set("cursor", state.cursor);
+    if (state.cursorHistory.length)
+        params.set("cursor_history", JSON.stringify(state.cursorHistory));
     if (state.size !== 50)
         params.set("size", String(state.size));
     if (state.sort !== "records")
@@ -107,7 +119,7 @@ function loadingPage(state) {
     };
 }
 function renderLoading(state, store) {
-    return `<div class="panel entity-explorer">${renderSearch(loadingPage(state), state, store)}<div class="entity-explorer-layout"><section class="card"><p role="status" aria-live="polite">${esc(store.t("entityExplorerLoading"))}</p><div class="skel"><div class="card" style="height:12rem"></div></div></section><aside class="card entity-explorer-detail"><p role="status" aria-live="polite">${esc(store.t("detailLoading"))}</p></aside></div></div>`;
+    return `<div class="panel entity-explorer">${renderSearch(loadingPage(state), state, store)}<div class="entity-explorer-layout"><section class="card"><p role="status" aria-live="polite">${esc(store.t("entityExplorerLoading"))}</p><div class="skel skel-detail"><div class="card"></div></div></section><aside class="card entity-explorer-detail"><p role="status" aria-live="polite">${esc(store.t("detailLoading"))}</p></aside></div></div>`;
 }
 const FOOTPRINT_GROUPS = [
     { kind: "record", titleKey: "sourceRecords" },
@@ -213,17 +225,19 @@ function bind(view, state, page) {
     view.querySelector("#entity-explorer-size")?.addEventListener("change", (event) => navigate({ size: Number(event.target.value), offset: 0, cursor: "" }));
     view.querySelector("#entity-explorer-sort")?.addEventListener("change", (event) => navigate({ sort: event.target.value, offset: 0, cursor: "" }));
     view.querySelector("#entity-explorer-prev")?.addEventListener("click", () => {
-        if (state.cursor) {
-            history.back();
-            return;
-        }
-        navigate({ offset: Math.max(0, state.offset - state.size), cursor: "" });
+        const history = [...state.cursorHistory];
+        const cursor = history.pop() ?? "";
+        navigate({ offset: Math.max(0, state.offset - state.size), cursor, cursorHistory: history });
     });
     view.querySelector("#entity-explorer-next")?.addEventListener("click", () => {
         if (page.next_cursor)
-            navigate({ offset: state.offset + state.size, cursor: page.next_cursor });
+            navigate({ offset: state.offset + state.size, cursor: page.next_cursor, cursorHistory: [...state.cursorHistory, state.cursor].slice(-100) });
     });
-    view.querySelectorAll("[data-entity-select]").forEach((row) => row.addEventListener("click", () => navigate({}, row.dataset.entitySelect ?? "")));
+    view.querySelectorAll("[data-entity-select]").forEach((row) => row.addEventListener("click", (event) => {
+        if (event.target.closest("a,input,details,summary"))
+            return;
+        navigate({}, row.dataset.entitySelect ?? "");
+    }));
     bindPotential(view, state);
 }
 function replaceDetail(view, content, state) {
@@ -248,7 +262,7 @@ export async function mountEntityExplorer(el, port, store, scope) {
     const isCurrent = () => mounted && requestVersions.get(el) === version;
     el.innerHTML = renderLoading(state, store);
     bind(el, state, loadingPage(state));
-    const page = await port.entityExplorer(state.query, state.offset, state.size, state.sort, filtersFrom(state), state.cursor || undefined);
+    const page = await port.entityExplorer(state.query, state.offset, state.size, state.sort, filtersFrom(state), state.cursor || undefined, scope.signal);
     if (!isCurrent())
         return;
     const selected = state.selected || page.rows[0]?.nayose_id || "";
@@ -267,14 +281,14 @@ export async function mountEntityExplorer(el, port, store, scope) {
     if (!selected)
         return;
     try {
-        const [detail, graph] = await Promise.all([port.entity(selected, 0, 10), port.entityGraph(selected, state.potential)]);
+        const [detail, graph] = await Promise.all([port.entity(selected, 0, 10, scope.signal), port.entityGraph(selected, state.potential, scope.signal)]);
         if (!isCurrent())
             return;
         replaceDetail(el, renderDetail(detail, graph, effectiveState, store), effectiveState);
     }
-    catch {
+    catch (error) {
         if (!isCurrent())
             return;
-        replaceDetail(el, `<aside class="card entity-explorer-detail"><p class="members" role="alert">${esc(store.t("detailError"))}</p></aside>`, effectiveState);
+        replaceDetail(el, `<aside class="card entity-explorer-detail"><p class="members" role="alert">${esc(store.t("detailError"))}: ${esc(presentError(error, store.t.bind(store)))}</p></aside>`, effectiveState);
     }
 }

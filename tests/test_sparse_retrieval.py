@@ -41,6 +41,23 @@ def test_sparse_backend_uses_direct_strategy_when_budget_is_exceeded() -> None:
     assert scores[0] == pytest.approx(1.0)
 
 
+def test_direct_and_inverted_sparse_strategies_have_identical_order() -> None:
+    texts = ["alpha beta", "beta gamma", "gamma delta", "alpha delta"]
+    vectorizer = TfidfVectorizer().fit(texts)
+    matrix = vectorizer.transform(texts)
+    direct = SparseCandidateBackend(matrix, vectorizer, inverted_memory_budget=0)
+    inverted = SparseCandidateBackend(matrix, vectorizer, inverted_memory_budget=10**9)
+
+    direct_results = direct.retrieve_many(texts, 4)
+    inverted_results = inverted.retrieve_many(texts, 4)
+
+    for (direct_indices, direct_scores), (inverted_indices, inverted_scores) in zip(
+        direct_results, inverted_results, strict=True
+    ):
+        np.testing.assert_array_equal(direct_indices, inverted_indices)
+        np.testing.assert_allclose(direct_scores, inverted_scores, atol=1e-6)
+
+
 def test_sparse_backend_batches_with_bounded_memory() -> None:
     texts = ["alpha beta", "beta gamma", "gamma delta"]
     vectorizer = TfidfVectorizer().fit(texts)

@@ -8,6 +8,7 @@ from pathlib import Path
 from api.infrastructure.runtime.performance import cpu_thread_budget
 from nayose.config import (
     ConfigSnapshot,
+    EmbeddingConfig,
     PerformanceConfig,
     RetrievalConfig,
     load_config,
@@ -28,6 +29,7 @@ class EngineSettings:
     model_dir: Path
     data_dir: Path
     inference: PolicyConfig
+    embedding: EmbeddingConfig
     retrieval: RetrievalConfig
     performance: PerformanceConfig
     cpu_threads: int
@@ -39,6 +41,7 @@ class EngineSettings:
         *,
         config_snapshot: ConfigSnapshot | None = None,
         inference: PolicyConfig | None = None,
+        embedding: EmbeddingConfig | None = None,
         retrieval: RetrievalConfig | None = None,
         performance: PerformanceConfig | None = None,
         sparse_top_k: int | None = None,
@@ -57,6 +60,12 @@ class EngineSettings:
         snapshot = config_snapshot
         if snapshot is None and (inference is None or retrieval is None or performance is None):
             snapshot = load_config()
+        if embedding is None:
+            if snapshot is None:
+                snapshot = load_config()
+            resolved_embedding = snapshot.embedding
+        else:
+            resolved_embedding = embedding
         if inference is None:
             if snapshot is None:
                 raise ValueError("inference or config_snapshot is required")
@@ -112,6 +121,7 @@ class EngineSettings:
         object.__setattr__(self, "model_dir", Path(model_dir))
         object.__setattr__(self, "data_dir", Path(data_dir))
         object.__setattr__(self, "inference", policy)
+        object.__setattr__(self, "embedding", resolved_embedding)
         object.__setattr__(self, "retrieval", resolved_retrieval)
         object.__setattr__(self, "performance", resolved_performance)
         object.__setattr__(self, "cpu_threads", selected_threads)
@@ -169,6 +179,7 @@ class EngineSettings:
             model_dir=self.model_dir,
             data_dir=self.data_dir,
             inference=inference,
+            embedding=self.embedding,
             retrieval=self.retrieval,
             performance=self.performance,
             cpu_threads=self.cpu_threads,
@@ -179,6 +190,7 @@ class EngineSettings:
             model_dir=self.model_dir,
             data_dir=self.data_dir,
             inference=self.inference,
+            embedding=self.embedding,
             retrieval=replace(self.retrieval, sparse_query_feature_cap=value),
             performance=self.performance,
             cpu_threads=self.cpu_threads,

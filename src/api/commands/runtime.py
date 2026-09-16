@@ -5,15 +5,20 @@ from __future__ import annotations
 
 import argparse
 import json
-import resource
 import statistics
-import sys
 import time
 from pathlib import Path
 
 from api.application.matching import ExplainedMatcher
-from api.infrastructure.runtime.performance import RuntimeProfile
-from nayose.config import load_config
+from api.infrastructure.runtime.resource_manager import (
+    ComputePlan,
+    ResourceManager,
+    ResourceSnapshot,
+    plan_for_bundle,
+    resource_state_dir,
+)
+from api.infrastructure.runtime.workload_storage import bundle_demand
+from nayose.config import ConfigSnapshot, load_config
 
 
 def parse_args() -> argparse.Namespace:
@@ -24,10 +29,8 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def peak_rss_mb() -> float:
-    value = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-    bytes_used = value if sys.platform == "darwin" else value * 1024
-    return bytes_used / (1024 * 1024)
+def peak_rss_mb(snapshot: ResourceSnapshot) -> float:
+    return snapshot.memory.process_rss_bytes / (1024 * 1024)
 
 
 def percentile(values: list[float], fraction: float) -> float:
@@ -36,13 +39,15 @@ def percentile(values: list[float], fraction: float) -> float:
     return ordered[index]
 
 
-def main() -> int:
-    args = parse_args()
-    if args.iterations < 1:
-        raise SystemExit("--iterations must be positive")
+def _run(
+    args: argparse.Namespace,
+    manager: ResourceManager,
+    config: ConfigSnapshot,
+    plan: ComputePlan,
+) -> int:
     started = time.perf_counter()
     matcher = ExplainedMatcher.load(
-        Path(args.model_dir), Path(args.data_dir), config_snapshot=load_config()
+        Path(args.model_dir), Path(args.data_dir), config_snapshot=config
     )
     cold_load_ms = (time.perf_counter() - started) * 1000
     if matcher.engine._reference is None:
@@ -54,7 +59,7 @@ def main() -> int:
         started = time.perf_counter()
         matcher.recommend(query, lambda _: None)
         timings.append((time.perf_counter() - started) * 1000)
-    profile = RuntimeProfile.resolve()
+    resources = manager.inspect()
     print(
         json.dumps(
             {
@@ -64,12 +69,13 @@ def main() -> int:
                 "warm_recommend_min_ms": round(min(timings), 2),
                 "warm_recommend_max_ms": round(max(timings), 2),
                 "iterations": args.iterations,
-                "available_cpus": profile.available_cpus,
-                "cpu_quota_cpus": profile.cpu_quota_cpus,
-                "cpu_threads": profile.cpu_threads,
-                "process_workers": profile.process_workers,
-                "device": profile.device,
-                "peak_rss_mb": round(peak_rss_mb(), 2),
+                "available_cpus": resources.available_cpus,
+                "cpu_quota_cpus": resources.cpu_quota_cpus,
+                "cpu_threads": plan.cpu_threads,
+                "process_workers": plan.process_workers,
+                "device": plan.device,
+                "peak_rss_mb": round(peak_rss_mb(resources), 2),
+                "resources": resources.as_dict(),
                 "reference_rows": len(matcher.engine._reference),
                 "embedding_artifact_mb": round(
                     next(
@@ -87,6 +93,24 @@ def main() -> int:
     )
     matcher.close()
     return 0
+
+
+def main() -> int:
+    args = parse_args()
+    if args.iterations < 1:
+        raise SystemExit("--iterations must be positive")
+    config = load_config()
+    manager = ResourceManager(resource_state_dir(Path(args.model_dir)))
+    plan = plan_for_bundle(
+        manager,
+        config,
+        Path(args.model_dir),
+        workload="benchmark",
+        storage_demand=bundle_demand("benchmark").demand,
+    )
+    with manager.session(plan):
+        manager.configure(plan, config.performance)
+        return _run(args, manager, config, plan)
 
 
 if __name__ == "__main__":

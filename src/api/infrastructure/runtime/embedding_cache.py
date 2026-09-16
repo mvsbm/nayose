@@ -41,11 +41,15 @@ def text_fingerprint(texts: Sequence[str]) -> str:
     return digest.hexdigest()
 
 
-def cache_paths(root: Path, model_id: str, kind: str) -> tuple[Path, Path]:
-    """Return deterministic vector and metadata paths for one model/kind pair."""
+def cache_paths(
+    root: Path, model_id: str, kind: str, backend: str | None = None
+) -> tuple[Path, Path]:
+    """Return deterministic vector and metadata paths for one model/backend pair."""
     if not kind or Path(kind).name != kind:
         raise ValueError("cache kind must be a single path component")
-    slug = f"{Path(model_id).name}_{hashlib.sha256(model_id.encode()).hexdigest()[:12]}"
+    backend_slug = f"_{backend}" if backend and backend != "pytorch_mps" else ""
+    model_hash = hashlib.sha256(model_id.encode()).hexdigest()[:12]
+    slug = f"{Path(model_id).name}{backend_slug}_{model_hash}"
     return root / f"{kind}_embeddings_{slug}.npy", root / f"{kind}_embeddings_{slug}_meta.json"
 
 

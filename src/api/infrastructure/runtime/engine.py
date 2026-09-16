@@ -1,9 +1,4 @@
-"""Load trained artifacts and run entity matching.
-
-The module owns artifact loading, corpus fingerprint validation, retrieval
-indexes, and the LightGBM booster adapter. Configuration is immutable so a
-loaded engine cannot silently change its serving contract.
-"""
+"""Load validated artifacts and run entity matching."""
 
 from __future__ import annotations
 
@@ -53,6 +48,11 @@ from api.infrastructure.retrieval.block_index import (
     load_block_indexes,
 )
 from api.infrastructure.retrieval.bundle_retrieval import _resolve_device  # noqa: F401
+from api.infrastructure.retrieval.candidate_frames import (
+    _block_key,
+    build_candidate_frames,
+    retrieve_index_without_dense,
+)
 from api.infrastructure.retrieval.dense_index import (
     DENSE_INDEX_ARTIFACT,
     load_dense_index,
@@ -62,6 +62,7 @@ from api.infrastructure.retrieval.dense_index import (
 from api.infrastructure.retrieval.dense_retrieval import (
     retrieve_dense_candidates,
     retrieve_dense_candidates_many,
+    retrieve_sparse_and_dense,
 )
 from api.infrastructure.retrieval.dense_views import DenseView, load_dense_view_artifacts
 from api.infrastructure.retrieval.fusion import retrieval_fusion_score, retrieval_methods
@@ -78,6 +79,7 @@ from api.infrastructure.runtime.embedding_runtime import (
 )
 from api.infrastructure.runtime.engine_config import EngineSettings, InferenceConfig
 from api.infrastructure.runtime.performance import cpu_thread_budget, cpu_thread_limit
+from api.infrastructure.runtime.resource_manager import configure_engine_resources
 from nayose.config import ConfigSnapshot, RetrievalConfig, load_config
 
 __all__ = ["EngineSettings", "InferenceConfig"]
@@ -97,6 +99,12 @@ class LightGBMBoosterAdapter:
                 dtype=np.float64,
             )
         return np.column_stack([1.0 - positive, positive])
+
+
+def _preload_pair_backend(model_dir: Path) -> None:
+    if not (model_dir / "pair_model.txt").is_file():
+        return
+    import lightgbm  # noqa: F401
 
 
 def load_pair_model(model_dir: Path, threads: int | None = None) -> Any:
@@ -151,7 +159,9 @@ class CandidateIndex:
         self.sparse_backend = SparseCandidateBackend(
             sparse_matrix,
             vectorizer,
+            batch_size=config.retrieval.sparse_batch_size,
             query_feature_cap=config.sparse_query_feature_cap,
+            inverted_memory_budget=config.retrieval.inverted_memory_budget,
         )
 
     def retrieve(
@@ -184,11 +194,16 @@ class CandidateIndex:
         candidate_cap = int(settings.get("candidate_cap_per_record", self.config.candidate_cap))
         query_values = list(queries)
         states_list: list[dict[int, dict[str, Any]]] = [{} for _ in query_values]
+        dense_allowed = dense_enabled(self.config.retrieval) if use_dense is None else use_dense
+        dense_limit = min(int(settings.get("dense_top_k", candidate_cap)), len(self.reference))
+        dense_available = dense_allowed and self.dense_nn is not None
+        if exact_mode == "exact_only" or not dense_available:
+            return retrieve_index_without_dense(self, query_values, exact_mode, settings)
 
         if exact_mode != "fuzzy_only":
             for query, states in zip(query_values, states_list, strict=True):
                 for block_name, groups in self.block_indexes.items():
-                    key = self._block_key(query, block_name)
+                    key = _block_key(query, block_name)
                     if key and key in groups and len(groups[key]) <= exact_cap:
                         for idx in groups[key]:
                             states.setdefault(int(idx), {})
@@ -196,20 +211,15 @@ class CandidateIndex:
 
         if exact_mode != "exact_only" and query_values:
             top_k = min(sparse_top_k + 1, len(self.reference))
-            sparse_matches = self.sparse_backend.retrieve_many(
-                [query.get("retrieval_text", "") for query in query_values], top_k
+            sparse_texts = [query.get("retrieval_text", "") for query in query_values]
+            sparse_matches = retrieve_sparse_and_dense(
+                self.sparse_backend.retrieve_many,
+                lambda: self._retrieve_dense_many(query_values, states_list, dense_limit),
+                sparse_texts,
+                top_k,
             )
             for states, (indices, scores) in zip(states_list, sparse_matches, strict=True):
                 self._add_sparse_results(states, indices, scores)
-
-            dense_allowed = dense_enabled(self.config.retrieval) if use_dense is None else use_dense
-            dense_limit = min(int(settings.get("dense_top_k", candidate_cap)), len(self.reference))
-            if (
-                dense_allowed
-                and self.reference_embeddings is not None
-                and self.dense_nn is not None
-            ):
-                self._retrieve_dense_many(query_values, states_list, dense_limit)
 
         return [
             self._frame_from_states(states, query, candidate_cap)
@@ -227,12 +237,15 @@ class CandidateIndex:
         matches = self.sparse_backend.retrieve_many(
             [query.get("retrieval_text", "") for query in queries], top_k
         )
-        frames: list[pd.DataFrame] = []
-        for query, (indices, scores) in zip(queries, matches, strict=True):
-            states: dict[int, dict[str, Any]] = {}
-            self._add_sparse_results(states, indices, scores)
-            frames.append(self._frame_from_states(states, query, candidate_cap))
-        return frames
+        return build_candidate_frames(
+            list(queries),
+            self.block_indexes,
+            matches,
+            None,
+            exact_mode="fuzzy_only",
+            exact_cap=self.config.exact_block_cap,
+            candidate_cap=candidate_cap,
+        )
 
     @staticmethod
     def _add_sparse_results(
@@ -300,12 +313,19 @@ class CandidateIndex:
         scores = 1.0 - np.asarray(matches.distances, dtype=np.float32)
         if keys.ndim != 2 or scores.shape != keys.shape:
             raise ValueError("dense batch search returned an invalid result shape")
-        frames: list[pd.DataFrame] = []
-        for query, query_keys, query_scores in zip(queries, keys, scores, strict=True):
-            states: dict[int, dict[str, Any]] = {}
-            self._add_dense_results(states, query_keys, query_scores)
-            frames.append(self._frame_from_states(states, query, candidate_cap))
-        return frames
+        matches = [
+            (query_keys, query_scores)
+            for query_keys, query_scores in zip(keys, scores, strict=True)
+        ]
+        return build_candidate_frames(
+            list(queries),
+            self.block_indexes,
+            None,
+            matches,
+            exact_mode="fuzzy_only",
+            exact_cap=self.config.exact_block_cap,
+            candidate_cap=candidate_cap,
+        )
 
     @staticmethod
     def _add_dense_results(
@@ -360,21 +380,6 @@ class CandidateIndex:
             encode_queries=encode_queries,
             include_record_dense=self.config.dense_profile != "field_aware",
         )
-
-    def _block_key(self, query: dict[str, str], block_name: str) -> str:
-        specs = {
-            "exact_email": ("n_email",),
-            "exact_phone": ("n_phone",),
-            "name_dob": ("n_name_loose", "n_dob"),
-            "kana_dob": ("n_kana", "n_dob"),
-            "signature_postal": ("n_name_signature", "n_postal"),
-            "kana_postal": ("n_kana", "n_postal"),
-            "name_address": ("n_name_loose", "n_address"),
-            "phone_suffix_name": ("n_phone_suffix8", "n_name_loose"),
-        }
-        cols = specs.get(block_name, ())
-        vals = [query.get(c, "") for c in cols]
-        return "¦".join(vals) if all(vals) else ""
 
 
 def _load_dense_artifacts(
@@ -452,12 +457,6 @@ def _load_dense_views(
     return views
 
 
-# ─── Nayose engine ───────────────────────────────────────────────────────────
-
-
-# ─── Bundle loading and recommendation stages ────────────────────────────────
-
-
 def _data_fingerprint(frame: pd.DataFrame) -> str:
     """Canonical fingerprint shared by generation and training manifests."""
     return _artifact_data_fingerprint(frame)
@@ -472,7 +471,6 @@ def _load_bundle(config: EngineSettings) -> NayoseEngine:
     """
     engine = NayoseEngine(config)
 
-    # Load reference data (current contract; legacy name tolerated)
     ref_path = config.data_dir / "reference_records.parquet"
     if not ref_path.exists():
         legacy = config.data_dir / "reference_snapshot.parquet"
@@ -490,10 +488,11 @@ def _load_bundle(config: EngineSettings) -> NayoseEngine:
     engine._reference = reference
     reference_fingerprint = _guard_generation_match(config, reference)
 
-    # Load sparse artifacts (current bundle names; legacy names tolerated).
     bundle_manifest = json.loads(
         (config.model_dir / "run_manifest.json").read_text(encoding="utf-8")
     )
+    _preload_pair_backend(config.model_dir)
+    configure_engine_resources(config, bundle_manifest)
     validate_artifact_checksums(config.model_dir)
     runtime_artifacts = bundle_manifest.get("runtime_artifacts", {})
     inverted_metadata = (
@@ -532,8 +531,6 @@ def _load_bundle(config: EngineSettings) -> NayoseEngine:
     if engine._sparse_matrix.shape[1] != len(engine._vectorizer.vocabulary_):
         raise RuntimeError("sparse artifact dimensions do not match vectorizer vocabulary")
 
-    # Exact indexes are build-time artifacts. Serving fails closed instead of
-    # rebuilding them and turning a bad bundle into an unpredictable slow start.
     block_index_path = config.model_dir / BLOCK_INDEX_ARTIFACT
     if not block_index_path.is_file():
         raise RuntimeError(
@@ -553,11 +550,9 @@ def _load_bundle(config: EngineSettings) -> NayoseEngine:
         ) from exc
     print(f"OK: loaded exact block indexes ({block_index_path.name})")
 
-    # Load optional F2LLM dense embeddings + ANN index
     reference_embeddings, dense_nn, dense_svd = _load_dense_artifacts(config, reference)
     dense_views = _load_dense_views(config, reference, reference_fingerprint)
 
-    # Create candidate index
     engine._index = CandidateIndex(
         reference,
         engine._sparse_matrix,
@@ -570,7 +565,6 @@ def _load_bundle(config: EngineSettings) -> NayoseEngine:
         dense_views=dense_views,
     )
 
-    # Load models (native LightGBM booster; legacy joblib tolerated)
     engine._pair_model = load_pair_model(config.model_dir, config.cpu_threads)
     pair_calibrator_path = config.model_dir / "pair_calibrator.joblib"
     engine._pair_calibrator = (
@@ -624,7 +618,6 @@ def _load_bundle(config: EngineSettings) -> NayoseEngine:
     engine._canonical = pd.read_parquet(canonical_path)
     mapping = pd.read_parquet(mapping_path)
     engine._record_to_nayose = dict(zip(mapping.record_id.astype(str), mapping.nayose_id))
-
     return engine
 
 
@@ -738,16 +731,23 @@ class NayoseEngine:
         close_query_encoder()
 
 
-# ─── Convenience ──────────────────────────────────────────────────────────────
-
-
 def _apply_manifest_embedding_model(config: EngineSettings) -> None:
     """Use the EXACT embedding model the bundle was encoded with (serve parity)."""
     manifest_path = config.model_dir / "run_manifest.json"
     if manifest_path.exists():
-        embedded = json.loads(manifest_path.read_text(encoding="utf-8")).get("embedding_model")
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        embedded = manifest.get("embedding_model")
         if embedded:
-            configure_query_encoder(str(embedded))
+            runtime = manifest.get("runtime_policy", {})
+            device = runtime.get("neural_device") if isinstance(runtime, dict) else None
+            settings = replace(
+                config.embedding,
+                model_id=str(embedded),
+                backend=str(manifest.get("embedding_backend") or config.embedding.backend),
+                device=str(device or config.embedding.device),
+                revision=str(manifest.get("embedding_model_revision") or config.embedding.revision),
+            )
+            configure_query_encoder(str(embedded), settings=settings)
             print(f"embedding model from bundle: {embedded}")
 
 

@@ -6,7 +6,7 @@ export async function mountEntityDetail(el, port, store, id, scope) {
     const page = Math.max(1, Math.min(1000000, Math.floor(requestedPage)));
     const requestedSize = Number(params.get("size"));
     const size = [10, 25, 50, 100].includes(requestedSize) ? requestedSize : 25;
-    const detail = await port.entity(id, (page - 1) * size, size);
+    const detail = await port.entity(id, (page - 1) * size, size, scope.signal);
     if (scope?.isDisposed)
         return;
     const t = (key) => esc(store.t(key));
@@ -30,7 +30,7 @@ export async function mountEntityDetail(el, port, store, id, scope) {
         <button class="more" id="member-prev" ${page <= 1 ? "disabled" : ""}>${t("previous")}</button>
         <button class="more" id="member-next" ${(page * size >= total) ? "disabled" : ""}>${t("next")}</button></div>
       <div class="toolbar"><span>${t("selectCompare")}</span><span id="member-selected" role="status"></span><button id="member-compare" class="more" disabled>${t("compare")}</button><button id="member-clear" class="more">${t("clearSelection")}</button></div>
-      <div class="table-scroll" tabindex="0" role="region" aria-label="${t("members")}"><table><thead><tr><th scope="col">${t("compare")}</th><th scope="col">${t("record_id")}</th><th scope="col">${t("identity")}</th><th scope="col">${t("contact")}</th><th scope="col">${t("source")}</th></tr></thead>
+      <div class="table-scroll" tabindex="0" role="region" aria-label="${t("members")}"><table><caption class="members">${t("members")}</caption><thead><tr><th scope="col">${t("compare")}</th><th scope="col">${t("record_id")}</th><th scope="col">${t("identity")}</th><th scope="col">${t("contact")}</th><th scope="col">${t("source")}</th></tr></thead>
       <tbody>${members.map(m => {
         const rid = String(m.record_id);
         const comparisons = detail.comparisons[rid] ?? {};

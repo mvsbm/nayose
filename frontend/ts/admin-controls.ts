@@ -53,6 +53,10 @@ export function cloneGenerationControls(controls: GenerationControls): Generatio
   return JSON.parse(JSON.stringify(controls)) as GenerationControls;
 }
 
+export function generationControlsHash(controls: GenerationControls): string {
+  return JSON.stringify(controls);
+}
+
 function setValue(el: HTMLElement, selector: string, value: string | number): void {
   const input = el.querySelector<HTMLInputElement | HTMLSelectElement>(selector);
   if (input) input.value = String(value);

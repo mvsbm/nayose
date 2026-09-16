@@ -32,6 +32,8 @@ export interface StoreEvents {
   entitySelection: void;
   thresholdOverride: void;
   decisionConflict: void;
+  decisionSaveError: void;
+  decisionLoadError: void;
 }
 
 type Listener = () => void;
@@ -57,7 +59,14 @@ export class Store implements Storage {
   thresholdOverride: { auto: number; review: number } | null = null;
   decisionRevision = 0;
   decisionConflict = false;
+  decisionSaveError = "";
+  decisionLoadError = "";
   runs: Array<{ id: string; current?: boolean; fingerprint?: string }> = [];
+  manualDraft: Record<string, string> = {};
+  manualMatchRecord: Record<string, string> | null = null;
+  manualMatchSummary = "";
+  manualImportRows: Array<Record<string, string>> = [];
+  manualImportReady = false;
 
   private listeners = new Map<keyof StoreEvents, Set<Listener>>();
   private history: Command[] = [];
@@ -83,6 +92,8 @@ export class Store implements Storage {
   setDecisionSnapshot(snapshot: DecisionSnapshot, notify = true): void {
     this.decisionRevision = snapshot.revision;
     this.decisionConflict = false;
+    this.decisionSaveError = "";
+    this.decisionLoadError = "";
     this.checked = new Set(snapshot.items.map((item) => checkedKey(this.run, item.left, item.right)));
     if (notify) {
       this.emit("checked");
@@ -92,6 +103,19 @@ export class Store implements Storage {
   setDecisionConflict(conflict: boolean): void {
     this.decisionConflict = conflict;
     this.emit("decisionConflict");
+  }
+  setDecisionSaveError(message: string): void {
+    this.decisionSaveError = message;
+    this.emit("decisionSaveError");
+  }
+  retryDecisionSave(): void {
+    this.decisionSaveError = "";
+    this.emit("decisionSaveError");
+    this.emit("checked");
+  }
+  setDecisionLoadError(message: string): void {
+    this.decisionLoadError = message;
+    this.emit("decisionLoadError");
   }
   setDecisionRevision(revision: number): void {
     this.decisionRevision = revision;
@@ -114,6 +138,8 @@ export class Store implements Storage {
       this.thresholdOverride = null;
       this.decisionRevision = 0;
       this.decisionConflict = false;
+      this.decisionSaveError = "";
+      this.decisionLoadError = "";
     }
     this.run = id;
     this.emit("run");
@@ -182,11 +208,11 @@ export class Store implements Storage {
     this.history.push(cmd);
     return true;
   }
-  clearRunState(): void {
-    this.checked.clear();
+  clearRunState(notify = true): void {
+    this.checked = new Set();
     this.history = [];
     this.future = [];
-    this.emit("checked");
+    if (notify) this.emit("checked");
   }
 
   read(key: string): string | null {

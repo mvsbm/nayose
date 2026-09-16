@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 from math import isclose
 from pathlib import Path
@@ -13,6 +14,7 @@ from types import MappingProxyType
 from typing import Any
 
 from .config_views import (
+    EMBEDDING_BACKENDS,
     EMBEDDING_DEFAULTS,
     EXACT_MODES,
     F2LLM_MPS_BATCH_SIZE,
@@ -20,6 +22,7 @@ from .config_views import (
     F2LLM_MPS_TORCH_DTYPE,
     GENERATION_DEFAULTS,
     INFERENCE_DEFAULTS,
+    RETRIEVAL_DEFAULTS,
     SOURCE_DEFAULTS,
     TRAINING_DEFAULTS,
     ConfigurationError,
@@ -366,6 +369,10 @@ class TrainingConfig:
     data_dir: Path = field(default_factory=lambda: Path(_PATH_DEFAULTS["data_dir"]))
     output_dir: Path = field(default_factory=lambda: Path(_PATH_DEFAULTS["models_dir"]))
     device: str = str(EMBEDDING_DEFAULTS["device"])
+    embedding_backend: str = str(EMBEDDING_DEFAULTS["backend"])
+    embedding_max_length: int = int(EMBEDDING_DEFAULTS["optimization"]["max_length"])
+    embedding_padding_strategy: str = str(EMBEDDING_DEFAULTS["optimization"]["padding_strategy"])
+    embedding_revision: str = str(EMBEDDING_DEFAULTS["revision"])
     model_family: str = str(TRAINING_DEFAULTS["model_family"])
     embedding_model: str | None = None
     strict_backends: bool = bool(TRAINING_DEFAULTS["strict_backends"])
@@ -382,6 +389,7 @@ class TrainingConfig:
     dense_top_k: int = int(TRAINING_DEFAULTS["dense_top_k"])
     candidate_cap_per_record: int = int(TRAINING_DEFAULTS["candidate_cap_per_record"])
     sparse_batch_size: int = int(TRAINING_DEFAULTS["sparse_batch_size"])
+    inverted_memory_budget: int = int(RETRIEVAL_DEFAULTS["inverted_memory_budget"])
     neural_batch_size: int = int(TRAINING_DEFAULTS["neural_batch_size"])
     rerank_top_k: int = int(TRAINING_DEFAULTS["rerank_top_k"])
     rerank_pair_limit: int = int(TRAINING_DEFAULTS["rerank_pair_limit"])
@@ -406,6 +414,12 @@ class TrainingConfig:
     def from_env(cls, environ: Mapping[str, str] | None = None) -> TrainingConfig:
         from .config import load_config
 
+        source = os.environ if environ is None else environ
+        requested_device = source.get("NAYOSE_DEVICE", "").strip()
+        if requested_device and requested_device.casefold() != F2LLM_MPS_DEVICE:
+            safe_source = dict(source)
+            safe_source["NAYOSE_DEVICE"] = F2LLM_MPS_DEVICE
+            return replace(load_config(safe_source).training, device=requested_device)
         return load_config(environ).training
 
     def validate(self) -> None:
@@ -421,6 +435,14 @@ class TrainingConfig:
             raise ConfigurationError("pair_model_backend must be auto, lightgbm, or sklearn")
         if self.entity_scoring_mode not in {"legacy_mean_top3", "logistic_v1"}:
             raise ConfigurationError("unsupported entity_scoring_mode")
+        if self.embedding_backend not in EMBEDDING_BACKENDS:
+            raise ConfigurationError(f"embedding backend must be one of {EMBEDDING_BACKENDS}")
+        if self.embedding_max_length < 0:
+            raise ConfigurationError("embedding_max_length must not be negative")
+        if self.embedding_padding_strategy not in {"longest", "max_length"}:
+            raise ConfigurationError("embedding_padding_strategy must be longest or max_length")
+        if self.embedding_padding_strategy == "max_length" and self.embedding_max_length < 1:
+            raise ConfigurationError("max_length padding requires a positive max_length")
         if not 0.0 <= self.minimum_reference_density <= 1.0:
             raise ConfigurationError("minimum_reference_density must be between 0 and 1")
         for name in (
@@ -430,6 +452,7 @@ class TrainingConfig:
             "dense_top_k",
             "candidate_cap_per_record",
             "sparse_batch_size",
+            "inverted_memory_budget",
             "neural_batch_size",
             "rerank_top_k",
             "rerank_pair_limit",

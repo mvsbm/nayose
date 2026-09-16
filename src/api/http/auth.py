@@ -35,9 +35,20 @@ class AuthPolicy:
         default_subject: str,
         subject_header: str = "X-Authenticated-User",
         scopes_header: str = "X-Authenticated-Scopes",
+        review_token: str = "",
+        admin_token: str = "",
     ):
         self.mode = mode
-        self.token = token
+        legacy_scopes = _ALL_SCOPES if not (review_token or admin_token) else frozenset(("read",))
+        self.credentials: tuple[tuple[str, frozenset[str], str], ...] = tuple(
+            item
+            for item in (
+                (token, legacy_scopes, default_subject),
+                (review_token, frozenset(("read", "review")), "reviewer"),
+                (admin_token, _ALL_SCOPES, "administrator"),
+            )
+            if item[0]
+        )
         self.default_subject = default_subject
         self.subject_header = subject_header
         self.scopes_header = scopes_header
@@ -49,12 +60,13 @@ class AuthPolicy:
             if not subject or not scopes:
                 return None
             return AuthContext(subject[:128], scopes, True, "trusted_proxy")
-        if self.token:
-            supplied = request.headers.get("authorization", "")
-            expected = f"Bearer {self.token}"
-            if not secrets.compare_digest(supplied, expected):
-                return None
-            return AuthContext(self.default_subject, _ALL_SCOPES, True, "bearer")
+        supplied = request.headers.get("authorization", "")
+        for token, scopes, subject in self.credentials:
+            expected = f"Bearer {token}"
+            if secrets.compare_digest(supplied, expected):
+                return AuthContext(subject, scopes, True, "bearer")
+        if self.credentials:
+            return None
         return AuthContext(self.default_subject, _ALL_SCOPES, False, "loopback")
 
     @staticmethod

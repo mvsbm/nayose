@@ -4,9 +4,12 @@ import datetime as dt
 import json
 from dataclasses import dataclass, replace
 
+import numpy as np
 import pandas as pd
 
 from api.infrastructure.process.work_ledger import WorkflowLedger
+from api.infrastructure.runtime.resource_manager import ResourceManager, resource_state_dir
+from api.infrastructure.runtime.workload_storage import training_demand
 from api.training.artifacts import RunBundleWriter
 from api.training.clustering import build_clusters
 from api.training.contracts import (
@@ -22,7 +25,7 @@ from api.training.indexing import TrainingCandidateIndex, build_graph, build_ind
 from api.training.pair_training import PairTrainer
 from api.training.preflight import Preflight
 from api.training.stages import StageReporter
-from nayose.config import TrainingConfig
+from nayose.config import TrainingConfig, performance_from_environment
 
 
 @dataclass(slots=True)
@@ -34,6 +37,22 @@ class TrainingApplication:
         return cls(TrainingConfig.from_env())
 
     def run(self) -> TrainingRunResult:
+        model_id = self.config.model_spec()["embedding"]
+        manager = ResourceManager(resource_state_dir(self.config.output_dir))
+        settings = performance_from_environment()
+        plan = manager.plan(
+            workload="training",
+            requested_device=self.config.device if model_id else "cpu",
+            backend=self.config.embedding_backend if model_id else None,
+            locked_mps=self.config.model_family == "f2llm",
+            settings=settings,
+            storage_demand=training_demand(self.config.data_dir).demand,
+        )
+        with manager.session(plan):
+            manager.configure(plan, settings)
+            return self._run_with_resources()
+
+    def _run_with_resources(self) -> TrainingRunResult:
         snapshot = load_visible_snapshot(self.config)
         identity = self._identity(snapshot.data_fingerprint)
         ledger = WorkflowLedger(
@@ -144,31 +163,38 @@ class TrainingApplication:
 
 
 def _dataset_hardness(index: TrainingCandidateIndex, truth: TruthSnapshot) -> float:
-    anchors: dict[int, set[str]] = {}
-    for name, groups in index.block_indexes.items():
-        for key, anchor_positions in groups.items():
-            tag = f"{name}:{key}"
-            for position in anchor_positions:
-                anchors.setdefault(int(position), set()).add(tag)
-    position_by_record = {
-        str(record_id): position
-        for position, record_id in enumerate(index.reference.record_id.astype(str))
-    }
-    unanchored = 0
-    total = 0
-    for _, group in truth.record_truth.groupby("truth_id", sort=False):
-        record_positions = [
-            position_by_record.get(str(record_id), -1) for record_id in group.record_id[:6]
-        ]
-        record_positions = [position for position in record_positions if position >= 0]
-        for left in range(len(record_positions)):
-            for right in range(left + 1, len(record_positions)):
-                total += 1
-                if not anchors.get(record_positions[left], set()) & anchors.get(
-                    record_positions[right], set()
-                ):
-                    unanchored += 1
-    return unanchored / max(total, 1)
+    position_by_record = pd.Series(
+        np.arange(len(index.reference), dtype=np.int64),
+        index=index.reference.record_id.astype(str),
+    )
+    selected = truth.record_truth.groupby("truth_id", sort=False).head(6).copy()
+    selected["position"] = selected.record_id.astype(str).map(position_by_record)
+    selected = selected.dropna(subset=["position"]).sort_values("truth_id", kind="stable")
+    if selected.empty:
+        return 0.0
+    positions = selected.position.to_numpy(dtype=np.int64)
+    sizes = selected.groupby("truth_id", sort=False, observed=True).size().to_numpy()
+    starts = np.r_[0, np.cumsum(sizes[:-1], dtype=np.int64)]
+    left_parts: list[np.ndarray] = []
+    right_parts: list[np.ndarray] = []
+    for left_offset in range(5):
+        for right_offset in range(left_offset + 1, 6):
+            valid = sizes > right_offset
+            if valid.any():
+                left_parts.append(positions[starts[valid] + left_offset])
+                right_parts.append(positions[starts[valid] + right_offset])
+    if not left_parts:
+        return 0.0
+    left = np.concatenate(left_parts)
+    right = np.concatenate(right_parts)
+    anchored: np.ndarray = np.zeros(len(left), dtype=bool)
+    row_count = len(index.reference)
+    for groups in index.block_indexes.values():
+        keys: np.ndarray = np.full(row_count, "", dtype=object)
+        for key, members in groups.items():
+            keys[members] = key
+        anchored |= (keys[left] != "") & (keys[left] == keys[right])
+    return float((~anchored).sum() / len(anchored))
 
 
 def run_from_environment() -> TrainingRunResult:

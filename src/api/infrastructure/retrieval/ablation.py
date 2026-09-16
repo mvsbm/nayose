@@ -13,9 +13,9 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from api.domain.evidence import visible_record
+from api.domain.evidence import VISIBLE_FIELDS
 from api.domain.features import compute_pair_features
-from api.domain.normalize import normalize_record
+from api.domain.normalize import normalize_frame
 from api.infrastructure.matching.scoring import CandidateAggregator, DecisionPolicy, PairScorer
 from api.infrastructure.retrieval.bundle_retrieval import BundleRetriever
 from api.infrastructure.retrieval.dense_views import DenseView, dense_view_queries
@@ -79,30 +79,55 @@ def _json_list(value: Any) -> list[str]:
 def _target_entities(
     evaluation: pd.DataFrame, record_truth: pd.DataFrame, record_to_entity: dict[str, str]
 ) -> dict[str, set[str]]:
-    truth_records = record_truth.groupby("truth_id")["record_id"].apply(list).to_dict()
-    targets: dict[str, set[str]] = {}
-    for row in evaluation.to_dict("records"):
-        truth_id = str(row.get("target_truth_id", ""))
-        targets[str(row["query_id"])] = {
-            record_to_entity[record_id]
-            for record_id in truth_records.get(truth_id, [])
-            if record_id in record_to_entity
-        }
-    return targets
+    target_ids = evaluation.get("target_truth_id", pd.Series(dtype=object)).astype(str)
+    truth = record_truth.loc[record_truth.truth_id.astype(str).isin(target_ids.unique())].copy()
+    truth["_entity_id"] = truth.record_id.astype(str).map(record_to_entity)
+    truth = truth.loc[truth["_entity_id"].notna()]
+    entities_by_truth = (
+        truth.assign(_truth_id=truth.truth_id.astype(str))
+        .groupby("_truth_id", sort=False)["_entity_id"]
+        .agg(set)
+        .to_dict()
+    )
+    return {
+        str(query_id): set(entities_by_truth.get(str(truth_id), set()))
+        for query_id, truth_id in zip(
+            evaluation.query_id, evaluation.get("target_truth_id", ""), strict=True
+        )
+    }
 
 
 def _ranked_rows(
-    frame: pd.DataFrame, reference: pd.DataFrame, record_to_entity: dict[str, str]
+    frame: pd.DataFrame,
+    reference: pd.DataFrame,
+    record_to_entity: dict[str, str],
+    raw: pd.DataFrame | None = None,
 ) -> list[dict[str, Any]]:
     if frame.empty:
         return []
+    selected = frame.head(20).reset_index(drop=True)
+    candidate_records = (
+        raw if raw is not None else reference.iloc[selected["candidate_index"].astype(int).tolist()]
+    ).reset_index(drop=True)
+    candidate_indices = selected["candidate_index"].to_numpy(dtype=np.int64, copy=False)
+    record_ids = candidate_records["record_id"].astype(str).to_numpy()
+    entity_ids = [record_to_entity.get(record_id, "") for record_id in record_ids]
+    if "retrieval_fusion_score" in selected:
+        candidate_scores = selected["retrieval_fusion_score"].to_numpy()
+    elif "dense_score" in selected:
+        candidate_scores = selected["dense_score"].to_numpy()
+    else:
+        candidate_scores = selected["retrieval_score"].to_numpy()
+    methods = (
+        selected["retrieval_methods"].tolist()
+        if "retrieval_methods" in selected
+        else [[] for _ in range(len(selected))]
+    )
     rows: list[dict[str, Any]] = []
     seen_entities: set[str] = set()
-    for rank, candidate in enumerate(frame.head(20).to_dict("records"), 1):
-        index = int(candidate["candidate_index"])
-        record = reference.iloc[index]
-        record_id = str(record["record_id"])
-        entity_id = record_to_entity.get(record_id, "")
+    for rank, (_candidate_index, record_id, entity_id, score, candidate_methods) in enumerate(
+        zip(candidate_indices, record_ids, entity_ids, candidate_scores, methods, strict=True), 1
+    ):
         if not entity_id or entity_id in seen_entities:
             continue
         seen_entities.add(entity_id)
@@ -111,13 +136,8 @@ def _ranked_rows(
                 "rank": rank,
                 "record_id": record_id,
                 "entity_id": entity_id,
-                "score": float(
-                    candidate.get(
-                        "retrieval_fusion_score",
-                        candidate.get("dense_score", candidate.get("retrieval_score", 0.0)),
-                    )
-                ),
-                "methods": [str(item) for item in candidate.get("retrieval_methods", [])],
+                "score": float(score),
+                "methods": [str(item) for item in candidate_methods],
             }
         )
     return rows
@@ -387,17 +407,47 @@ def _score_auto(
     scorer: PairScorer | None = None,
     aggregator: CandidateAggregator | None = None,
     policy: DecisionPolicy | None = None,
+    normalized: pd.DataFrame | None = None,
+    features: pd.DataFrame | None = None,
+    scores: np.ndarray | None = None,
+    raw: pd.DataFrame | None = None,
 ) -> tuple[str | None, bool | None, str]:
     if frame.empty:
         return None, None, "NO_MATCH"
-    raw = reference.iloc[frame["candidate_index"].astype(int).tolist()].reset_index(drop=True)
-    normalized = pd.DataFrame(
-        [normalize_record(visible_record(row)) for row in raw.to_dict("records")]
+    raw = (
+        raw
+        if raw is not None
+        else reference.iloc[frame["candidate_index"].astype(int).tolist()].reset_index(drop=True)
     )
-    features = compute_pair_features(query, normalized, frame.reset_index(drop=True))
+    if normalized is None:
+        normalized = normalize_frame(
+            raw.reindex(columns=VISIBLE_FIELDS, fill_value=""), "record_id"
+        )
+    pair_features = (
+        features
+        if features is not None
+        else compute_pair_features(query, normalized, frame.reset_index(drop=True))
+    )
     active_scorer = scorer or PairScorer(engine)
     active_aggregator = aggregator or CandidateAggregator(engine)
-    candidates = active_aggregator.build(query, raw, features, active_scorer.score(features), frame)
+    pair_scores = scores if scores is not None else active_scorer.score(pair_features)
+    if (
+        features is not None
+        and scores is not None
+        and hasattr(active_aggregator, "build_decision_candidates")
+    ):
+        candidates = active_aggregator.build_decision_candidates(
+            raw, pair_features, pair_scores, frame
+        )
+    else:
+        candidates = active_aggregator.build(
+            query,
+            raw,
+            pair_features,
+            pair_scores,
+            frame,
+            normalized,
+        )
     if not candidates:
         return None, None, "NO_MATCH"
     active_policy = policy or DecisionPolicy(engine, object())

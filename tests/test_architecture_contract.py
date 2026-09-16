@@ -139,6 +139,30 @@ def test_class_dictionary_sync():
     )
 
 
+def test_navigation_uses_the_route_catalog_as_its_single_source():
+    index = INDEX.read_text(encoding="utf-8")
+    navigation = (REPO / "frontend" / "ts" / "navigation.ts").read_text(encoding="utf-8")
+    assert 'data-nav="' not in index
+    assert "NAVIGATION_GROUPS, ROUTES" in navigation
+    assert "data-icon=" not in index
+    routes = (REPO / "frontend" / "ts" / "routes.ts").read_text(encoding="utf-8")
+    symbols = (REPO / "frontend" / "icons.svg").read_text(encoding="utf-8")
+    configured_icons = set(re.findall(r'icon: "([\w-]+)"', routes))
+    available_icons = set(re.findall(r'<symbol id="([\w-]+)"', symbols))
+    assert configured_icons <= available_icons
+
+
+def test_templates_do_not_require_inline_style_csp_exceptions():
+    """Rendered templates must remain compatible with a strict style CSP."""
+    paths = sorted((REPO / "frontend" / "ts").glob("*.ts")) + [INDEX]
+    offenders = [
+        path.relative_to(REPO).as_posix()
+        for path in paths
+        if re.search(r"\\bstyle\\s*=", path.read_text(encoding="utf-8"))
+    ]
+    assert not offenders, "inline style attributes weaken the strict CSP: " + ", ".join(offenders)
+
+
 REGISTRY_TAGS = ("block", "sub", "state", "utility")
 
 
@@ -232,6 +256,8 @@ def test_views_depend_only_on_ports():
         "./search-workspace.js",
         "./lifecycle.js",
         "./panel-layout.js",
+        "./api-error.js",
+        "./icons.js",
     }
     for path in FEATURES:
         src = path.read_text(encoding="utf-8")

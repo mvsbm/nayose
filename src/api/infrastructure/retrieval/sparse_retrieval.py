@@ -45,14 +45,70 @@ class DirectSparseSimilarity:
 
     def score_many(self, query_matrix: Any) -> list[np.ndarray]:
         similarities = self.reference_matrix @ query_matrix.T
+        values = similarities.toarray() if issparse(similarities) else np.asarray(similarities)
+        return [values[:, row].reshape(-1) for row in range(query_matrix.shape[0])]
+
+    def top_k_many(self, query_matrix: Any, top_k: int) -> list[tuple[np.ndarray, np.ndarray]]:
+        similarities = self.reference_matrix @ query_matrix.T
+        reference_count = self.reference_matrix.shape[0]
+        if issparse(similarities):
+            columns = similarities.tocsc(copy=False)
+            return [
+                _top_k_sparse(
+                    columns.indices[columns.indptr[row] : columns.indptr[row + 1]],
+                    columns.data[columns.indptr[row] : columns.indptr[row + 1]],
+                    top_k,
+                    reference_count,
+                )
+                for row in range(query_matrix.shape[0])
+            ]
+        values = np.asarray(similarities)
         return [
-            np.asarray(
-                similarities.getcol(row).toarray()
-                if issparse(similarities)
-                else similarities[:, row]
-            ).reshape(-1)
+            _top_k_dense(values[:, row], top_k, reference_count)
             for row in range(query_matrix.shape[0])
         ]
+
+
+def _top_k_sparse(
+    indices: np.ndarray, values: np.ndarray, top_k: int, reference_count: int
+) -> tuple[np.ndarray, np.ndarray]:
+    values = np.asarray(values, dtype=np.float32)
+    if not np.isfinite(values).all():
+        raise ValueError("sparse retrieval produced non-finite scores")
+    limit = min(top_k, reference_count)
+    if len(indices) < limit:
+        missing = np.setdiff1d(
+            np.arange(reference_count, dtype=np.int32), indices, assume_unique=True
+        )[: limit - len(indices)]
+        selected_indices = np.concatenate((indices, missing))
+        selected_values = np.concatenate((values, np.zeros(len(missing), dtype=values.dtype)))
+    else:
+        cutoff = np.partition(values, len(values) - limit)[len(values) - limit]
+        above = np.flatnonzero(values > cutoff)
+        ties = np.flatnonzero(values == cutoff)
+        selected = np.concatenate((above, ties[: limit - len(above)]))
+        selected_indices = indices[selected]
+        selected_values = values[selected]
+    order = np.lexsort((selected_indices, -selected_values))
+    return selected_indices[order].astype(np.int32, copy=False), selected_values[order].astype(
+        np.float32, copy=False
+    )
+
+
+def _top_k_dense(
+    scores: np.ndarray, top_k: int, reference_count: int
+) -> tuple[np.ndarray, np.ndarray]:
+    values = np.asarray(scores).reshape(-1)
+    if not np.isfinite(values).all():
+        raise ValueError("sparse retrieval produced non-finite scores")
+    limit = min(top_k, reference_count)
+    cutoff = np.partition(values, len(values) - limit)[len(values) - limit]
+    above = np.flatnonzero(values > cutoff)
+    ties = np.flatnonzero(values == cutoff)
+    selected = np.concatenate((above, ties[: limit - len(above)]))
+    order = np.lexsort((selected, -values[selected]))
+    indices = selected[order].astype(np.int32, copy=False)
+    return indices, values[indices].astype(np.float32, copy=False)
 
 
 class InvertedSparseSimilarity:
@@ -212,17 +268,7 @@ class SparseCandidateBackend:
         return [self._top_k(scores, top_k) for scores in self._similarity.score_many(query_matrix)]
 
     def _top_k(self, scores: np.ndarray, top_k: int) -> tuple[np.ndarray, np.ndarray]:
-        scores = np.asarray(scores).reshape(-1)
-        if not np.isfinite(scores).all():
-            raise ValueError("sparse retrieval produced non-finite scores")
-        limit = min(top_k, len(scores))
-        cutoff = np.partition(scores, len(scores) - limit)[len(scores) - limit]
-        above = np.flatnonzero(scores > cutoff)
-        ties = np.flatnonzero(scores == cutoff)
-        selected = np.concatenate((above, ties[: limit - len(above)]))
-        order = np.lexsort((selected, -scores[selected]))
-        indices = selected[order].astype(np.int32, copy=False)
-        return indices, scores[indices].astype(np.float32, copy=False)
+        return _top_k_dense(scores, top_k, len(scores))
 
     def _validate_top_k(self, top_k: int) -> None:
         if top_k < 1:

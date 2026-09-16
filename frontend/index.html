@@ -5,63 +5,51 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="Nayose 照合監査ダッシュボード — エンティティ照合の検索・レビュー・監査">
   <meta name="theme-color" content="#f6f7fb">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; object-src 'none'; base-uri 'none'; connect-src 'self'; img-src 'self' data:; style-src 'self'; font-src 'self'; form-action 'self'">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%234f46e5'/%3E%3Ccircle cx='16' cy='16' r='6' fill='none' stroke='white' stroke-width='3'/%3E%3C/svg%3E">
   <title>Nayose 照合監査</title>
-  <link rel="preload" href="/static/fonts/noto/noto-sans-jp-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/static/fonts/noto-sans-jp.css">
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
   <a class="skip" href="#view" data-i18n="skip">本文へスキップ</a>
-  <header class="glass app-bar">
+  <header class="app-bar">
+    <button id="nav-toggle" class="side-toggle button-toolbar" type="button" aria-controls="primary-navigation" aria-expanded="true" aria-label="ナビゲーションを折りたたむ"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#menu"></use></svg><span class="side-toggle-label">ナビゲーションを折りたたむ</span></button>
     <div class="app-bar-title">
-      <h1><span class="app-bar-name">Nayose</span><span class="app-bar-context muted" data-i18n="title">照合監査</span></h1>
+      <h1><span class="app-bar-name">Nayose</span><span id="view-title" class="app-bar-context">照合監査</span></h1>
     </div>
-    <button id="cmd" type="button" class="chip app-bar-command" data-i18n-aria="palette" aria-label="コマンドパレット"><span class="app-bar-command-key">⌘K</span><span data-i18n="search">検索</span></button>
+    <button id="cmd" type="button" class="app-bar-command button-toolbar" data-i18n-aria="palette" aria-label="コマンドパレット"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#search"></use></svg><span data-i18n="paletteHintShort">検索または移動</span><kbd>⌘K</kbd></button>
     <div class="app-bar-actions">
-      <label class="run"><span class="muted">run</span>
-        <select id="run" data-i18n-aria="run" aria-label="実行バンドル選択"></select>
-      </label>
-      <span id="run-fp" class="members" aria-live="polite"></span>
-      <button id="theme" type="button" class="chip" data-i18n="theme" data-i18n-aria="theme" aria-label="テーマ切替">テーマ</button>
-      <button id="density" type="button" class="chip" data-i18n="density" data-i18n-aria="density" aria-label="表示密度">表示密度</button>
-      <button id="language" type="button" class="chip" lang="en" aria-label="Switch to English">English</button>
-      <button id="nav-toggle" class="side-toggle" type="button" aria-controls="primary-navigation" aria-expanded="true" aria-label="ナビゲーションを折りたたむ"><span class="side-toggle-icon" aria-hidden="true"></span><span class="side-toggle-label">ナビゲーションを折りたたむ</span></button>
+      <details class="run-context toolbar-popover">
+        <summary class="button-toolbar"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#database"></use></svg><span data-i18n="run">実行バンドル</span></summary>
+        <div class="toolbar-popover-panel">
+          <label class="run"><span class="muted" data-i18n="run">実行バンドル</span><select id="run" data-i18n-aria="run" aria-label="実行バンドル選択"></select></label>
+          <span id="run-fp" class="members" aria-live="polite"></span>
+        </div>
+      </details>
+      <details class="app-settings toolbar-popover">
+        <summary class="button-toolbar" data-i18n-aria="settings" aria-label="表示設定"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#settings"></use></svg><span class="toolbar-label" data-i18n="settings">表示設定</span></summary>
+        <div class="toolbar-popover-panel">
+          <button id="theme" type="button" class="button-secondary" data-i18n="theme" data-i18n-aria="theme" aria-label="テーマ切替">テーマ</button>
+          <button id="density" type="button" class="button-secondary" data-i18n="density" data-i18n-aria="density" aria-label="表示密度">表示密度</button>
+          <button id="language" type="button" class="button-secondary" lang="en" aria-label="Switch to English">English</button>
+        </div>
+      </details>
+      <details id="system-status" class="system-status toolbar-popover">
+        <summary class="button-toolbar" data-i18n-aria="statusTitle" aria-label="システム状態"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#status"></use></svg><span class="toolbar-label" data-i18n="statusTitle">システム状態</span></summary>
+        <div id="status-strip" class="status-strip toolbar-popover-panel" role="status" aria-live="polite" hidden><span data-i18n="statusTitle">システム状態</span></div>
+      </details>
     </div>
   </header>
   <div class="shell">
-    <aside id="activity-navigation" class="glass activity-bar" data-i18n-aria="workspaces" aria-label="ワークスペース">
-      <a href="#/search" data-activity="match" data-activity-routes="search,entities,entity" aria-label="照合"><span class="activity-bar-icon" data-icon="⌕" aria-hidden="true"></span><span class="activity-bar-label" data-i18n="navMatch">照合</span></a>
-      <a href="#/review" data-activity="review" data-activity-routes="review,data-entry,compare" aria-label="確認と登録"><span class="activity-bar-icon" data-icon="✓" aria-hidden="true"></span><span class="activity-bar-label" data-i18n="navReview">確認と登録</span></a>
-      <a href="#/metrics" data-activity="evaluate" data-activity-routes="metrics,confusion,compare-runs" aria-label="評価"><span class="activity-bar-icon" data-icon="▦" aria-hidden="true"></span><span class="activity-bar-label" data-i18n="navEvaluate">評価</span></a>
-      <a href="#/admin" id="activity-admin" data-activity="admin" data-activity-routes="admin" aria-label="管理" hidden><span class="activity-bar-icon" data-icon="⚙" aria-hidden="true"></span><span class="activity-bar-label" data-i18n="navAdmin">管理</span></a>
-    </aside>
-    <nav id="primary-navigation" class="glass side" data-i18n-aria="sections" aria-label="セクション">
-      <details open data-nav-group="match"><summary data-nav-label="match"><span class="side-icon" data-icon="⌕" aria-hidden="true"></span><span class="side-label" data-i18n="navMatch">照合</span></summary>
-        <a href="#/search" data-nav="search"><span class="side-icon" data-icon="⌕" aria-hidden="true"></span><span class="side-label" data-i18n="search">検索・照合</span></a>
-        <a href="#/entities" data-nav="entities"><span class="side-icon" data-icon="◉" aria-hidden="true"></span><span class="side-label" data-i18n="entityExplorer">エンティティ探索</span></a>
-      </details>
-      <details open data-nav-group="review"><summary data-nav-label="review"><span class="side-icon" data-icon="✓" aria-hidden="true"></span><span class="side-label" data-i18n="navReview">確認と登録</span></summary>
-        <a href="#/review" data-nav="review"><span class="side-icon" data-icon="✓" aria-hidden="true"></span><span class="side-label" data-i18n="review">レビュー待機</span></a>
-        <a href="#/data-entry" data-nav="data-entry" id="nav-data-entry" hidden><span class="side-icon" data-icon="＋" aria-hidden="true"></span><span class="side-label" data-i18n="dataEntry">データ登録</span></a>
-      </details>
-      <details open data-nav-group="evaluate"><summary data-nav-label="evaluate"><span class="side-icon" data-icon="▦" aria-hidden="true"></span><span class="side-label" data-i18n="navEvaluate">評価</span></summary>
-        <a href="#/metrics" data-nav="metrics"><span class="side-icon" data-icon="▥" aria-hidden="true"></span><span class="side-label" data-i18n="metrics">指標</span></a>
-        <a href="#/confusion" data-nav="confusion"><span class="side-icon" data-icon="▦" aria-hidden="true"></span><span class="side-label" data-i18n="confusion">混同行列</span></a>
-        <a href="#/compare-runs" data-nav="compare-runs"><span class="side-icon" data-icon="⇄" aria-hidden="true"></span><span class="side-label" data-i18n="compareRuns">run 比較</span></a>
-      </details>
-      <details id="nav-admin-group" data-nav-group="admin" hidden><summary data-nav-label="admin"><span class="side-icon" data-icon="⚙" aria-hidden="true"></span><span class="side-label" data-i18n="navAdmin">管理</span></summary>
-        <a href="#/admin" data-nav="admin" id="nav-admin"><span class="side-icon" data-icon="⚙" aria-hidden="true"></span><span class="side-label" data-i18n="dataTrain">データと学習</span></a>
-      </details>
-    </nav>
+    <nav id="primary-navigation" class="side" data-i18n-aria="sections" aria-label="セクション"></nav>
     <div id="nav-resizer" class="side-resizer" role="separator" aria-orientation="vertical" data-i18n-aria="resizeNavigation" aria-label="ナビゲーション幅を変更" aria-valuemin="220" aria-valuemax="420" aria-valuenow="256" tabindex="0" hidden></div>
     <button id="nav-scrim" class="side-scrim" type="button" data-i18n-aria="closeNavigation" aria-label="ナビゲーションを閉じる" tabindex="-1" hidden></button>
     <main id="view" tabindex="-1"></main>
   </div>
-  <div id="status-strip" class="status-strip" aria-live="polite"><span data-i18n="statusTitle">システム状態</span></div>
   <div id="palette" role="dialog" aria-modal="true" hidden data-i18n-aria="palette" aria-label="コマンドパレット">
-    <div class="glass box">
-      <input id="palette-input" data-i18n-placeholder="paletteHint" data-i18n-aria="palette" type="search" placeholder="検索・移動…（例：N0000123）" autocomplete="off" aria-controls="palette-results" aria-activedescendant="">
+    <div class="box">
+      <input id="palette-input" data-i18n-placeholder="paletteHint" data-i18n-aria="palette" type="search" role="combobox" aria-autocomplete="list" placeholder="検索・移動…（例：N0000123）" autocomplete="off" aria-controls="palette-results" aria-activedescendant="">
       <ul id="palette-results" role="listbox" tabindex="-1"></ul>
       <p id="palette-stat" role="status" aria-live="polite" class="members"></p>
     </div>

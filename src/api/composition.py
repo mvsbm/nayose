@@ -25,6 +25,7 @@ from api.infrastructure.persistence.audit import AuditLog
 from api.infrastructure.persistence.decisions import DecisionsStore
 from api.infrastructure.persistence.operational_store import OperationalStore
 from api.infrastructure.runtime.embedding_runtime import configure_embedding_stats
+from api.infrastructure.runtime.resource_manager import ResourceManager, resource_state_dir
 from nayose.config import ConfigSnapshot, RuntimeConfig, load_config
 
 
@@ -46,6 +47,7 @@ def build_application(
     snapshot = config_snapshot or load_config()
     stats = Stats()
     configure_embedding_stats(stats)
+    resource_manager = ResourceManager(resource_state_dir(config.models_dir))
     operational_store = OperationalStore(
         config.operational_db or config.data_root / "operational.sqlite3", stats=stats
     )
@@ -92,4 +94,5 @@ def build_application(
         search=build_search_service(queries, recommend),
         stats=stats,
         review=review,
+        resource_manager=resource_manager,
     )

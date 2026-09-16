@@ -56,6 +56,66 @@ def test_snapshot_resolves_environment_overrides_once() -> None:
     assert snapshot.runtime.exact_mode == "exact_only"
     assert snapshot.retrieval.use_dense is False
     assert snapshot.inference.candidate_cap == 7
+    assert snapshot.embedding.backend == "pytorch_mps"
+    assert snapshot.embedding.batch_size == 32
+    assert snapshot.training.embedding_backend == "pytorch_mps"
+    assert snapshot.storage.reserve_minimum_bytes == 20 << 30
+
+
+def test_storage_policy_environment_overrides_are_validated() -> None:
+    snapshot = load_config(
+        {
+            "NAYOSE_STORAGE_RESERVE_RATIO": "0.2",
+            "NAYOSE_STORAGE_RESERVE_MINIMUM_BYTES": "1024",
+            "NAYOSE_STORAGE_WORKSPACE_STALE_SECONDS": "30",
+        }
+    )
+
+    assert snapshot.storage.reserve_ratio == pytest.approx(0.2)
+    assert snapshot.storage.reserve_minimum_bytes == 1024
+    assert snapshot.storage.workspace_stale_seconds == 30
+
+
+def test_embedding_optimization_values_are_toml_only() -> None:
+    snapshot = load_config(
+        {
+            "NAYOSE_NEURAL_BATCH": "64",
+            "NAYOSE_PROCESS_WORKERS": "4",
+            "NAYOSE_MODEL_THREADS": "2",
+        }
+    )
+
+    assert snapshot.embedding.batch_size == 32
+    assert snapshot.embedding.process_workers == 1
+    assert snapshot.embedding.max_length == 0
+    assert snapshot.embedding.padding_strategy == "longest"
+
+
+def test_runtime_embedding_overrides_cannot_bypass_toml_settings() -> None:
+    from api.infrastructure.runtime.embedding_runtime import (
+        close_query_encoder,
+        configure_query_encoder,
+    )
+
+    settings = EmbeddingConfig(backend="mlx_cpu")
+    try:
+        with pytest.raises(ValueError, match="canonical configuration"):
+            configure_query_encoder("example/model", batch_size=64, settings=settings)
+    finally:
+        close_query_encoder()
+
+
+def test_training_cpu_override_does_not_bypass_serving_mps_lock() -> None:
+    training = TrainingConfig.from_env({"NAYOSE_DEVICE": "cpu", "NAYOSE_MODEL_FAMILY": "off"})
+
+    assert training.device == "cpu"
+    assert training.model_family == "off"
+
+
+def test_internal_macos_runtime_marker_is_accepted() -> None:
+    snapshot = load_config({"NAYOSE_MACOS_RUNTIME_ALIGNED": "1"})
+
+    assert snapshot.runtime.exact_mode == "hybrid"
 
 
 def test_unknown_nayose_environment_key_fails_closed() -> None:
@@ -70,6 +130,10 @@ def test_cross_field_validation_rejects_invalid_combinations() -> None:
         RuntimeConfig(auth_mode="trusted_proxy", bind_host="127.0.0.1")
     with pytest.raises(ConfigurationError, match="locked to MPS"):
         EmbeddingConfig(device="cpu")
+    with pytest.raises(ConfigurationError, match="embedding backend"):
+        EmbeddingConfig(backend="unsupported")
+    with pytest.raises(ConfigurationError, match="max_length padding"):
+        EmbeddingConfig(padding_strategy="max_length")
     with pytest.raises(ConfigurationError, match="must be positive"):
         RetrievalConfig(sparse_batch_size=0)
     with pytest.raises(ConfigurationError, match="between 0 and 1"):
@@ -139,6 +203,7 @@ def test_configuration_summary_is_section_shaped_redacted_and_read_only() -> Non
         "embedding",
         "performance",
         "retrieval",
+        "storage",
         "inference",
         "training",
         "generation",

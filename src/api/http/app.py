@@ -11,6 +11,7 @@ from uuid import uuid4
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.responses import Response
 
 from api.application import ApplicationServices
 from api.http.auth import AuthPolicy, bind_auth, clear_auth
@@ -29,6 +30,8 @@ def create_app(services: ApplicationServices, router: APIRouter) -> FastAPI:
         config.default_reviewer,
         config.trusted_auth_subject_header,
         config.trusted_auth_scopes_header,
+        getattr(config, "review_token", ""),
+        getattr(config, "admin_token", ""),
     )
 
     @asynccontextmanager
@@ -67,6 +70,7 @@ def create_app(services: ApplicationServices, router: APIRouter) -> FastAPI:
         if _requires_auth(config, request) and context is None:
             response = JSONResponse({"detail": "unauthorized"}, status_code=401)
             response.headers["X-Request-ID"] = request_id
+            _set_security_headers(response)
             services.stats.record("http", time.perf_counter() - started, error=True)
             clear_snapshot_context()
             clear_auth()
@@ -79,6 +83,7 @@ def create_app(services: ApplicationServices, router: APIRouter) -> FastAPI:
                 LOGGER.exception("request failed request_id=%s", request_id)
                 response = JSONResponse({"detail": "internal_server_error"}, status_code=500)
             response.headers["X-Request-ID"] = request_id
+            _set_security_headers(response)
             services.stats.record("http", time.perf_counter() - started)
             return response
         finally:
@@ -88,13 +93,29 @@ def create_app(services: ApplicationServices, router: APIRouter) -> FastAPI:
     return app
 
 
+def _set_security_headers(response: Response) -> None:
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; script-src 'self'; object-src 'none'; base-uri 'none'; "
+        "connect-src 'self'; img-src 'self' data:; style-src 'self'; "
+        "font-src 'self'; form-action 'self'; frame-ancestors 'none'"
+    )
+
+
 def _requires_auth(config: object, request: Request) -> bool:
     mode = getattr(config, "auth_mode", "local_bearer")
-    token = getattr(config, "api_token", "")
+    tokens = (
+        getattr(config, "api_token", ""),
+        getattr(config, "review_token", ""),
+        getattr(config, "admin_token", ""),
+    )
     return bool(
         request.url.path.startswith("/api/")
         and request.url.path != "/api/health"
-        and (mode == "trusted_proxy" or token)
+        and (mode == "trusted_proxy" or any(tokens))
     )
 
 

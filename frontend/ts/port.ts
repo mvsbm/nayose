@@ -94,6 +94,7 @@ export interface MatchJob {
   progress?: JobProgress | null;
   error: string | null;
   result: RecommendResult | null;
+  poll_status?: "terminal" | "timeout" | "cancelled";
 }
 
 export interface ReviewRow {
@@ -351,66 +352,66 @@ export interface ManualList {
 }
 
 export interface SearchPort {
-  entities(q: string, limit?: number, filters?: SearchFilters): Promise<SearchResult>;
-  normalizePreview(text: string): Promise<Record<string, string>>;
+  entities(q: string, limit?: number, filters?: SearchFilters, signal?: AbortSignal): Promise<SearchResult>;
+  normalizePreview(text: string, signal?: AbortSignal): Promise<Record<string, string>>;
 }
 
 export interface EntityDetailPort {
-  entity(id: string, offset?: number, limit?: number): Promise<EntityDetail>;
+  entity(id: string, offset?: number, limit?: number, signal?: AbortSignal): Promise<EntityDetail>;
 }
 
 export interface ReviewPort {
-  review(minP: number, offset: number, limit: number, nayose?: string): Promise<ReviewPage>;
+  review(minP: number, offset: number, limit: number, nayose?: string, signal?: AbortSignal): Promise<ReviewPage>;
 }
 
 export interface MetricsPort {
-  metrics(): Promise<MetricsViewData>;
+  metrics(signal?: AbortSignal): Promise<MetricsViewData>;
 }
 
 export interface ConfusionPort {
-  confusion(): Promise<ConfusionData>;
+  confusion(signal?: AbortSignal): Promise<ConfusionData>;
 }
 
 export interface EntityExplorerPort {
-  entityExplorer(q: string, offset: number, limit: number, sort: EntitySort, filters?: SearchFilters, cursor?: string): Promise<EntityExplorerPage>;
-  entityGraph(id: string, includePotential?: boolean): Promise<EntityGraph>;
+  entityExplorer(q: string, offset: number, limit: number, sort: EntitySort, filters?: SearchFilters, cursor?: string, signal?: AbortSignal): Promise<EntityExplorerPage>;
+  entityGraph(id: string, includePotential?: boolean, signal?: AbortSignal): Promise<EntityGraph>;
 }
 
 export interface ComparePort {
-  compare(l: string, r: string): Promise<Record<string, unknown>[]>;
+  compare(l: string, r: string, signal?: AbortSignal): Promise<Record<string, unknown>[]>;
 }
 
 export interface CompareRunsPort {
-  metricsFor(run: string): Promise<MetricsViewData>;
+  metricsFor(run: string, signal?: AbortSignal): Promise<MetricsViewData>;
 }
 
 export interface MatchingPort {
-  matchSample(): Promise<{ record: Record<string, string> }>;
-  startRecommendation(record: Record<string, string>, thresholds?: { auto: number; review: number }): Promise<MatchJob>;
-  recommendation(id: string): Promise<MatchJob>;
+  matchSample(signal?: AbortSignal): Promise<{ record: Record<string, string> }>;
+  startRecommendation(record: Record<string, string>, thresholds?: { auto: number; review: number }, signal?: AbortSignal): Promise<MatchJob>;
+  recommendation(id: string, signal?: AbortSignal): Promise<MatchJob>;
 }
 
 export interface DataEntryPort extends MatchingPort {
-  manualList(): Promise<ManualList>;
-  manualRegister(record: Record<string, string>): Promise<{ ok: boolean; record_id: string }>;
-  manualImport(rows: Array<Record<string, string>>, dryRun: boolean): Promise<Record<string, unknown>>;
-  manualUndo(recordIds: string[]): Promise<{ ok: boolean; removed: number }>;
+  manualList(signal?: AbortSignal): Promise<ManualList>;
+  manualRegister(record: Record<string, string>, signal?: AbortSignal): Promise<{ ok: boolean; record_id: string }>;
+  manualImport(rows: Array<Record<string, string>>, dryRun: boolean, signal?: AbortSignal): Promise<Record<string, unknown>>;
+  manualUndo(recordIds: string[], signal?: AbortSignal): Promise<{ ok: boolean; removed: number }>;
 }
 
 export interface DatasetPort {
-  adminGenerations(): Promise<DatasetGeneration[]>;
-  adminDatasetSummary(generationId: string): Promise<DatasetSummary>;
+  adminGenerations(signal?: AbortSignal): Promise<DatasetGeneration[]>;
+  adminDatasetSummary(generationId: string, signal?: AbortSignal): Promise<DatasetSummary>;
   adminDatasetRows(generationId: string, table: string, query: string, offset: number, limit: number, filters?: Record<string, string>, includeTotal?: boolean, after?: string, signal?: AbortSignal): Promise<DatasetRows>;
 }
 
 export interface AdminPort extends DatasetPort {
-  adminConfig(): Promise<AdminConfig>;
-  adminState(): Promise<AdminState>;
-  adminGenerationConfig(): Promise<GenerationCatalog>;
-  adminGenerationPreview(controls: GenerationControls): Promise<GenerationPreview>;
-  adminStart(action: string, params: object): Promise<MatchJob>;
-  adminJob(id: string): Promise<MatchJob>;
-  adminAction(action: string, params: Record<string, string | number>): Promise<Record<string, unknown>>;
+  adminConfig(signal?: AbortSignal): Promise<AdminConfig>;
+  adminState(signal?: AbortSignal): Promise<AdminState>;
+  adminGenerationConfig(signal?: AbortSignal): Promise<GenerationCatalog>;
+  adminGenerationPreview(controls: GenerationControls, signal?: AbortSignal): Promise<GenerationPreview>;
+  adminStart(action: string, params: object, signal?: AbortSignal): Promise<MatchJob>;
+  adminJob(id: string, signal?: AbortSignal): Promise<MatchJob>;
+  adminAction(action: string, params: Record<string, string | number>, signal?: AbortSignal): Promise<Record<string, unknown>>;
 }
 
 export interface RunPort {
@@ -420,7 +421,7 @@ export interface RunPort {
 
 export interface SystemPort {
   adminCapability(): Promise<AdminCapability>;
-  health(): Promise<HealthInfo>;
+  health(signal?: AbortSignal): Promise<HealthInfo>;
 }
 
 export interface DecisionSnapshot {
@@ -429,8 +430,8 @@ export interface DecisionSnapshot {
 }
 
 export interface DecisionPort {
-  loadDecisions(): Promise<DecisionSnapshot>;
-  saveDecisions(items: Array<{ left: string; right: string; ts: string; reviewer?: string }>, revision: number): Promise<number>;
+  loadDecisions(runId?: string, signal?: AbortSignal): Promise<DecisionSnapshot>;
+  saveDecisions(items: Array<{ left: string; right: string; ts: string; reviewer?: string }>, revision: number, runId?: string, signal?: AbortSignal): Promise<number>;
 }
 
 export interface RecommendationPort {

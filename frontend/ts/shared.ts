@@ -2,6 +2,10 @@
 // the ONE server seam. Keep browser animation isolated from view modules.
 export type { RunInfo } from "./port.js";
 
+export function formatNumber(value: number, locale: "ja" | "en"): string {
+  return new Intl.NumberFormat(locale === "ja" ? "ja-JP" : "en-US").format(value);
+}
+
 export interface FlipAnimator {
   capture(root: ParentNode): void;
   play(root: ParentNode): void;

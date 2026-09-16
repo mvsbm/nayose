@@ -49,6 +49,9 @@ export function syncControlOutputs(el, catalog, controls, store) {
 export function cloneGenerationControls(controls) {
     return JSON.parse(JSON.stringify(controls));
 }
+export function generationControlsHash(controls) {
+    return JSON.stringify(controls);
+}
 function setValue(el, selector, value) {
     const input = el.querySelector(selector);
     if (input)

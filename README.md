@@ -32,7 +32,7 @@ tables under `data/ground_truth/`.
 
 ```bash
 source .venv/bin/activate
-uv sync --extra matcher --extra performance --extra serve --extra dev
+uv sync --extra matcher --extra neural --extra performance --extra serve --extra dev
 python -m api.cli data generate --profile smoke --data-dir data --seed 42
 # profiles: ~340 / ~800 / ~6,800 / ~22,700 / ~113,500 canonical entities
 # one-time downloads, cached in data/raw/: Nemotron persona names, Japan Post ken_all, EDINET
@@ -125,6 +125,10 @@ NAYOSE_DASH_PORT=8899 NAYOSE_WARM_EMBED=1 python -m api.main
 
 ## Architecture
 
+Static HLD/LLD diagrams are generated from the Python and TypeScript import graphs:
+`python scripts/generate_architecture_diagrams.py`; see
+[`docs/ARCHITECTURE_DIAGRAMS.md`](docs/ARCHITECTURE_DIAGRAMS.md).
+
 | Component | Responsibility |
 |-----------|----------------|
 | `InferenceConfig` | Immutable serving settings |
@@ -216,7 +220,13 @@ rewrite entity profiles. Record candidates are fused with exact and sparse
 channels before structured pair verification, so dense similarity never becomes
 an identity decision by itself.
 
-## Tunable parameters (hyperparameters) — all env-overridable
+## Tunable parameters (hyperparameters)
+
+Runtime optimization settings are defined only in the canonical
+`src/nayose/nayose.toml`. Deployment environment overrides remain available for
+secrets, paths, and approved operational controls, but they do not change
+embedding backend, embedding batch size, embedding worker count, or MLX
+sequence/padding behavior.
 
 | Group | Env | Default | Meaning |
 |---|---|---|---|
@@ -228,13 +238,13 @@ an identity decision by itself.
 | | `NAYOSE_DENSE_VIEWS` | 1 | materialize field-aware F2LLM name/address/alias artifacts |
 | | `NAYOSE_SPARSE_TOPK` / `NAYOSE_DENSE_TOPK` | 24 / 16 | k per retrieval channel |
 | | `NAYOSE_CANDIDATE_CAP` | 80 | max candidate records per query |
-| | `NAYOSE_SPARSE_BATCH` / `NAYOSE_NEURAL_BATCH` | 512 / 32 | batch sizes; 32 is frozen for F2LLM |
+| | `NAYOSE_SPARSE_BATCH` / `NAYOSE_NEURAL_BATCH` | 512 / 32 | legacy command inputs; embedding batch size is TOML-only and 32 is frozen for F2LLM |
 | Embeddings | `NAYOSE_EMBEDDING_MODEL` | F2LLM-v2-330M | locked production dense encoder |
-| | `NAYOSE_DEVICE` | mps | MPS-only neural execution; no device fallback |
+| | `NAYOSE_DEVICE` | mps | locked PyTorch/MPS compatibility device |
 | | `PYTORCH_ENABLE_MPS_FALLBACK` | 0 | unsupported MPS ops fail instead of using CPU |
 | | `NAYOSE_USE_DENSE` | 1 | dense channel on/off; bundle artifacts remain strict |
 | | `NAYOSE_CPU_THREADS` | auto | per-process numerical thread budget |
-| | `NAYOSE_PROCESS_WORKERS` | 1 | process count used to divide CPU threads |
+| | `NAYOSE_PROCESS_WORKERS` | 1 | process count used to divide non-embedding CPU threads |
 | | `NAYOSE_INDEX_BACKEND` | polars | bulk index materialization backend |
 | | `NAYOSE_SVD_DIM` | 32 | SVD dimensions for the `off` model |
 | Pair model | `NAYOSE_PAIR_MODEL` | auto | auto/lightgbm/sklearn |
@@ -245,6 +255,21 @@ an identity decision by itself.
 | | `NAYOSE_ENTITY_AUTO_PRECISION` | 0.97 | entity auto precision target |
 | | `NAYOSE_ENTITY_MARGIN` | 0.06 | margin over second entity |
 | | `NAYOSE_ENTITY_OVERRIDE` | 0 | force manifest thresholds off |
+
+For Apple Silicon MLX can be selected only in the canonical TOML:
+
+```toml
+[embedding]
+backend = "mlx_gpu"  # mlx_cpu is the CPU fallback; pytorch_mps is the reference
+
+[embedding.optimization]
+max_length = 0        # model maximum when zero
+padding_strategy = "longest"
+```
+
+The MLX extra is optional: `uv pip install -e '.[mlx]'`. MLX is fail-closed
+when unavailable or when the model architecture is unsupported; it never
+silently falls back to PyTorch.
 
 LightGBM internals (n_estimators=260, lr=0.035, num_leaves=31, …) live in
 the modular pair-training stage; the sklearn HistGB backend is

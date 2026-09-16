@@ -16,6 +16,7 @@ from api.infrastructure.observability.telemetry import Stats
 from api.infrastructure.persistence.audit import AuditLog
 from api.infrastructure.persistence.decisions import DecisionsStore
 from api.infrastructure.persistence.operational_store import OperationalStore
+from api.infrastructure.runtime.resource_manager import ResourceManager
 from nayose.config import RuntimeConfig
 
 
@@ -37,6 +38,7 @@ class ApplicationServices:
     admin: AdminService
     search: SearchService
     stats: Stats
+    resource_manager: ResourceManager | None = None
 
     def close(self) -> None:
         """Release application resources exactly at application shutdown."""

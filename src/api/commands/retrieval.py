@@ -9,6 +9,13 @@ from dataclasses import asdict
 from pathlib import Path
 
 from api.infrastructure.retrieval.ablation import ABLATION_NAMES, evaluate
+from api.infrastructure.runtime.resource_manager import (
+    ResourceManager,
+    plan_for_bundle,
+    resource_state_dir,
+)
+from api.infrastructure.runtime.workload_storage import bundle_demand
+from nayose.config import load_config
 
 
 def parse_args() -> argparse.Namespace:
@@ -34,13 +41,25 @@ def main() -> int:
         raise SystemExit("--query-limit must be positive")
     if args.batch_size < 1:
         raise SystemExit("--batch-size must be positive")
-    report = evaluate(
-        Path(args.model_dir),
-        Path(args.data_dir),
-        query_limit=args.query_limit,
-        batch_size=args.batch_size,
-        modes=args.modes,
+    model_dir = Path(args.model_dir)
+    config = load_config()
+    manager = ResourceManager(resource_state_dir(model_dir))
+    plan = plan_for_bundle(
+        manager,
+        config,
+        model_dir,
+        workload="retrieval-evaluation",
+        storage_demand=bundle_demand("retrieval-evaluation").demand,
     )
+    with manager.session(plan):
+        manager.configure(plan, config.performance)
+        report = evaluate(
+            model_dir,
+            Path(args.data_dir),
+            query_limit=args.query_limit,
+            batch_size=args.batch_size,
+            modes=args.modes,
+        )
     payload = asdict(report)
     serialized = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
     if args.output is None:

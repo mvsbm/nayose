@@ -7,13 +7,19 @@ services:
     environment:
       NAYOSE_DATA_DIR: /app/data/current
       NAYOSE_MODELS_DIR: /app/models
-      NAYOSE_OPERATIONAL_DB: /app/data/operational.sqlite3
+      NAYOSE_OPERATIONAL_DB: /app/runtime/operational.sqlite3
       NAYOSE_DASH_PORT: "8000"
-      # The container binds to all interfaces; fail closed unless a token is supplied.
-      NAYOSE_API_TOKEN: ${NAYOSE_API_TOKEN:?set NAYOSE_API_TOKEN before starting the container}
+      # The container binds to all interfaces; fail closed unless at least one token is supplied.
+      NAYOSE_API_TOKEN: ${NAYOSE_API_TOKEN:-}
+      NAYOSE_REVIEW_TOKEN: ${NAYOSE_REVIEW_TOKEN:-}
+      NAYOSE_ADMIN_TOKEN: ${NAYOSE_ADMIN_TOKEN:-}
       # Preloads the recommend engine so the first request is not a cold start:
       # NAYOSE_WARM_EMBED: "1"
     volumes:
-      - ./data:/app/data            # generations + current (immutable)
-      - ./models:/app/models        # immutable runs + current
+      - ./data:/app/data:ro         # generations + current (immutable)
+      - ./models:/app/models:ro     # immutable runs + current
+      - nayose-runtime:/app/runtime
     restart: unless-stopped
+
+volumes:
+  nayose-runtime:

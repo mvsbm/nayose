@@ -23,6 +23,9 @@ e2e_data/
 e2e_tandem*/
 *.bench*.parquet
 
+# --- Runtime coordination ---
+.nayose-runtime/
+
 # --- Caches & tooling ---
 .pytest_cache/
 .ruff_cache/

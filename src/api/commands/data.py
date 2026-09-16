@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import Any
 
 from api.infrastructure.process.work_ledger import WorkflowLedger
+from api.infrastructure.runtime.resource_manager import ResourceManager, resource_state_dir
+from api.infrastructure.runtime.workload_storage import generation_demand
 from data_generation.canonical import write_clean_entities
 from data_generation.preview import config_from_controls
 from data_generation.workflow import generate, save_all
@@ -59,6 +61,55 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _run_generation(args: argparse.Namespace, config: Any, cfg: Any) -> int:
+    manager = ResourceManager(resource_state_dir(config.runtime.models_dir))
+    estimate = generation_demand(cfg, clean_only=args.clean_only)
+    plan = manager.plan(
+        workload=estimate.workload,
+        requested_device="cpu",
+        settings=config.performance,
+        storage_demand=estimate.demand,
+    )
+    with manager.session(plan):
+        manager.configure(plan, config.performance)
+        ledger = WorkflowLedger(
+            "generation",
+            metadata={"profile": cfg.profile, "seed": cfg.seed},
+        )
+        t0 = time.perf_counter()
+        if args.clean_only:
+            with ledger.span("clean_generation", "pipeline"):
+                clean_result = write_clean_entities(cfg, chunk_size=args.chunk_size)
+            clean_dir = Path(str(clean_result["generation_dir"]))
+            clean_counts = clean_result["counts"]
+            if not isinstance(clean_counts, dict):
+                raise RuntimeError("clean generation returned invalid counts")
+            ledger.counter("entities", int(clean_counts["entities"]))
+            ledger.write(clean_dir / "workflow_metrics.json")
+            print(
+                f"Wrote {clean_result['counts']} clean entities in {time.perf_counter() - t0:.1f}s"
+            )
+            return 0
+        with ledger.span("generate", "pipeline"):
+            result = generate(cfg)
+        for name, amount in result.counts.items():
+            ledger.counter(name, amount)
+        print(f"Generated {result.counts} in {time.perf_counter() - t0:.1f}s; saving...")
+        with ledger.span("save_generation", "file"):
+            paths = save_all(cfg, result)
+        generation_dir = paths[0].parent
+        manifest = json.loads(paths[-1].read_text(encoding="utf-8"))
+        ledger.metadata("data_fingerprint", str(manifest.get("data_fingerprint", "")))
+        ledger.counter("artifacts", len(paths))
+        ledger.write(generation_dir / "workflow_metrics.json")
+        print(f"Wrote {len(paths)} artifacts under {cfg.output_dir}")
+        print(
+            f"Done: run the matcher with `NAYOSE_DATA_DIR={cfg.output_dir} "
+            "nayose model train --data-dir <generation> --models-dir models`"
+        )
+        return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     config = load_config()
@@ -87,40 +138,7 @@ def main(argv: list[str] | None = None) -> int:
             updates["n_parties_override"] = args.n_parties
         if updates:
             cfg = replace(cfg, **updates)
-    ledger = WorkflowLedger(
-        "generation",
-        metadata={"profile": cfg.profile, "seed": cfg.seed},
-    )
-    t0 = time.perf_counter()
-    if args.clean_only:
-        with ledger.span("clean_generation", "pipeline"):
-            clean_result = write_clean_entities(cfg, chunk_size=args.chunk_size)
-        clean_dir = Path(str(clean_result["generation_dir"]))
-        clean_counts = clean_result["counts"]
-        if not isinstance(clean_counts, dict):
-            raise RuntimeError("clean generation returned invalid counts")
-        ledger.counter("entities", int(clean_counts["entities"]))
-        ledger.write(clean_dir / "workflow_metrics.json")
-        print(f"Wrote {clean_result['counts']} clean entities in {time.perf_counter() - t0:.1f}s")
-        return 0
-    with ledger.span("generate", "pipeline"):
-        result = generate(cfg)
-    for name, amount in result.counts.items():
-        ledger.counter(name, amount)
-    print(f"Generated {result.counts} in {time.perf_counter() - t0:.1f}s; saving...")
-    with ledger.span("save_generation", "file"):
-        paths = save_all(cfg, result)
-    generation_dir = paths[0].parent
-    manifest = json.loads(paths[-1].read_text(encoding="utf-8"))
-    ledger.metadata("data_fingerprint", str(manifest.get("data_fingerprint", "")))
-    ledger.counter("artifacts", len(paths))
-    ledger.write(generation_dir / "workflow_metrics.json")
-    print(f"Wrote {len(paths)} artifacts under {cfg.output_dir}")
-    print(
-        f"Done: run the matcher with `NAYOSE_DATA_DIR={cfg.output_dir} "
-        "nayose model train --data-dir <generation> --models-dir models`"
-    )
-    return 0
+    return _run_generation(args, config, cfg)
 
 
 if __name__ == "__main__":

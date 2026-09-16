@@ -22,6 +22,15 @@ def test_cli_routes_lifecycle_commands_to_their_owner() -> None:
     invoke.assert_called_once_with("api.commands.lifecycle", ["--seed", "7"])
 
 
+def test_cli_routes_resource_planning_to_capacity_owner() -> None:
+    with patch("api.cli.invoke", return_value=0) as invoke:
+        assert main(["resource", "plan", "--path", "/tmp", "--workload", "e2e"]) == 0
+
+    invoke.assert_called_once_with(
+        "api.commands.resources", ["--path", "/tmp", "--workload", "e2e"]
+    )
+
+
 def test_locked_f2llm_profile_freezes_mps_runtime_settings(tmp_path: Path) -> None:
     from api.commands.lifecycle import _env_for
 

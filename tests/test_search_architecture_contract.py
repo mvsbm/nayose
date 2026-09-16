@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import re
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -11,6 +12,7 @@ SEARCH_ROUTES = REPO / "src" / "api" / "http" / "routers" / "entities.py"
 MAIN = REPO / "src" / "api" / "composition.py"
 MATCH_VIEW = REPO / "frontend" / "ts" / "match-view.ts"
 INFRA = REPO / "frontend" / "ts" / "infra.ts"
+MEMO_PROXY = REPO / "frontend" / "ts" / "memo-proxy.ts"
 
 REQUIRED_SEARCH_COMPONENTS = {
     "QueryInterpreter",
@@ -106,7 +108,7 @@ def test_api_search_endpoint_uses_service_not_retrievers():
 
 def test_search_view_uses_port_and_server_filters():
     source = MATCH_VIEW.read_text(encoding="utf-8")
-    assert "port.entities(value, 50, activeFilters())" in source
+    assert re.search(r"port\.entities\(value, 50, activeFilters\(\), controller\.signal\)", source)
     assert "fetch(" not in source
     assert "localStorage" not in source
     assert "activeFilters" in source
@@ -115,8 +117,11 @@ def test_search_view_uses_port_and_server_filters():
 
 
 def test_transport_and_cache_preserve_filter_parameter():
-    source = INFRA.read_text(encoding="utf-8")
-    assert "entities(q: string, limit?: number, filters?: SearchFilters)" in source
+    source = "\n".join(path.read_text(encoding="utf-8") for path in (INFRA, MEMO_PROXY))
+    assert re.search(
+        r"entities\(q: string, limit\?: number, filters\?: SearchFilters, signal\?: AbortSignal\)",
+        source,
+    )
     assert "filters?.party_type" in source
     assert "filters?.min_record_count" in source
     assert "JSON.stringify(filters ?? {})" in source

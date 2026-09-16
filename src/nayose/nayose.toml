@@ -21,11 +21,16 @@ exact_mode = "hybrid"
 
 [embedding]
 model_id = "codefuse-ai/F2LLM-v2-330M"
+backend = "pytorch_mps"
 device = "mps"
 batch_size = 32
 process_workers = 1
 torch_dtype = "float16"
 revision = ""
+
+[embedding.optimization]
+max_length = 0
+padding_strategy = "longest"
 
 [performance]
 process_workers = 1
@@ -33,13 +38,18 @@ cpu_threads = 0
 model_threads = 0
 native_thread_cap = 0
 
+[storage]
+reserve_ratio = 0.10
+reserve_minimum_bytes = 21474836480
+workspace_stale_seconds = 120
+
 [retrieval]
 use_dense = true
 dense_views = true
 index_backend = "polars"
 sparse_query_feature_cap = 64
 sparse_batch_size = 32
-inverted_memory_budget = 1000000000
+inverted_memory_budget = 100000000
 encode_chunk_size = 1024
 
 [inference]

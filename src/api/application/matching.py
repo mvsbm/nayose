@@ -9,9 +9,9 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from api.domain.evidence import visible_record
+from api.domain.evidence import VISIBLE_FIELDS
 from api.domain.features import compute_pair_features
-from api.domain.normalize import normalize_record
+from api.domain.normalize import normalize_frame, normalize_record
 from api.infrastructure.matching.scoring import (
     CandidateAggregator,
     DecisionPolicy,
@@ -84,14 +84,13 @@ class ExplainedMatcher:
             result["pipeline"] = self._pipeline(record, query, retrieval, result)
             return result
         raw = engine._reference.iloc[retrieval["candidate_index"].tolist()].reset_index(drop=True)
-        normalized = pd.DataFrame(
-            [normalize_record(visible_record(r)) for r in raw.to_dict("records")]
-        )
+        visible = raw.reindex(columns=VISIBLE_FIELDS, fill_value="")
+        normalized = normalize_frame(visible, "record_id")
         stage("scoring")
         features = compute_pair_features(query, normalized, retrieval)
         scores = self._score(features)
         stage("aggregating")
-        candidates = self._candidates(record, raw, features, scores, retrieval)
+        candidates = self._candidates(record, raw, normalized, features, scores, retrieval)
         result = self._decision(candidates, len(retrieval), overrides=overrides)
         result["input_normalized"] = {
             key: query.get(norm, "")
@@ -115,11 +114,12 @@ class ExplainedMatcher:
         self,
         record: dict[str, str],
         raw: pd.DataFrame,
+        normalized: pd.DataFrame,
         features: pd.DataFrame,
         scores: np.ndarray,
         retrieval: pd.DataFrame,
     ) -> list[dict[str, Any]]:
-        return self.aggregator.build(record, raw, features, scores, retrieval)
+        return self.aggregator.build(record, raw, features, scores, retrieval, normalized)
 
     def _pipeline(
         self,

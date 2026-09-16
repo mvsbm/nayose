@@ -56,6 +56,45 @@ def test_token_authenticated_attribution_does_not_trust_a_spoofed_header(
     assert actor_identity("spoofed-user", services, "admin") == "web"
 
 
+def test_role_tokens_limit_bearer_authority(tmp_path: Path) -> None:
+    router = APIRouter()
+
+    @router.get("/api/read", dependencies=[Depends(require_scope("read"))])
+    def read() -> dict[str, str]:
+        return {"ok": "read"}
+
+    @router.post("/api/review", dependencies=[Depends(require_scope("review"))])
+    def review() -> dict[str, str]:
+        return {"ok": "review"}
+
+    @router.post("/api/admin", dependencies=[Depends(require_scope("admin"))])
+    def admin() -> dict[str, str]:
+        return {"ok": "admin"}
+
+    config = RuntimeConfig(
+        frontend_dir=tmp_path,
+        review_token="review-secret",
+        admin_token="admin-secret",
+    )
+    with TestClient(create_app(_services(config), router)) as client:
+        headers = {"Authorization": "Bearer review-secret"}
+        assert client.get("/api/read", headers=headers).status_code == 200
+        assert client.post("/api/review", headers=headers).status_code == 200
+        assert client.post("/api/admin", headers=headers).status_code == 403
+        headers["Authorization"] = "Bearer admin-secret"
+        assert client.post("/api/admin", headers=headers).status_code == 200
+
+    legacy_config = RuntimeConfig(
+        frontend_dir=tmp_path,
+        api_token="legacy-secret",
+        admin_token="admin-secret-2",
+    )
+    with TestClient(create_app(_services(legacy_config), router)) as client:
+        headers = {"Authorization": "Bearer legacy-secret"}
+        assert client.get("/api/read", headers=headers).status_code == 200
+        assert client.post("/api/admin", headers=headers).status_code == 403
+
+
 def test_api_requests_get_a_safe_correlation_id_even_when_rejected(tmp_path: Path) -> None:
     config = RuntimeConfig(
         frontend_dir=tmp_path,
@@ -67,6 +106,13 @@ def test_api_requests_get_a_safe_correlation_id_even_when_rejected(tmp_path: Pat
 
     assert response.status_code == 401
     UUID(response.headers["x-request-id"])
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["x-frame-options"] == "DENY"
+    assert response.headers["referrer-policy"] == "no-referrer"
+    csp = response.headers["content-security-policy"]
+    assert "frame-ancestors 'none'" in csp
+    assert "style-src 'self'" in csp
+    assert "unsafe-inline" not in csp
 
 
 def test_unhandled_errors_have_a_generic_body_and_correlation_id(tmp_path: Path) -> None:

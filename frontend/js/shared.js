@@ -1,3 +1,6 @@
+export function formatNumber(value, locale) {
+    return new Intl.NumberFormat(locale === "ja" ? "ja-JP" : "en-US").format(value);
+}
 export function createFlipAnimator(selector) {
     let previous = new Map();
     const reducedMotion = () => typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;

@@ -45,6 +45,7 @@ class RuntimeInfo:
     diagnostics: dict[str, Any]
     backends: dict[str, bool]
     neural_enabled: bool
+    embedding_backend: str = "pytorch_mps"
     embedding_model_revision: str | None = None
 
 

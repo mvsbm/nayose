@@ -60,6 +60,40 @@ def test_field_aware_profile_can_skip_full_record_encoding() -> None:
     assert states[0]["dense_view_scores"] == {"name": 1.0}
 
 
+def test_duplicate_record_and_view_texts_are_encoded_once() -> None:
+    calls: list[list[str]] = []
+    text = "party_type=person name_kanji=高橋太郎"
+    query = {
+        "retrieval_text": text,
+        "party_type": "person",
+        "n_party_type": "person",
+        "n_name_loose": "高橋太郎",
+    }
+    states: dict[int, dict[str, object]] = {}
+
+    def encode_queries(texts: list[str], _: int | None) -> np.ndarray:
+        calls.append(texts)
+        return np.ones((len(texts), 2), dtype=np.float32)
+
+    retrieve_dense_candidates(
+        query,
+        states,
+        reference_embeddings=np.zeros((1, 2), dtype=np.float32),
+        dense_nn=_SearchIndex(),
+        dense_svd=None,
+        vectorizer=None,
+        dense_views={"name": DenseView("name", np.zeros((1, 2)), _SearchIndex())},
+        limit=1,
+        encode_query=lambda _: np.zeros(2, dtype=np.float32),
+        encode_queries=encode_queries,
+        include_record_dense=True,
+    )
+
+    assert calls == [[text]]
+    assert states[0]["dense_score"] == 1.0
+    assert states[0]["dense_view_scores"] == {"name": 1.0}
+
+
 def test_field_aware_profile_handles_an_empty_view_result() -> None:
     query = {"party_type": "person", "n_party_type": "person"}
     states: dict[int, dict[str, object]] = {}

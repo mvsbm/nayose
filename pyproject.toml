@@ -39,6 +39,10 @@ neural = [
     "sentence-transformers>=2.7",
     "usearch>=2.1",
 ]
+mlx = [
+    "mlx>=0.32",
+    "mlx-lm>=0.31",
+]
 performance = [
     "polars>=1.0",
 ]

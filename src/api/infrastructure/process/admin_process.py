@@ -14,11 +14,8 @@ from typing import TextIO
 from api.infrastructure.observability.telemetry import Stats
 from api.infrastructure.process.job_control import JobCancelled
 from api.infrastructure.process.progress import parse as parse_progress
-from api.infrastructure.runtime.performance import (
-    cpu_thread_budget,
-    model_thread_budget,
-    native_thread_environment,
-)
+from api.infrastructure.runtime.resource_manager import ResourceManager
+from nayose.config import load_config
 
 ProgressCallback = Callable[[str, float, int, int, int], None]
 
@@ -78,8 +75,15 @@ class AdminProcessRunner:
         stream_progress: bool,
     ) -> None:
         on_stage(stage_label)
+        settings = load_config().performance
+        manager = ResourceManager(self.cwd / ".nayose-runtime")
+        plan = manager.plan(
+            workload="admin-subprocess",
+            requested_device="cpu",
+            settings=settings,
+        )
         requested_model_threads = env_overrides.get("NAYOSE_MODEL_THREADS")
-        model_threads = model_thread_budget()
+        model_threads = plan.model_threads
         if requested_model_threads is not None:
             try:
                 model_threads = min(model_threads, int(requested_model_threads))
@@ -89,10 +93,10 @@ class AdminProcessRunner:
                 raise ValueError("NAYOSE_MODEL_THREADS must be positive")
         environment = {
             **os.environ,
+            **plan.env(),
             "PYTHONUNBUFFERED": "1",
             **env_overrides,
-            **native_thread_environment(),
-            "NAYOSE_CPU_THREADS": str(cpu_thread_budget()),
+            "NAYOSE_CPU_THREADS": str(plan.cpu_threads),
             "NAYOSE_MODEL_THREADS": str(model_threads),
         }
         process = subprocess.Popen(

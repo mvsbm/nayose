@@ -1,15 +1,33 @@
 import { NAVIGATION_WIDTH_MAX, NAVIGATION_WIDTH_MIN, NAVIGATION_WIDTH_DEFAULT, type Store } from "./store.js";
 import { ResizableRegion } from "./resizable-region.js";
+import { NAVIGATION_GROUPS, ROUTES } from "./routes.js";
+import { esc } from "./schema.js";
+import { icon } from "./icons.js";
 
 const MOBILE_QUERY = "(max-width: 820px)";
 
+export function renderNavigation(nav: HTMLElement, store: Store): void {
+  const groups = NAVIGATION_GROUPS.map((group) => {
+    const routes = ROUTES.filter((route) => route.menu && route.group === group.id);
+    const links = routes.map((route) => {
+      const capability = "capability" in route ? route.capability : "";
+      const hidden = capability && route.group !== "admin" ? " hidden" : "";
+      const id = route.name === "data-entry" ? ' id="nav-data-entry"' : route.name === "admin" ? ' id="nav-admin"' : "";
+      return `<a href="${esc(route.path)}" data-nav="${esc(route.nav)}"${id}${hidden}>${icon(route.icon, "icon side-icon")}<span class="side-label" data-i18n="${esc(route.titleKey)}">${esc(store.t(route.titleKey))}</span></a>`;
+    }).join("");
+    const hidden = "capability" in group ? " hidden" : "";
+    const id = group.id === "admin" ? ' id="nav-admin-group"' : "";
+    return `<details${id} data-nav-group="${esc(group.id)}"${hidden} open><summary data-nav-label="${esc(group.id)}"><span class="side-label" data-i18n="${esc(group.labelKey)}">${esc(store.t(group.labelKey))}</span></summary>${links}</details>`;
+  }).join("");
+  nav.innerHTML = `<a class="side-brand" href="#/search" aria-label="Nayose"><span class="side-brand-mark" aria-hidden="true">N</span><span><strong>Nayose</strong><small data-i18n="workspaceLabel">${esc(store.t("workspaceLabel"))}</small></span></a>${groups}`;
+}
+
 function labelFor(element: Element): string {
-  return element.querySelector<HTMLElement>(".side-label, .activity-bar-label")?.textContent?.trim() ?? "";
+  return element.querySelector<HTMLElement>(".side-label")?.textContent?.trim() ?? "";
 }
 
 export function mountNavigation(
   shell: HTMLElement,
-  activity: HTMLElement,
   nav: HTMLElement,
   resizer: HTMLElement,
   toggle: HTMLButtonElement,
@@ -38,12 +56,6 @@ export function mountNavigation(
       if (!label) return;
       item.dataset.tooltip = label;
       if (item.tagName === "A") item.setAttribute("aria-label", label);
-    });
-    activity.querySelectorAll<HTMLElement>("a[data-activity]").forEach((item) => {
-      const label = labelFor(item);
-      if (!label) return;
-      item.dataset.tooltip = label;
-      item.setAttribute("aria-label", label);
     });
   };
   const sync = (): void => {
@@ -129,23 +141,10 @@ export function mountNavigation(
   const onNavClick = (event: MouseEvent): void => {
     if (media.matches && (event.target as HTMLElement).closest("a")) closeMobile();
   };
-  const onActivityClick = (event: MouseEvent): void => {
-    const link = (event.target as HTMLElement).closest<HTMLAnchorElement>("a[data-activity]");
-    if (!link || media.matches) return;
-    const active = link.getAttribute("aria-current") === "page";
-    if (active) {
-      event.preventDefault();
-      store.setNavigationCollapsed(!collapsed);
-    } else if (collapsed) {
-      store.setNavigationCollapsed(false);
-    }
-  };
-
   toggle.addEventListener("click", onToggle);
   scrim.addEventListener("click", closeMobile);
   document.addEventListener("keydown", onKeydown);
   nav.addEventListener("click", onNavClick);
-  activity.addEventListener("click", onActivityClick);
   media.addEventListener("change", onMediaChange);
   const unsubscribeState = store.on("navigationCollapsed", onStoreChange);
   const unsubscribeWidth = store.on("navigationWidth", onWidthChange);
@@ -159,7 +158,6 @@ export function mountNavigation(
       scrim.removeEventListener("click", closeMobile);
       document.removeEventListener("keydown", onKeydown);
       nav.removeEventListener("click", onNavClick);
-      activity.removeEventListener("click", onActivityClick);
       media.removeEventListener("change", onMediaChange);
       resizable?.dispose();
       unsubscribeState();

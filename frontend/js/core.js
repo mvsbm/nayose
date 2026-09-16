@@ -2,7 +2,15 @@ import { isRouteName } from "./routes.js";
 export function parseRoute(hash) {
     const parts = hash.replace(/^#\/?/, "").split("?")[0].split("/").filter((p) => p.length > 0);
     const name = parts[0] && isRouteName(parts[0]) ? parts[0] : "search";
-    return { name, args: parts.slice(1) };
+    const decode = (part) => {
+        try {
+            return decodeURIComponent(part);
+        }
+        catch {
+            return part;
+        }
+    };
+    return { name, args: parts.slice(1).map(decode) };
 }
 export function checkedKey(run, left, right) {
     return `${run}|${left}|${right}`;
@@ -24,16 +32,16 @@ export async function pollJob(getStatus, initial, timeoutSec = 300, onUpdate, si
     onUpdate?.(job);
     while (Date.now() < deadline && !signal?.aborted) {
         if (job.stage === "complete" || job.stage === "failed" || job.stage === "cancelled")
-            return job;
+            return { ...job, poll_status: "terminal" };
         job = await getStatus();
         if (signal?.aborted)
-            return job;
+            return { ...job, poll_status: "cancelled" };
         onUpdate?.(job);
         if (job.stage === "complete" || job.stage === "failed" || job.stage === "cancelled")
-            return job;
+            return { ...job, poll_status: "terminal" };
         await waitForPoll(signal);
     }
-    return job;
+    return { ...job, poll_status: signal?.aborted ? "cancelled" : "timeout" };
 }
 function waitForPoll(signal) {
     if (signal?.aborted)

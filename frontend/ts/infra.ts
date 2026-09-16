@@ -34,13 +34,97 @@ import { adaptDatasetRows } from "./dataset-adapter.js";
 import { ApiError } from "./api-error.js";
 import { fetchJson } from "./http.js";
 
-function adaptSearchResult(data: unknown): SearchResult {
-  if (!data || typeof data !== "object" || !Array.isArray((data as { rows?: unknown }).rows)) throw new ApiError("search_schema_mismatch");
-  return data as SearchResult;
-}
-
 function isObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function invalid(code: string): never {
+  throw new ApiError(code);
+}
+
+function object(data: unknown, code: string): Record<string, unknown> {
+  return isObject(data) ? data : invalid(code);
+}
+
+function array(data: unknown, code: string): unknown[] {
+  return Array.isArray(data) ? data : invalid(code);
+}
+
+function finite(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function records(data: unknown[], code: string): Record<string, unknown>[] {
+  return data.map(item => isObject(item) ? item : invalid(code));
+}
+
+function adaptRunList(data: unknown): RunInfo[] {
+  return records(array(data, "runs_schema_mismatch"), "runs_schema_mismatch").map(run => {
+    if (typeof run.id !== "string" || (run.path !== undefined && typeof run.path !== "string")) invalid("runs_schema_mismatch");
+    return { ...run, path: typeof run.path === "string" ? run.path : "" } as unknown as RunInfo;
+  });
+}
+
+function adaptAdminCapability(data: unknown): AdminCapability {
+  const result = object(data, "admin_capability_schema_mismatch");
+  if (typeof result.capable !== "boolean") invalid("admin_capability_schema_mismatch");
+  return result as unknown as AdminCapability;
+}
+
+function adaptSearchResult(data: unknown): SearchResult {
+  const result = object(data, "search_schema_mismatch");
+  const rows = records(array(result.rows, "search_schema_mismatch"), "search_schema_mismatch");
+  if (rows.some(row => typeof row.nayose_id !== "string" || typeof row.name_kanji !== "string") || typeof result.semantic !== "boolean") invalid("search_schema_mismatch");
+  for (const key of ["exact", "semantic_results", "nearest"]) {
+    if (result[key] !== undefined) {
+      const candidates = records(array(result[key], "search_schema_mismatch"), "search_schema_mismatch");
+      if (candidates.some(row => typeof row.nayose_id !== "string" || typeof row.name_kanji !== "string")) invalid("search_schema_mismatch");
+    }
+  }
+  return result as unknown as SearchResult;
+}
+
+function adaptEntityDetail(data: unknown): EntityDetail {
+  const result = object(data, "entity_schema_mismatch");
+  if (!isObject(result.entity) || !Array.isArray(result.members) || records(result.members, "entity_schema_mismatch").some(member => typeof member.record_id !== "string") || !finite(result.total) || !finite(result.offset) || !finite(result.limit) || !isObject(result.comparisons) || typeof result.merge_evidence_available !== "boolean") invalid("entity_schema_mismatch");
+  return result as unknown as EntityDetail;
+}
+
+function adaptHealth(data: unknown): HealthInfo {
+  const result = object(data, "health_schema_mismatch");
+  if (typeof result.status !== "string" || (result.run !== undefined && result.run !== null && typeof result.run !== "string") || (result.engine_warm !== undefined && typeof result.engine_warm !== "boolean") || (result.stats !== undefined && records(array(result.stats, "health_schema_mismatch"), "health_schema_mismatch").some(stat => typeof stat.endpoint !== "string" || !finite(stat.hits) || !finite(stat.total_ms)))) invalid("health_schema_mismatch");
+  return result as unknown as HealthInfo;
+}
+
+function adaptMatchJob(data: unknown): MatchJob {
+  const result = object(data, "job_schema_mismatch");
+  const stages = new Set(["queued", "validating", "loading", "retrieving", "scoring", "aggregating", "complete", "failed", "cancelled"]);
+  const progress = result.progress;
+  const validProgress = progress === undefined || progress === null || (isObject(progress) && (progress.phase === undefined || typeof progress.phase === "string") && (progress.pct === undefined || progress.pct === null || finite(progress.pct)) && (progress.eta_seconds === undefined || progress.eta_seconds === null || finite(progress.eta_seconds)) && (progress.done === undefined || finite(progress.done)) && (progress.total === undefined || finite(progress.total)));
+  if (typeof result.id !== "string" || typeof result.run_id !== "string" || typeof result.stage !== "string" || !stages.has(result.stage) || !finite(result.elapsed_ms) || !Array.isArray(result.timeline) || result.timeline.some(item => !isObject(item) || typeof item.stage !== "string" || !finite(item.elapsed_ms)) || !validProgress || (result.error !== null && result.error !== undefined && typeof result.error !== "string") || (result.result !== null && result.result !== undefined && !isObject(result.result))) invalid("job_schema_mismatch");
+  return result as unknown as MatchJob;
+}
+
+function adaptMetrics(data: unknown): MetricsViewData {
+  const result = object(data, "metrics_schema_mismatch");
+  if (!Array.isArray(result.kpis) || result.kpis.some(item => !Array.isArray(item) || item.length !== 2 || typeof item[0] !== "string" || !finite(item[1])) || !isObject(result.extras) || Object.values(result.extras).some(value => !finite(value))) invalid("metrics_schema_mismatch");
+  return result as unknown as MetricsViewData;
+}
+
+function adaptReview(data: unknown): ReviewPage {
+  const result = object(data, "review_schema_mismatch");
+  if (!finite(result.total) || !Array.isArray(result.rows) || records(result.rows, "review_schema_mismatch").some(row => typeof row.left_record_id !== "string" || typeof row.right_record_id !== "string" || !finite(row.pair_probability)) || !Array.isArray(result.histogram) || result.histogram.some(item => !Array.isArray(item) || item.length !== 2 || !finite(item[0]) || !finite(item[1]))) invalid("review_schema_mismatch");
+  return result as unknown as ReviewPage;
+}
+
+function adaptDecisionSnapshot(data: unknown): DecisionSnapshot {
+  const result = object(data, "decisions_schema_mismatch");
+  if (!Array.isArray(result.items) || records(result.items, "decisions_schema_mismatch").some(item => typeof item.left !== "string" || typeof item.right !== "string") || !finite(result.revision)) invalid("decisions_schema_mismatch");
+  return result as unknown as DecisionSnapshot;
+}
+
+function adaptRecordObject(data: unknown, code: string): Record<string, unknown> {
+  return object(data, code);
 }
 
 function adaptEntityExplorerPage(data: unknown): EntityExplorerPage {
@@ -48,7 +132,7 @@ function adaptEntityExplorerPage(data: unknown): EntityExplorerPage {
   const page = data as Partial<EntityExplorerPage>;
   const validSorts = new Set(["relevance", "records", "name", "last_seen"]);
   const validModes = new Set(["exact", "hybrid_fallback"]);
-  if (!Array.isArray(page.rows) || typeof page.total !== "number" || typeof page.offset !== "number" || typeof page.limit !== "number" || typeof page.query !== "string" || !validSorts.has(page.sort ?? "") || !validModes.has(page.search_mode ?? "") || typeof page.total_is_exact !== "boolean" || (page.cursor !== undefined && page.cursor !== null && typeof page.cursor !== "string") || (page.next_cursor !== undefined && page.next_cursor !== null && typeof page.next_cursor !== "string") || (page.has_more !== undefined && typeof page.has_more !== "boolean") || !isObject(page.filters) || !isObject(page.query_plan) || !isObject(page.search_trace)) {
+  if (!Array.isArray(page.rows) || page.rows.some(row => !isObject(row) || typeof row.nayose_id !== "string" || typeof row.name_kanji !== "string") || typeof page.total !== "number" || typeof page.offset !== "number" || typeof page.limit !== "number" || typeof page.query !== "string" || !validSorts.has(page.sort ?? "") || !validModes.has(page.search_mode ?? "") || typeof page.total_is_exact !== "boolean" || (page.cursor !== undefined && page.cursor !== null && typeof page.cursor !== "string") || (page.next_cursor !== undefined && page.next_cursor !== null && typeof page.next_cursor !== "string") || (page.has_more !== undefined && typeof page.has_more !== "boolean") || !isObject(page.filters) || !isObject(page.query_plan) || !isObject(page.search_trace)) {
     throw new ApiError("entity_explorer_schema_mismatch");
   }
   return page as EntityExplorerPage;
@@ -79,7 +163,7 @@ function adaptAdminConfig(data: unknown): AdminConfig {
 function adaptGenerationPreview(data: unknown): GenerationPreview {
   if (!data || typeof data !== "object") throw new ApiError("preview_schema_mismatch");
   const preview = data as Partial<GenerationPreview>;
-  if (!preview.samples || typeof preview.samples !== "object" || !preview.samples.average || !preview.time_window || !preview.dataset_impact || !Array.isArray(preview.examples)) {
+  if (!isObject(preview.samples) || !isObject(preview.samples.average) || !isObject(preview.time_window) || !isObject(preview.dataset_impact) || !isObject(preview.counts) || !Array.isArray(preview.examples) || preview.examples.some(example => !isObject(example)) || !Array.isArray(preview.events) || !Array.isArray(preview.query_mix) || !isObject(preview.missingness) || !Array.isArray(preview.warnings) || !isObject(preview.estimate_note) || !finite(preview.weighted_band_scale)) {
     throw new ApiError("preview_schema_mismatch");
   }
   return preview as GenerationPreview;
@@ -93,32 +177,48 @@ export class ApiAdapter implements WorkbenchPort {
   }
 
   runs(): Promise<RunInfo[]> {
-    return fetchJson("/api/runs").then(d => d as RunInfo[]);
+    return fetchJson("/api/runs").then(adaptRunList);
   }
   adminCapability(): Promise<AdminCapability> {
-    return fetchJson("/api/admin/capable").then(d => d as AdminCapability);
+    return fetchJson("/api/admin/capable").then(adaptAdminCapability);
   }
-  adminConfig(): Promise<AdminConfig> {
-    return fetchJson("/api/admin/config").then(adaptAdminConfig);
+  adminConfig(signal?: AbortSignal): Promise<AdminConfig> {
+    return fetchJson("/api/admin/config", { signal }).then(adaptAdminConfig);
   }
-  adminState(): Promise<AdminState> {
-    return fetchJson("/api/admin/state").then(d => d as AdminState);
+  adminState(signal?: AbortSignal): Promise<AdminState> {
+    return fetchJson("/api/admin/state", { signal }).then(d => {
+      const result = object(d, "admin_state_schema_mismatch");
+      if (!isObject(result.profile) || !isObject(result.settings) || !Array.isArray(result.runs) || !finite(result.manual_count) || !Array.isArray(result.audit)) invalid("admin_state_schema_mismatch");
+      return result as unknown as AdminState;
+    });
   }
-  adminGenerationConfig(): Promise<GenerationCatalog> {
-    return fetchJson("/api/admin/generation-config").then(d => d as GenerationCatalog);
+  adminGenerationConfig(signal?: AbortSignal): Promise<GenerationCatalog> {
+    return fetchJson("/api/admin/generation-config", { signal }).then(d => {
+      const result = object(d, "generation_config_schema_mismatch");
+      if (!Array.isArray(result.profiles) || !Array.isArray(result.difficulties) || !Array.isArray(result.events) || !Array.isArray(result.channels) || !Array.isArray(result.query_scenarios) || !isObject(result.defaults) || !isObject(result.bounds)) invalid("generation_config_schema_mismatch");
+      return result as unknown as GenerationCatalog;
+    });
   }
-  adminGenerationPreview(controls: GenerationControls): Promise<GenerationPreview> {
+  adminGenerationPreview(controls: GenerationControls, signal?: AbortSignal): Promise<GenerationPreview> {
     return fetchJson("/api/admin/generation-preview", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ controls }),
+      signal,
     }).then(adaptGenerationPreview);
   }
-  adminGenerations(): Promise<DatasetGeneration[]> {
-    return fetchJson("/api/admin/generations").then(d => d as DatasetGeneration[]);
+  adminGenerations(signal?: AbortSignal): Promise<DatasetGeneration[]> {
+    return fetchJson("/api/admin/generations", { signal }).then(d => records(array(d, "generations_schema_mismatch"), "generations_schema_mismatch").map(item => {
+      if (typeof item.id !== "string" || typeof item.created_at !== "string" || typeof item.fingerprint !== "string" || typeof item.current !== "boolean") invalid("generations_schema_mismatch");
+      return item as unknown as DatasetGeneration;
+    }));
   }
-  adminDatasetSummary(generationId: string): Promise<DatasetSummary> {
-    return fetchJson(`/api/admin/generations/${encodeURIComponent(generationId)}/summary`).then(d => d as DatasetSummary);
+  adminDatasetSummary(generationId: string, signal?: AbortSignal): Promise<DatasetSummary> {
+    return fetchJson(`/api/admin/generations/${encodeURIComponent(generationId)}/summary`, { signal }).then(d => {
+      const result = object(d, "dataset_summary_schema_mismatch");
+      if (typeof result.id !== "string" || typeof result.created_at !== "string" || typeof result.fingerprint !== "string" || !isObject(result.config) || !isObject(result.counts) || !Array.isArray(result.tables)) invalid("dataset_summary_schema_mismatch");
+      return result as unknown as DatasetSummary;
+    });
   }
   adminDatasetRows(
     generationId: string,
@@ -142,133 +242,172 @@ export class ApiAdapter implements WorkbenchPort {
     if (Object.keys(filters).length) params.set("filters", JSON.stringify(filters));
     return fetchJson(`/api/admin/generations/${encodeURIComponent(generationId)}/records?${params}`, { signal }).then(adaptDatasetRows);
   }
-  adminStart(action: string, params: object): Promise<MatchJob> {
+  adminStart(action: string, params: object, signal?: AbortSignal): Promise<MatchJob> {
     return fetchJson("/api/admin/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action, params }),
-    }).then(d => d as MatchJob);
+      signal,
+    }).then(adaptMatchJob);
   }
-  adminJob(id: string): Promise<MatchJob> {
-    return fetchJson(`/api/admin/jobs/${encodeURIComponent(id)}`).then(d => d as MatchJob);
+  adminJob(id: string, signal?: AbortSignal): Promise<MatchJob> {
+    return fetchJson(`/api/admin/jobs/${encodeURIComponent(id)}`, { signal }).then(adaptMatchJob);
   }
-  adminAction(action: string, params: Record<string, string | number>): Promise<Record<string, unknown>> {
+  adminAction(action: string, params: Record<string, string | number>, signal?: AbortSignal): Promise<Record<string, unknown>> {
     return fetchJson("/api/admin/actions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action, params }),
-    }).then(d => d as Record<string, unknown>);
+      signal,
+    }).then(d => adaptRecordObject(d, "admin_action_schema_mismatch"));
   }
-  manualList(): Promise<ManualList> {
-    return fetchJson("/api/data-entry").then(d => d as ManualList);
+  manualList(signal?: AbortSignal): Promise<ManualList> {
+    return fetchJson("/api/data-entry", { signal }).then(d => {
+      const result = object(d, "manual_list_schema_mismatch");
+      if (!finite(result.count) || !Array.isArray(result.rows) || records(result.rows, "manual_list_schema_mismatch").some(row => typeof row.record_id !== "string")) invalid("manual_list_schema_mismatch");
+      return result as unknown as ManualList;
+    });
   }
-  manualRegister(record: Record<string, string>): Promise<{ ok: boolean; record_id: string }> {
+  manualRegister(record: Record<string, string>, signal?: AbortSignal): Promise<{ ok: boolean; record_id: string }> {
     return fetchJson("/api/data-entry/register", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ record }),
-    }).then(d => d as { ok: boolean; record_id: string });
+      signal,
+    }).then(d => {
+      const result = object(d, "manual_register_schema_mismatch");
+      if (result.ok !== true || typeof result.record_id !== "string") invalid("manual_register_schema_mismatch");
+      return result as { ok: boolean; record_id: string };
+    });
   }
-  manualImport(rows: Array<Record<string, string>>, dryRun: boolean): Promise<Record<string, unknown>> {
+  manualImport(rows: Array<Record<string, string>>, dryRun: boolean, signal?: AbortSignal): Promise<Record<string, unknown>> {
     return fetchJson("/api/data-entry/import", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ rows, dry_run: dryRun }),
-    }).then(d => d as Record<string, unknown>);
+      signal,
+    }).then(d => adaptRecordObject(d, "manual_import_schema_mismatch"));
   }
-  manualUndo(recordIds: string[]): Promise<{ ok: boolean; removed: number }> {
+  manualUndo(recordIds: string[], signal?: AbortSignal): Promise<{ ok: boolean; removed: number }> {
     return fetchJson("/api/data-entry/undo", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ record_ids: recordIds }),
-    }).then(d => d as { ok: boolean; removed: number });
+      signal,
+    }).then(d => {
+      const result = object(d, "manual_undo_schema_mismatch");
+      if (result.ok !== true || !finite(result.removed)) invalid("manual_undo_schema_mismatch");
+      return result as { ok: boolean; removed: number };
+    });
   }
 
-  entities(q: string, limit?: number, filters?: SearchFilters): Promise<SearchResult> {
+  entities(q: string, limit?: number, filters?: SearchFilters, signal?: AbortSignal): Promise<SearchResult> {
     const params = new URLSearchParams({ q, run_id: this.runId });
     if (limit) params.set("limit", String(limit));
     if (filters?.party_type) params.set("party_type", filters.party_type);
     if (filters?.min_record_count) params.set("min_record_count", String(filters.min_record_count));
-    return fetchJson(`/api/entities?${params.toString()}`).then(adaptSearchResult);
+    return fetchJson(`/api/entities?${params.toString()}`, { signal }).then(adaptSearchResult);
   }
-  entityExplorer(q: string, offset: number, limit: number, sort: EntitySort, filters?: SearchFilters, cursor?: string): Promise<EntityExplorerPage> {
+  entityExplorer(q: string, offset: number, limit: number, sort: EntitySort, filters?: SearchFilters, cursor?: string, signal?: AbortSignal): Promise<EntityExplorerPage> {
     const params = new URLSearchParams({ q, run_id: this.runId, offset: String(offset), limit: String(limit), sort });
     if (cursor) params.set("cursor", cursor);
     if (filters?.party_type) params.set("party_type", filters.party_type);
     if (filters?.min_record_count) params.set("min_record_count", String(filters.min_record_count));
-    return fetchJson(`/api/entities/explorer?${params.toString()}`).then(adaptEntityExplorerPage);
+    return fetchJson(`/api/entities/explorer?${params.toString()}`, { signal }).then(adaptEntityExplorerPage);
   }
-  entityGraph(id: string, includePotential = false): Promise<EntityGraph> {
-    return fetchJson(`/api/entity/${encodeURIComponent(id)}/graph?run_id=${encodeURIComponent(this.runId)}&include_potential=${includePotential ? "true" : "false"}`).then(adaptEntityGraph);
+  entityGraph(id: string, includePotential = false, signal?: AbortSignal): Promise<EntityGraph> {
+    return fetchJson(`/api/entity/${encodeURIComponent(id)}/graph?run_id=${encodeURIComponent(this.runId)}&include_potential=${includePotential ? "true" : "false"}`, { signal }).then(adaptEntityGraph);
   }
-  normalizePreview(text: string): Promise<Record<string, string>> {
-    return fetchJson(`/api/normalize?text=${encodeURIComponent(text)}`).then(d => d as Record<string, string>);
+  normalizePreview(text: string, signal?: AbortSignal): Promise<Record<string, string>> {
+    return fetchJson(`/api/normalize?text=${encodeURIComponent(text)}`, { signal }).then(d => {
+      const result = object(d, "normalize_schema_mismatch");
+      if (Object.values(result).some(value => typeof value !== "string")) invalid("normalize_schema_mismatch");
+      return result as Record<string, string>;
+    });
   }
-  entity(id: string, offset = 0, limit = 25): Promise<EntityDetail> {
-    return fetchJson(`/api/entity/${encodeURIComponent(id)}?run_id=${encodeURIComponent(this.runId)}&offset=${offset}&limit=${limit}`).then(
-      (d) => d as EntityDetail,
-    );
+  entity(id: string, offset = 0, limit = 25, signal?: AbortSignal): Promise<EntityDetail> {
+    return fetchJson(`/api/entity/${encodeURIComponent(id)}?run_id=${encodeURIComponent(this.runId)}&offset=${offset}&limit=${limit}`, { signal }).then(adaptEntityDetail);
   }
-  health(): Promise<HealthInfo> {
-    return fetchJson("/api/health/details").then(d => d as HealthInfo);
+  health(signal?: AbortSignal): Promise<HealthInfo> {
+    return fetchJson("/api/health/details", { signal }).then(adaptHealth);
   }
-  matchSample(): Promise<{ record: Record<string, string> }> {
-    return fetchJson(`/api/match-sample?run_id=${encodeURIComponent(this.runId)}`).then(d => d as { record: Record<string, string> });
+  matchSample(signal?: AbortSignal): Promise<{ record: Record<string, string> }> {
+    return fetchJson(`/api/match-sample?run_id=${encodeURIComponent(this.runId)}`, { signal }).then(d => {
+      const result = object(d, "match_sample_schema_mismatch");
+      if (!isObject(result.record) || Object.values(result.record).some(value => typeof value !== "string")) invalid("match_sample_schema_mismatch");
+      return result as { record: Record<string, string> };
+    });
   }
   startRecommendation(
     record: Record<string, string>,
     thresholds?: { auto: number; review: number },
+    signal?: AbortSignal,
   ): Promise<MatchJob> {
     return fetchJson("/api/recommendations", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ run_id: this.runId, record, ...(thresholds ? { thresholds } : {}) }),
-    }).then(d => d as MatchJob);
+      signal,
+    }).then(adaptMatchJob);
   }
-  recommendation(id: string): Promise<MatchJob> {
-    return fetchJson(`/api/recommendations/${encodeURIComponent(id)}`).then(d => d as MatchJob);
+  recommendation(id: string, signal?: AbortSignal): Promise<MatchJob> {
+    return fetchJson(`/api/recommendations/${encodeURIComponent(id)}`, { signal }).then(adaptMatchJob);
   }
-  review(minP: number, offset: number, limit: number, nayose?: string): Promise<ReviewPage> {
+  review(minP: number, offset: number, limit: number, nayose?: string, signal?: AbortSignal): Promise<ReviewPage> {
     const n = nayose ? `&nayose=${encodeURIComponent(nayose)}` : "";
     return fetchJson(
       `/api/review?run_id=${encodeURIComponent(this.runId)}&min_p=${minP}&offset=${offset}&limit=${limit}${n}`,
-    ).then((d) => d as ReviewPage);
+      { signal },
+    ).then(adaptReview);
   }
-  metrics(): Promise<MetricsViewData> {
-    return this.metricsFor(this.runId);
+  metrics(signal?: AbortSignal): Promise<MetricsViewData> {
+    return this.metricsFor(this.runId, signal);
   }
-  metricsFor(run: string): Promise<MetricsViewData> {
-    return fetchJson(`/api/metrics?run_id=${encodeURIComponent(run)}`).then((d) => d as MetricsViewData);
+  metricsFor(run: string, signal?: AbortSignal): Promise<MetricsViewData> {
+    return fetchJson(`/api/metrics?run_id=${encodeURIComponent(run)}`, { signal }).then(adaptMetrics);
   }
-  confusion(): Promise<ConfusionData> {
-    return fetchJson(`/api/confusion?run_id=${encodeURIComponent(this.runId)}`).then((d) => d as ConfusionData);
+  confusion(signal?: AbortSignal): Promise<ConfusionData> {
+    return fetchJson(`/api/confusion?run_id=${encodeURIComponent(this.runId)}`, { signal }).then(d => {
+      const result = object(d, "confusion_schema_mismatch");
+      if (!isObject(result.pairs) || Object.values(result.pairs).some(value => !finite(value)) || !Array.isArray(result.scenarios) || result.scenarios.some(item => !isObject(item) || typeof item.scenario !== "string" || !isObject(item.actions) || Object.values(item.actions).some(value => !finite(value))) || !isObject(result.decisions)) invalid("confusion_schema_mismatch");
+      return result as unknown as ConfusionData;
+    });
   }
-  compare(l: string, r: string): Promise<Record<string, unknown>[]> {
+  compare(l: string, r: string, signal?: AbortSignal): Promise<Record<string, unknown>[]> {
     return fetchJson(
       `/api/compare?run_id=${encodeURIComponent(this.runId)}&left=${encodeURIComponent(l)}&right=${encodeURIComponent(r)}`,
-    ).then((d) => (d as { rows: Record<string, unknown>[] }).rows);
+      { signal },
+    ).then(d => {
+      const result = object(d, "compare_schema_mismatch");
+      return records(array(result.rows, "compare_schema_mismatch"), "compare_schema_mismatch");
+    });
   }
   recommend(record: Record<string, string>): Promise<RecommendResult> {
     return fetchJson("/api/recommend", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ run_id: this.runId, record }),
-    }).then((d) => d as RecommendResult);
+    }).then(d => {
+      const result = object(d, "recommend_schema_mismatch");
+      if (typeof result.action !== "string" || !finite(result.top_probability) || !finite(result.margin) || !Array.isArray(result.candidates) || typeof result.reason !== "string" || !isObject(result.diagnostics) || typeof result.scoring_mode !== "string") invalid("recommend_schema_mismatch");
+      return result as unknown as RecommendResult;
+    });
   }
-  loadDecisions(): Promise<DecisionSnapshot> {
-    return fetchJson(`/api/decisions?run_id=${encodeURIComponent(this.runId)}`).then(
-      (d) => d as DecisionSnapshot,
-    );
+  loadDecisions(runId = this.runId, signal?: AbortSignal): Promise<DecisionSnapshot> {
+    return fetchJson(`/api/decisions?run_id=${encodeURIComponent(runId)}`, { signal }).then(adaptDecisionSnapshot);
   }
   saveDecisions(
     items: Array<{ left: string; right: string; ts: string; reviewer?: string }>,
     revision: number,
+    runId = this.runId,
+    signal?: AbortSignal,
   ): Promise<number> {
     const reviewer = items.find((i) => i.reviewer)?.reviewer ?? "";
     return fetchJson("/api/decisions", {
       method: "PUT",
       headers: { "Content-Type": "application/json", ...(reviewer ? { "X-Reviewer": reviewer } : {}) },
-      body: JSON.stringify({ run_id: this.runId, items, revision }),
+      body: JSON.stringify({ run_id: runId, items, revision }),
+      signal,
     }).then((data) => {
       const detail = data as { revision?: number };
       if (typeof detail.revision !== "number") throw new ApiError("invalid_decision_revision");
@@ -277,164 +416,8 @@ export class ApiAdapter implements WorkbenchPort {
   }
 }
 
-// Memoizes read operations by run, operation, and arguments. run() clears the
-// cache; mutations and command-adjacent reads pass through uncached.
-export class MemoProxy implements WorkbenchPort {
-  private runId = "";
-  private cache = new Map<string, Promise<unknown>>();
-
-  constructor(private readonly inner: WorkbenchPort) {
-    this.inner = inner;
-  }
-
-  run(id: string): void {
-    this.runId = id;
-    this.cache.clear();
-    this.inner.run(id);
-  }
-  runs(): Promise<RunInfo[]> {
-    return this.memo("runs", "", () => this.inner.runs());
-  }
-  adminCapability(): Promise<AdminCapability> {
-    return this.memo("adminCapability", "", () => this.inner.adminCapability());
-  }
-  adminConfig(): Promise<AdminConfig> {
-    return this.memo("adminConfig", "", () => this.inner.adminConfig());
-  }
-  adminState(): Promise<AdminState> {
-    // mutation-adjacent read: actions mutate server state, so always refetch
-    return this.inner.adminState();
-  }
-  adminGenerationConfig(): Promise<GenerationCatalog> {
-    return this.memo("adminGenerationConfig", "", () => this.inner.adminGenerationConfig());
-  }
-  adminGenerationPreview(controls: GenerationControls): Promise<GenerationPreview> {
-    return this.inner.adminGenerationPreview(controls);
-  }
-  adminGenerations(): Promise<DatasetGeneration[]> {
-    return this.inner.adminGenerations();
-  }
-  adminDatasetSummary(generationId: string): Promise<DatasetSummary> {
-    return this.inner.adminDatasetSummary(generationId);
-  }
-  adminDatasetRows(
-    generationId: string,
-    table: string,
-    query: string,
-    offset: number,
-    limit: number,
-    filters?: Record<string, string>,
-    includeTotal?: boolean,
-    after?: string,
-    signal?: AbortSignal,
-  ): Promise<DatasetRows> {
-    return this.inner.adminDatasetRows(generationId, table, query, offset, limit, filters, includeTotal, after, signal);
-  }
-  adminStart(action: string, params: object): Promise<MatchJob> {
-    return this.inner.adminStart(action, params);
-  }
-  adminJob(id: string): Promise<MatchJob> {
-    return this.inner.adminJob(id);
-  }
-  adminAction(action: string, params: Record<string, string | number>): Promise<Record<string, unknown>> {
-    return this.inner.adminAction(action, params);
-  }
-  manualList(): Promise<ManualList> {
-    // mutation-adjacent read (register/import/undo), never cached
-    return this.inner.manualList();
-  }
-  manualRegister(record: Record<string, string>): Promise<{ ok: boolean; record_id: string }> {
-    return this.inner.manualRegister(record);
-  }
-  manualImport(rows: Array<Record<string, string>>, dryRun: boolean): Promise<Record<string, unknown>> {
-    return this.inner.manualImport(rows, dryRun);
-  }
-  manualUndo(recordIds: string[]): Promise<{ ok: boolean; removed: number }> {
-    return this.inner.manualUndo(recordIds);
-  }
-  private memo<T>(op: string, key: string, fetchFn: () => Promise<T>): Promise<T> {
-    const k = `${this.runId}|${op}|${key}`;
-    const hit = this.cache.get(k) as Promise<T> | undefined;
-    if (hit) return hit;
-    const p = fetchFn().catch((e) => {
-      this.cache.delete(k);
-      throw e;
-    });
-    this.cache.set(k, p);
-    return p;
-  }
-
-  entities(q: string, limit?: number, filters?: SearchFilters): Promise<SearchResult> {
-    return this.memo(
-      "entities",
-      `${q}:${limit ?? 50}:${JSON.stringify(filters ?? {})}`,
-      () => this.inner.entities(q, limit, filters),
-    );
-  }
-  entityExplorer(q: string, offset: number, limit: number, sort: EntitySort, filters?: SearchFilters, cursor?: string): Promise<EntityExplorerPage> {
-    return this.memo(
-      "entityExplorer",
-      `${q}:${offset}:${limit}:${sort}:${cursor ?? ""}:${JSON.stringify(filters ?? {})}`,
-      () => this.inner.entityExplorer(q, offset, limit, sort, filters, cursor),
-    );
-  }
-  entityGraph(id: string, includePotential = false): Promise<EntityGraph> {
-    return this.memo(
-      "entityGraph",
-      `${id}:${includePotential}`,
-      () => this.inner.entityGraph(id, includePotential),
-    );
-  }
-  normalizePreview(text: string): Promise<Record<string, string>> {
-    return this.memo("normalize", text, () => this.inner.normalizePreview(text));
-  }
-  entity(id: string, offset = 0, limit = 25): Promise<EntityDetail> {
-    return this.memo("entity", `${id}:${offset}:${limit}`, () => this.inner.entity(id, offset, limit));
-  }
-  health(): Promise<HealthInfo> {
-    return this.memo("health", "", () => this.inner.health());
-  }
-  matchSample(): Promise<{ record: Record<string, string> }> {
-    return this.memo("matchSample", "", () => this.inner.matchSample());
-  }
-  startRecommendation(
-    record: Record<string, string>,
-    thresholds?: { auto: number; review: number },
-  ): Promise<MatchJob> {
-    return this.inner.startRecommendation(record, thresholds);
-  }
-  recommendation(id: string): Promise<MatchJob> {
-    return this.inner.recommendation(id);
-  }
-  review(minP: number, offset: number, limit: number, nayose?: string): Promise<ReviewPage> {
-    return this.memo("review", `${minP}:${offset}:${limit}:${nayose ?? ""}`, () => this.inner.review(minP, offset, limit, nayose));
-  }
-  metrics(): Promise<MetricsViewData> {
-    return this.memo("metrics", this.runId, () => this.inner.metrics());
-  }
-  metricsFor(run: string): Promise<MetricsViewData> {
-    return this.memo("metrics", run, () => this.inner.metricsFor(run));
-  }
-  confusion(): Promise<ConfusionData> {
-    return this.memo("confusion", "", () => this.inner.confusion());
-  }
-  compare(l: string, r: string): Promise<Record<string, unknown>[]> {
-    return this.memo("compare", `${l}:${r}`, () => this.inner.compare(l, r));
-  }
-  recommend(record: Record<string, string>): Promise<RecommendResult> {
-    return this.inner.recommend(record);
-  }
-  loadDecisions(): Promise<DecisionSnapshot> {
-    return this.inner.loadDecisions();
-  }
-  saveDecisions(
-    items: Array<{ left: string; right: string; ts: string; reviewer?: string }>,
-    revision: number,
-  ): Promise<number> {
-    return this.inner.saveDecisions(items, revision);
-  }
-}
-
+export { MemoProxy } from "./memo-proxy.js";
+import { MemoProxy } from "./memo-proxy.js";
 // Factory: composes the production port. A WASM data adapter can be swapped
 // in later by passing it as the transport (OCP: no composition changes needed).
 export function createPort(transport?: WorkbenchPort): WorkbenchPort {
