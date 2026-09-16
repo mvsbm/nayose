@@ -13,6 +13,7 @@ import { routeDescriptor } from "./routes.js";
 import { presentError } from "./api-error.js";
 import { createDecisionCoordinator } from "./decision-sync.js";
 import { mountPalette } from "./palette.js";
+import { observeTables } from "./table-controls.js";
 const VIEWS = {
     search: (v, p, s, _args, scope) => mountSearch(v, p, s, scope),
     review: (v, p, s, _args, scope) => mountReview(v, p, s, scope),
@@ -34,6 +35,7 @@ export async function boot(opts = {}) {
     const view = document.querySelector("main#view");
     let activeView;
     let activeViewScope;
+    let tableObserver;
     let navigation = 0;
     const themeKey = (theme) => theme === "auto" ? "themeAuto" : theme === "dark" ? "themeDark" : "themeLight";
     const densityKey = (density) => density === "compact" ? "densityCompact" : "densityComfortable";
@@ -88,8 +90,10 @@ export async function boot(opts = {}) {
         const ticket = ++navigation;
         activeView?.dispatchEvent(new window.Event("unmount"));
         activeViewScope?.dispose();
+        tableObserver?.dispose();
         const target = document.createElement("div");
         activeView = target;
+        tableObserver = observeTables(target, store);
         activeViewScope = createViewScope(target);
         view.replaceChildren(target);
         if (!store.runs.length) {
@@ -136,6 +140,8 @@ export async function boot(opts = {}) {
             void navigate();
     })));
     const strip = document.querySelector("#status-strip");
+    lifetime.add(disposable(() => tableObserver?.dispose()));
+    lifetime.add(observeTables(strip, store));
     const cleanup = () => {
         activeView?.dispatchEvent(new window.Event("unmount"));
         activeViewScope?.dispose();

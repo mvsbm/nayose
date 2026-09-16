@@ -802,6 +802,11 @@ test("admin workspace: open nav, presets, settings apply + audit rows render", a
   window.location.hash = "#/admin";
   await wait(120);
   assert.ok(document.querySelector("#gen-profile"), "profile presets rendered");
+  assert.equal(document.querySelectorAll("[data-admin-section]").length, 4, "admin menu is incomplete");
+  document.querySelector('[data-admin-section="configuration"]').click();
+  assert.equal(document.querySelector("#admin-section-data-training").hidden, true, "data and training remained visible beside configuration");
+  assert.equal(document.querySelector("#admin-section-configuration").hidden, false, "configuration menu did not open its own section");
+  document.querySelector('[data-admin-section="data-training"]').click();
   assert.ok(document.querySelector("#admin-configuration"), "canonical configuration read model rendered");
   assert.equal(document.querySelector("#admin-configuration .configuration-readonly").textContent, "読み取り専用");
   assert.ok(document.querySelector("#config-section-serving"), "serving config section rendered");
@@ -817,6 +822,13 @@ test("admin workspace: open nav, presets, settings apply + audit rows render", a
   await wait(80);
   assert.ok(document.querySelector("#dataset-explorer"), "dataset explorer did not render");
   assert.ok(document.querySelector("#dataset-explorer table"), "dataset rows did not render");
+  document.querySelector("#dataset-close").click();
+  assert.equal(document.querySelector("#dataset-explorer").open, false, "dataset browser did not close");
+  document.querySelector("#dataset-explorer > summary").click();
+  assert.equal(document.querySelector("#dataset-explorer").open, true, "dataset browser did not reopen");
+  const datasetInfo = document.querySelector(".dataset-info");
+  datasetInfo.querySelector("summary").click();
+  assert.equal(datasetInfo.open, false, "dataset metadata did not collapse");
   const exact = document.querySelector("#set-exact");
   exact.value = "exact_only";
   exact.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
@@ -873,6 +885,37 @@ test("dataset viewer selects datasets and filters visible columns", async () => 
     mockPort.adminDatasetSummary = originalSummary;
     mockPort.adminDatasetRows = originalRows;
   }
+});
+
+test("breadcrumb parents are clickable route links", async () => {
+  await boot();
+  window.location.hash = "#/compare/R0/R1";
+  await wait(120);
+  const parent = document.querySelector(".crumbs a");
+  assert.equal(parent?.getAttribute("href"), "#/review");
+  parent.click();
+  await wait(80);
+  assert.equal(window.location.hash, "#/review");
+});
+
+test("tables provide shared search and sorting controls", async () => {
+  await boot();
+  window.location.hash = "#/review";
+  await wait(160);
+  const table = document.querySelector("#view table");
+  assert.ok(table, "review table rendered");
+  const tools = table.parentElement.querySelector(".table-tools");
+  assert.ok(tools, "table controls were not attached");
+  const search = tools.querySelector("input[type=search]");
+  search.value = "R0000000000";
+  search.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+  assert.equal([...table.tBodies[0].rows].filter(row => !row.hidden).length, 1, "table search did not filter rows");
+  const sort = tools.querySelector("select");
+  sort.value = "3";
+  sort.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+  const direction = tools.querySelector("button.table-sort");
+  direction.click();
+  assert.match(table.tBodies[0].rows[0].textContent, /R0000000000/, "table sort controls did not remain usable after filtering");
 });
 
 test("admin generator: all sabotage controls are visible, preview is tunable, and generate uses the previewed controls", async () => {

@@ -319,12 +319,15 @@ test("e2e: admin workspace — open access, presets, settings apply + audit rend
     await navigateFresh(page, "#/admin");
     await waitVisible(page, "#gen-profile");
     await waitVisible(page, "#gen-go");
+    await page.click('[data-admin-section="datasets"]');
     await waitVisible(page, "#dataset-explorer");
     await waitVisible(page, "#dataset-explorer table");
     assert.ok(await page.evaluate(() => !document.querySelector("#nav-admin")?.hasAttribute("hidden")), "admin nav revealed when capable");
     assert.ok(await page.locator("#gen-go").textContent().then(text => /データを生成|Generate data/.test(text ?? "")), "generation action is not discoverable");
     await page.selectOption("#dataset-table", "queries");
     await waitBodyText(page, "入力クエリ", 5000);
+    await page.click('[data-admin-section="runtime"]');
+    await waitVisible(page, "#runtime-controls");
     await page.locator("#runtime-controls summary").click();
     // serving settings: change exact_mode + apply (audited)
     await page.selectOption("#set-exact", "exact_only");

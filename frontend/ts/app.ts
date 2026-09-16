@@ -20,11 +20,12 @@ import {
 import { mountAdmin } from "./admin-view.js";
 import { mountDataEntry } from "./data-entry-view.js";
 import { mountNavigation, renderNavigation } from "./navigation.js";
-import { createViewScope, disposable, DisposableStore, type ViewScope } from "./lifecycle.js";
+import { createViewScope, disposable, DisposableStore, type Disposable, type ViewScope } from "./lifecycle.js";
 import { routeDescriptor, type RouteName } from "./routes.js";
 import { presentError } from "./api-error.js";
 import { createDecisionCoordinator } from "./decision-sync.js";
 import { mountPalette } from "./palette.js";
+import { observeTables } from "./table-controls.js";
 
 export interface BootOptions {
   port?: WorkbenchPort;
@@ -56,6 +57,7 @@ export async function boot(opts: BootOptions = {}): Promise<{ destroy: () => voi
   const view = document.querySelector<HTMLElement>("main#view")!;
   let activeView: HTMLElement | undefined;
   let activeViewScope: ViewScope | undefined;
+  let tableObserver: Disposable | undefined;
   let navigation = 0;
   const themeKey = (theme: Theme): string => theme === "auto" ? "themeAuto" : theme === "dark" ? "themeDark" : "themeLight";
   const densityKey = (density: Density): string => density === "compact" ? "densityCompact" : "densityComfortable";
@@ -116,8 +118,10 @@ export async function boot(opts: BootOptions = {}): Promise<{ destroy: () => voi
     const ticket = ++navigation;
     activeView?.dispatchEvent(new window.Event("unmount"));
     activeViewScope?.dispose();
+    tableObserver?.dispose();
     const target = document.createElement("div");
     activeView = target;
+    tableObserver = observeTables(target, store);
     activeViewScope = createViewScope(target);
     view.replaceChildren(target);
     if (!store.runs.length) {
@@ -161,6 +165,8 @@ export async function boot(opts: BootOptions = {}): Promise<{ destroy: () => voi
     if (parseRoute(location.hash).name !== "admin") void navigate();
   })));
   const strip = document.querySelector<HTMLElement>("#status-strip")!;
+  lifetime.add(disposable(() => tableObserver?.dispose()));
+  lifetime.add(observeTables(strip, store));
   const cleanup = (): void => {
     activeView?.dispatchEvent(new window.Event("unmount"));
     activeViewScope?.dispose();

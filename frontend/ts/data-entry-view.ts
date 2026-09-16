@@ -4,6 +4,7 @@ import type { Store } from "./store.js";
 import type { ViewScope } from "./lifecycle.js";
 import { presentError } from "./api-error.js";
 import { esc } from "./schema.js";
+import { renderBreadcrumb } from "./shared.js";
 import { pollJob } from "./core.js";
 import { asyncError, asyncIdle, asyncLoading, asyncReady, isAsyncLoading, type AsyncState } from "./async-state.js";
 
@@ -51,7 +52,7 @@ export async function mountDataEntry(el: HTMLElement, port: DataEntryPort, store
       [...el.querySelectorAll<HTMLInputElement>("[data-field]")].map(i => [i.dataset.field!, i.value.trim()]),
     );
     const registerReady = (): boolean => sameRecord(store.manualMatchRecord, currentRecord());
-    el.innerHTML = `<div class="panel"><nav class="crumbs" aria-label="${t("crumbs")}">${t("dataEntry")}</nav>
+    el.innerHTML = `<div class="panel">${renderBreadcrumb(store, [{ label: store.t("dataEntry") }])}
     <section class="card"><h2>${t("entryTitle")}</h2><p>${t("entryHelp")}</p>
       <ol class="workflow-steps" aria-label="${t("entryProgress")}">
         <li data-entry-step="1"><span>1</span>${t("entryStepInput")}</li>

@@ -4,7 +4,7 @@ import { mountEntityDetail } from "./entity-view.js";
 import { asNumber, checkedKey, clamp01, diffFields } from "./core.js";
 import { esc, str } from "./schema.js";
 import { icon } from "./icons.js";
-import { createFlipAnimator, formatNumber } from "./shared.js";
+import { createFlipAnimator, formatNumber, renderBreadcrumb } from "./shared.js";
 import { createViewScope, disposable } from "./lifecycle.js";
 import { bindPanelSplit } from "./panel-layout.js";
 import { presentError } from "./api-error.js";
@@ -12,7 +12,7 @@ const COMPARE_SPLIT_DEFAULT = 440;
 const COMPARE_SPLIT_MIN = 280;
 const COMPARE_SPLIT_MAX = 720;
 const SKELETON = (k = 3) => `<div class="skel">${Array.from({ length: k }, () => '<div class="card"></div>').join("")}</div>`;
-const crumb = (store, ...links) => `<nav class="crumbs" aria-label="${esc(store.t("crumbs"))}">${links.map((l, i) => (i % 2 ? `<a href="${esc(links[i - 1])}">${esc(l)}</a>` : l)).join(" / ")}</nav>`;
+const crumb = (store, href, label) => renderBreadcrumb(store, [{ href, label }]);
 const bar = (v) => `<progress class="meter" max="1" value="${clamp01(v)}" aria-hidden="true"></progress>`;
 const heatClass = (value, maximum) => {
     const ratio = maximum > 0 ? value / maximum : 0;

@@ -3,6 +3,7 @@ import { disposable, DisposableStore } from "./lifecycle.js";
 import { esc } from "./schema.js";
 import { asyncError, asyncIdle, asyncLoading, asyncReady } from "./async-state.js";
 import { formatNumber } from "./shared.js";
+import { bindPanelSplit } from "./panel-layout.js";
 import { readColumnFilters, renderColumnPicker, renderDatasetGrid, } from "./dataset-grid.js";
 const TABLE_LABELS = {
     reference: "referenceRecords",
@@ -54,7 +55,7 @@ function renderDatasetPicker(state, store, t) {
         const current = generation.current ? ` · ${store.t("currentDataset")}` : "";
         return `<label class="dataset-picker-choice"><input type="checkbox" data-dataset-select="${esc(generation.id)}" ${checked ? "checked" : ""}><span><strong>${esc(localizedGeneration(generation, store))}${esc(current)}</strong><small>${esc(generationDescription(generation, store))}</small></span></label>`;
     }).join("");
-    return `<fieldset class="dataset-picker"><legend>${t("datasetSelection")}</legend><p class="members">${t("datasetSelectionHelp")}</p><div class="dataset-picker-choice-list">${items}</div><output class="members" aria-live="polite">${t("selectedDatasets", { n: state.selectedGenerationIds.length })}</output></fieldset>`;
+    return `<details class="dataset-picker-panel" open><summary>${t("datasetSelection")}</summary><fieldset class="dataset-picker"><legend class="search-workspace-visually-hidden">${t("datasetSelection")}</legend><p class="members">${t("datasetSelectionHelp")}</p><div class="dataset-picker-choice-list">${items}</div><output class="members" aria-live="polite">${t("selectedDatasets", { n: state.selectedGenerationIds.length })}</output></fieldset></details>`;
 }
 function renderDatasetTabs(state, store) {
     const tabs = state.selectedGenerationIds.map(id => {
@@ -72,7 +73,7 @@ function renderDatasetSummary(state, store, columns, t) {
     const generation = state.generations.find(item => item.id === state.generationId) ?? state.generations[0];
     if (!summary || !generation)
         return "";
-    return `<section class="dataset-info"><h3>${esc(localizedGeneration(generation, store))}</h3><p class="members">${esc(generationDescription(generation, store))}</p><div class="kpi"><div class="card"><span class="l">${t("datasetFingerprint")}</span><div class="v">${esc(summary.fingerprint || "—")}</div></div><div class="card"><span class="l">${t("datasetCreated")}</span><div class="v">${esc(summary.created_at || "—")}</div></div><div class="card"><span class="l">${t("datasetTableRows")}</span><div class="v">${number(descriptor?.rows ?? 0, store)}</div></div><div class="card"><span class="l">${t("datasetColumns")}</span><div class="v">${number(columns.length, store)}</div></div></div><p class="members">${esc(descriptor?.description ?? "")}</p></section>`;
+    return `<details class="dataset-info" open><summary><strong>${esc(localizedGeneration(generation, store))}</strong><span class="members">${esc(store.t("datasetDetails"))}</span></summary><div class="dataset-info-body"><p class="members">${esc(generationDescription(generation, store))}</p><div class="kpi"><div class="card"><span class="l">${t("datasetFingerprint")}</span><div class="v">${esc(summary.fingerprint || "—")}</div></div><div class="card"><span class="l">${t("datasetCreated")}</span><div class="v">${esc(summary.created_at || "—")}</div></div><div class="card"><span class="l">${t("datasetTableRows")}</span><div class="v">${number(descriptor?.rows ?? 0, store)}</div></div><div class="card"><span class="l">${t("datasetColumns")}</span><div class="v">${number(columns.length, store)}</div></div></div><p class="members">${esc(descriptor?.description ?? "")}</p></div></details>`;
 }
 function renderTableOptions(state, store) {
     return TABLES.map(table => {
@@ -102,7 +103,7 @@ export function renderDatasetExplorer(state, store) {
     const exact = state.rows?.total_exact !== false && total >= 0;
     const pending = state.request.kind === "loading";
     const error = state.request.kind === "error" ? state.request.message : "";
-    return `<details id="dataset-explorer"${state.open ? " open" : ""}><summary>${t("datasetExplorer")}</summary><p>${t("datasetExplorerHelp")}</p>${renderDatasetPicker(state, store, t)}${renderDatasetTabs(state, store)}${renderDatasetToolbar(state, store, t)}${renderDatasetSummary(state, store, columns, t)}${renderColumnPicker(state, store, columns, t)}<div id="dataset-panel" role="tabpanel" aria-labelledby="dataset-tab-${esc(state.generationId)}" class="dataset-grid-scroll" tabindex="0" aria-label="${t("datasetRowsCaption", { n: ariaRows })}" aria-busy="${pending}">${renderDatasetGrid({ request: state.request, rows: state.rows, visibleColumns: state.visibleColumns, columnFilters: state.columnFilters }, store, columns, t)}</div>${renderDatasetPaging(state, total, exact, first, last, t)}${error ? `<p class="notice" role="alert">${esc(error)}</p>` : ""}</details>`;
+    return `<details id="dataset-explorer"${state.open ? " open" : ""}><summary>${t("datasetExplorer")}</summary><p>${t("datasetExplorerHelp")}</p><div class="dataset-workspace" data-panel-split="dataset-explorer"><aside class="dataset-selection-pane">${renderDatasetPicker(state, store, t)}</aside><div class="panel-resizer" data-panel-resizer="dataset-explorer" role="separator" aria-orientation="vertical" aria-label="${t("resizePanel")}" aria-valuemin="240" aria-valuemax="480" aria-valuenow="320" tabindex="0"></div><section class="dataset-content-pane"><div class="toolbar"><button id="dataset-close" class="more button-secondary" type="button">${t("closeDataset")}</button></div>${renderDatasetTabs(state, store)}${renderDatasetToolbar(state, store, t)}${renderDatasetSummary(state, store, columns, t)}${renderColumnPicker(state, store, columns, t)}<div id="dataset-panel" role="tabpanel" aria-labelledby="dataset-tab-${esc(state.generationId)}" class="dataset-grid-scroll" tabindex="0" aria-label="${t("datasetRowsCaption", { n: ariaRows })}" aria-busy="${pending}">${renderDatasetGrid({ request: state.request, rows: state.rows, visibleColumns: state.visibleColumns, columnFilters: state.columnFilters }, store, columns, t)}</div>${renderDatasetPaging(state, total, exact, first, last, t)}${error ? `<p class="notice" role="alert">${esc(error)}</p>` : ""}</section></div></details>`;
 }
 function reconcileColumns(state, columns) {
     if (!state.visibleColumns.length)
@@ -153,6 +154,7 @@ export function bindDatasetExplorer(host, state, port, store) {
     let disposed = false;
     let paintVersion = 0;
     let frame;
+    let splitBinding;
     const paint = () => {
         if (disposed)
             return;
@@ -160,8 +162,18 @@ export function bindDatasetExplorer(host, state, port, store) {
         const details = host.querySelector("#dataset-explorer");
         if (details)
             state.open = details.open;
+        splitBinding?.dispose();
         host.innerHTML = renderDatasetExplorer(state, store);
         bind();
+        splitBinding = bindPanelSplit(host, store, {
+            id: "dataset-explorer",
+            cssVariable: "--dataset-picker-width",
+            defaultWidth: 320,
+            minWidth: 240,
+            maxWidth: 480,
+            pointerSide: "left",
+            mobileQuery: "(max-width: 980px)",
+        });
         if (frame !== undefined && typeof cancelAnimationFrame === "function")
             cancelAnimationFrame(frame);
     };
@@ -187,6 +199,13 @@ export function bindDatasetExplorer(host, state, port, store) {
         reload();
     };
     const bind = () => {
+        const details = host.querySelector("#dataset-explorer");
+        details?.addEventListener("toggle", () => { state.open = details.open; });
+        host.querySelector("#dataset-close")?.addEventListener("click", () => {
+            state.open = false;
+            if (details)
+                details.open = false;
+        });
         host.querySelectorAll("[data-dataset-select]").forEach(input => input.addEventListener("change", () => {
             const selected = [...host.querySelectorAll("[data-dataset-select]:checked")].map(item => item.dataset.datasetSelect ?? "").filter(Boolean);
             if (!selected.length) {
@@ -278,7 +297,7 @@ export function bindDatasetExplorer(host, state, port, store) {
         });
     };
     bind();
-    if (state.generationId && !state.rows && state.request.kind !== "loading")
+    if (state.generationId && !state.rows)
         reload();
     return disposable(() => {
         disposed = true;
@@ -287,6 +306,7 @@ export function bindDatasetExplorer(host, state, port, store) {
         timerStore.dispose();
         if (frame !== undefined && typeof cancelAnimationFrame === "function")
             cancelAnimationFrame(frame);
+        splitBinding?.dispose();
     });
 }
 export async function refreshDatasetGenerations(state, port, signal) {

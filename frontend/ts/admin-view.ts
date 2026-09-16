@@ -13,7 +13,7 @@ import { disposable, type Disposable, type ViewScope } from "./lifecycle.js";
 import { esc } from "./schema.js";
 import { pollJob } from "./core.js";
 import { bindGenerationControls, cloneGenerationControls, generationControlsHash, resetGenerationControls, syncControlOutputs } from "./admin-controls.js";
-import { renderAdminPage } from "./admin-render.js";
+import { renderAdminPage, type AdminSection } from "./admin-render.js";
 import { renderPreview, type PreviewViewState } from "./admin-preview.js";
 import { bindPanelLayout } from "./panel-layout.js";
 import { bindDatasetExplorer, createDatasetExplorerState, refreshDatasetGenerations } from "./admin-dataset.js";
@@ -32,6 +32,7 @@ interface AdminUi {
   confirm: boolean;
   jobStatus: Record<string, JobStatus>;
   dataset: ReturnType<typeof createDatasetExplorerState>;
+  section: AdminSection;
 }
 
 function unavailableCard(store: Store): HTMLElement {
@@ -79,6 +80,7 @@ export async function mountAdmin(el: HTMLElement, port: AdminPort, store: Store,
     confirm: false,
     jobStatus: {},
     dataset: createDatasetExplorerState(generations),
+    section: "data-training",
   };
   const adminBusy = (): boolean => ui.request.kind === "loading";
   let previewTimer: number | undefined;
@@ -222,7 +224,7 @@ export async function mountAdmin(el: HTMLElement, port: AdminPort, store: Store,
     if (lifetime?.isDisposed) return;
     const previousDetails = new Set([...el.querySelectorAll<HTMLDetailsElement>("details[id]")].filter(details => details.open).map(details => details.id));
     const preserveDetails = el.querySelector("details[id]") !== null;
-    el.innerHTML = renderAdminPage({ state: ui.state, config: ui.config, catalog: ui.catalog, controls: ui.controls, preview: ui.preview, request: ui.request, confirm: ui.confirm, note: ui.note, dataset: ui.dataset }, store);
+    el.innerHTML = renderAdminPage({ state: ui.state, config: ui.config, catalog: ui.catalog, controls: ui.controls, preview: ui.preview, request: ui.request, confirm: ui.confirm, note: ui.note, dataset: ui.dataset, section: ui.section }, store);
     if (preserveDetails) {
       el.querySelectorAll<HTMLDetailsElement>("details[id]").forEach(details => { details.open = previousDetails.has(details.id); });
     }
@@ -230,6 +232,10 @@ export async function mountAdmin(el: HTMLElement, port: AdminPort, store: Store,
       const output = el.querySelector<HTMLElement>(selector);
       if (output) output.innerHTML = renderJobStatus(status, store);
     }
+    el.querySelectorAll<HTMLButtonElement>("[data-admin-section]").forEach(button => button.addEventListener("click", () => {
+      ui.section = button.dataset.adminSection as AdminSection;
+      void paint();
+    }));
     bindGenerationControls(el, ui.catalog, ui.controls, store, () => requestPreview());
     el.querySelector<HTMLButtonElement>("#gen-reset")?.addEventListener("click", () => resetGenerationControls(el, ui.catalog, ui.controls, ui.catalog.defaults, store, () => requestPreview(true)));
     panelLayout?.dispose();

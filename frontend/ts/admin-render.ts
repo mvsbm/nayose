@@ -9,6 +9,7 @@ import type { Store } from "./store.js";
 import { esc } from "./schema.js";
 import { renderPreview, type PreviewViewState } from "./admin-preview.js";
 import { renderDatasetExplorer, type DatasetExplorerState } from "./admin-dataset.js";
+import { renderBreadcrumb } from "./shared.js";
 import type { AsyncState } from "./async-state.js";
 
 const NOISE_FIELDS = ["name_kanji", "name_kana", "name_romaji", "date_birth", "postal_code", "address", "phone", "email"];
@@ -23,7 +24,10 @@ export interface AdminRenderModel {
   confirm: boolean;
   note: string;
   dataset: DatasetExplorerState;
+  section: AdminSection;
 }
+
+export type AdminSection = "data-training" | "configuration" | "runtime" | "datasets";
 
 type LocalizedItem = GenerationCatalogItem & { example_ja?: string; example_en?: string };
 const isBusy = (model: AdminRenderModel): boolean => model.request.kind === "loading";
@@ -136,14 +140,18 @@ function renderRuntime(model: AdminRenderModel, store: Store): string {
 
 export function renderAdminPage(model: AdminRenderModel, store: Store): string {
   const t = (key: string) => esc(store.t(key));
-  return `<div class="panel"><nav class="crumbs" aria-label="${t("crumbs")}">${t("admin")}</nav>
-    ${renderConfiguration(model.config, store)}
-    <div class="admin-workbench" data-panel-layout="admin-workbench">
+  const tab = (section: AdminSection, labelKey: string): string => `<button class="admin-menu-item" type="button" role="tab" aria-selected="${model.section === section}" aria-controls="admin-section-${section}" data-admin-section="${section}">${t(labelKey)}</button>`;
+  const section = (id: AdminSection, content: string): string => `<section id="admin-section-${id}" class="admin-section" role="tabpanel"${model.section === id ? "" : " hidden"}>${content}</section>`;
+  const dataTraining = `<div class="admin-workbench" data-panel-layout="admin-workbench">
       <section class="card admin-controls"><h2>${t("dataTrain")}</h2><p>${t("adminHelp")}</p>${renderGenerationControls(model, store)}</section>
       <div id="gen-preview-resizer" class="admin-resizer" data-panel-resizer="preview" role="separator" aria-label="${t("resizePreview")}" aria-orientation="vertical" aria-valuemin="352" aria-valuemax="640" aria-valuenow="420" aria-valuetext="420px" tabindex="0"></div>
       <aside class="admin-preview" tabindex="0" aria-labelledby="gen-live-preview-title"><section class="card" id="gen-live-preview"><header class="panel-heading"><h3 id="gen-live-preview-title">${t("livePreview")}</h3><button id="gen-preview-toggle" class="panel-toggle" type="button" aria-expanded="true" aria-controls="gen-preview-body" data-collapse-label="${t("collapsePanel")}" data-expand-label="${t("expandPanel")}">${t("collapsePanel")}</button></header><div class="toolbar"><button id="gen-go" class="more button-primary" type="button" disabled>${t("runGenerate")}</button><button id="gen-preview-go" class="more button-secondary" type="button">${t("refreshPreview")}</button></div><p id="gen-job" role="status" aria-live="polite" class="members"></p><div id="gen-preview-body"><p class="members">${t("livePreviewHelp")}</p><div id="gen-preview" aria-live="polite" aria-busy="${model.preview.request.kind === "loading"}">${renderPreview(model.preview, store)}</div></div></section></aside>
-    </div>
-    ${renderRuntime(model, store)}
-    <div id="dataset-explorer-host">${renderDatasetExplorer(model.dataset, store)}</div>
+    </div>`;
+  return `<div class="panel">${renderBreadcrumb(store, [{ label: store.t("admin") }])}
+    <nav class="admin-menu" role="tablist" aria-label="${t("adminMenu")}">${tab("data-training", "dataTrain")}${tab("configuration", "configurationTitle")}${tab("runtime", "runtimeAndDanger")}${tab("datasets", "datasetExplorer")}</nav>
+    ${section("data-training", dataTraining)}
+    ${section("configuration", renderConfiguration(model.config, store))}
+    ${section("runtime", renderRuntime(model, store))}
+    ${section("datasets", `<div id="dataset-explorer-host">${renderDatasetExplorer(model.dataset, store)}</div>`)}
     ${model.note ? `<p class="notice" role="status">${esc(model.note)}</p>` : ""}</div>`;
 }

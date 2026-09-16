@@ -21,6 +21,12 @@ Do not add a second route catalog, view-local color palette, runtime configurati
 - **Motion**: motion communicates change, never blocks work. Every animation has a reduced-motion path.
 - **Targets**: regular controls use the shared control-size scale; native checkbox/radio controls retain a 24px minimum and all other tested targets retain at least 32px. Coarse-pointer layouts may increase these sizes. Dense data remains keyboard reachable and gets a named, bounded collection region.
 
+## Workspace layout policy
+
+Resizable regions are reserved for adjacent work surfaces whose widths change how an operator compares or inspects information. The shell navigation, search results/detail, entity results/detail, record comparison, admin generation controls/preview, and dataset selection/content panes expose a keyboard-accessible sash with persisted bounds. Review, metrics, data entry, and configuration remain single-flow panels; they use disclosure controls instead of artificial split handles. Mobile collapses split panes into one column and hides the sash.
+
+Every rendered table receives the shared table decorator: a localized row search, a column selector, and ascending/descending sorting. Server-backed dataset search remains authoritative; the shared control filters and sorts the currently loaded page without pretending to replace server pagination.
+
 ## Component contracts
 
 Each component owns its markup, states, bindings, and disposal. Renderers receive validated data and a translator; they do not call HTTP, storage, or global browser persistence. Dynamic data presentation uses semantic elements such as `progress`, `details`, table captions, and SVG attributes rather than inline CSS.

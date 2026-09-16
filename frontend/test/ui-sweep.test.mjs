@@ -121,7 +121,8 @@ async function collectCandidates(page) {
         checked: el.checked === true,
         hiddenByDesign: Boolean(
           (el.closest("#primary-navigation, #activity-navigation, #side-nav") && matchMedia("(max-width: 900px)").matches) ||
-          (el.closest(".run-context") && matchMedia("(max-width: 820px)").matches)
+          (el.closest(".run-context") && matchMedia("(max-width: 820px)").matches) ||
+          Boolean(el.closest(".admin-section[hidden]"))
         ),
         visuallyHiddenControl: !visible && el.tagName === "INPUT" && el.type === "checkbox" && Boolean(associatedLabel && associatedLabel.getBoundingClientRect().width > 0 && associatedLabel.getBoundingClientRect().height > 0),
         size: { w: Math.round(rect.width), h: Math.round(rect.height) },
@@ -192,7 +193,7 @@ async function openAppSettings(page) {
 }
 
 async function openDisclosures(page) {
-  const closed = page.locator("#view details:not([open]) > summary");
+  const closed = page.locator("#view details:not([open]) > summary").filter({ visible: true });
   while (await closed.count()) {
     await closed.first().click();
     await waitUiSettled(page);
@@ -375,31 +376,31 @@ const feels = {
     await waitVisible(page, "#gen-go");
     // open-by-default: the token gate is NOT rendered at all (count 0, not hidden)
     assert.equal(await page.locator("#adm-token").count(), 0, "admin token gate rendered despite open-by-default");
-    if (!(await page.locator("#training-controls").getAttribute("open"))) {
-      await page.locator("#training-controls summary").click();
-    }
-    if (!(await page.locator("#runtime-controls").getAttribute("open"))) {
-      await page.locator("#runtime-controls summary").click();
-    }
+    await page.click('[data-admin-section="datasets"]');
+    await waitVisible(page, "#dataset-explorer");
     const picker = page.locator("details.dataset-column-picker");
-    if (await picker.count() && !(await picker.getAttribute("open"))) {
+    if (await picker.count() && (await picker.getAttribute("open")) === null) {
       await picker.locator("summary").click();
     }
     await page.locator("#dataset-filter-apply").click();
     await waitUiSettled(page);
-    if (!(await picker.getAttribute("open"))) {
+    if ((await picker.getAttribute("open")) === null) {
       await picker.locator("summary").click();
     }
     await page.locator("#dataset-filter-clear").click();
-    if (!(await page.locator("#training-controls").getAttribute("open"))) {
-      await page.locator("#training-controls summary").click();
-    }
-    if (!(await page.locator("#runtime-controls").getAttribute("open"))) {
+    await page.click('[data-admin-section="runtime"]');
+    await waitVisible(page, "#runtime-controls");
+    if ((await page.locator("#runtime-controls").getAttribute("open")) === null) {
       await page.locator("#runtime-controls summary").click();
     }
-    await waitVisible(page, "#tr-go");
     await waitVisible(page, "#set-go");
     await waitVisible(page, "#dz-prune");
+    await page.click('[data-admin-section="data-training"]');
+    await waitVisible(page, "#gen-go");
+    if ((await page.locator("#training-controls").getAttribute("open")) === null) {
+      await page.locator("#training-controls summary").click({ force: true });
+    }
+    await waitVisible(page, "#tr-go");
   },
   dataEntry: async (page) => {
     await waitVisible(page, "#de-register");
@@ -410,7 +411,7 @@ const feels = {
     const checkbox = page.locator("#entity-explorer-potential");
     if (!(await checkbox.count())) return;
     const section = page.locator("#entity-explorer-potential-section");
-    if (!(await section.getAttribute("open"))) {
+    if ((await section.getAttribute("open")) === null) {
       await section.locator("summary").click();
     }
     await page.locator("label.entity-explorer-potential").click();

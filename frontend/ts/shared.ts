@@ -1,6 +1,24 @@
 // Shared presentation helpers — transport (fetch + auth) lives in infra.ts,
 // the ONE server seam. Keep browser animation isolated from view modules.
+import type { Store } from "./store.js";
+import { esc } from "./schema.js";
 export type { RunInfo } from "./port.js";
+
+export interface BreadcrumbItem {
+  label: string;
+  href?: string;
+}
+
+export function renderBreadcrumb(store: Store, items: BreadcrumbItem[]): string {
+  const content = items.map((item, index) => {
+    const label = esc(item.label);
+    const current = index === items.length - 1 && !item.href;
+    return item.href && !current
+      ? `<a href="${esc(item.href)}">${label}</a>`
+      : `<span${current ? ' aria-current="page"' : ""}>${label}</span>`;
+  }).join("<span aria-hidden=\"true\">/</span>");
+  return `<nav class="crumbs" aria-label="${esc(store.t("crumbs"))}">${content}</nav>`;
+}
 
 export function formatNumber(value: number, locale: "ja" | "en"): string {
   return new Intl.NumberFormat(locale === "ja" ? "ja-JP" : "en-US").format(value);

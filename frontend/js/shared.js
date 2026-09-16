@@ -1,3 +1,14 @@
+import { esc } from "./schema.js";
+export function renderBreadcrumb(store, items) {
+    const content = items.map((item, index) => {
+        const label = esc(item.label);
+        const current = index === items.length - 1 && !item.href;
+        return item.href && !current
+            ? `<a href="${esc(item.href)}">${label}</a>`
+            : `<span${current ? ' aria-current="page"' : ""}>${label}</span>`;
+    }).join("<span aria-hidden=\"true\">/</span>");
+    return `<nav class="crumbs" aria-label="${esc(store.t("crumbs"))}">${content}</nav>`;
+}
 export function formatNumber(value, locale) {
     return new Intl.NumberFormat(locale === "ja" ? "ja-JP" : "en-US").format(value);
 }

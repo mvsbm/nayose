@@ -3,6 +3,7 @@ import type { Store } from "./store.js";
 import type { ViewScope } from "./lifecycle.js";
 import { esc } from "./schema.js";
 import { comparisonTable, FIELD_GROUPS, recordFields, value } from "./evidence-view.js";
+import { renderBreadcrumb } from "./shared.js";
 
 export async function mountEntityDetail(el: HTMLElement, port: EntityDetailPort, store: Store, id: string, scope: ViewScope): Promise<void> {
   const params = new URLSearchParams(location.hash.split("?")[1] ?? "");
@@ -17,7 +18,7 @@ export async function mountEntityDetail(el: HTMLElement, port: EntityDetailPort,
   const pageLink = (p: number, s = size): string => `#/entity/${encodeURIComponent(id)}?page=${p}&size=${s}`;
   if (page > 1 && !members.length && total > 0) { location.hash = pageLink(Math.ceil(total / size)); return; }
   el.innerHTML = `<div class="panel">
-    <nav class="crumbs" aria-label="${t("crumbs")}"><a href="#/entities">${t("entities")}</a><span>${esc(id)}</span></nav>
+    ${renderBreadcrumb(store, [{ href: "#/entities", label: store.t("entities") }, { label: id }])}
     <section class="card" data-entity="${esc(id)}"><h2>${value(store, entity.name_kanji)} <span class="muted">${value(store, entity.name_kana)}</span></h2>
       <h3>${t("canonicalTitle")}</h3><p>${t("canonicalHelp")}</p>
       ${recordFields(store, { ...entity, nayose_id: id }, ["nayose_id", "record_count", "policy_count", "agency_count", "first_seen", "last_seen"])}

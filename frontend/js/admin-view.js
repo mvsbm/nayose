@@ -59,6 +59,7 @@ export async function mountAdmin(el, port, store, scope) {
         confirm: false,
         jobStatus: {},
         dataset: createDatasetExplorerState(generations),
+        section: "data-training",
     };
     const adminBusy = () => ui.request.kind === "loading";
     let previewTimer;
@@ -217,7 +218,7 @@ export async function mountAdmin(el, port, store, scope) {
             return;
         const previousDetails = new Set([...el.querySelectorAll("details[id]")].filter(details => details.open).map(details => details.id));
         const preserveDetails = el.querySelector("details[id]") !== null;
-        el.innerHTML = renderAdminPage({ state: ui.state, config: ui.config, catalog: ui.catalog, controls: ui.controls, preview: ui.preview, request: ui.request, confirm: ui.confirm, note: ui.note, dataset: ui.dataset }, store);
+        el.innerHTML = renderAdminPage({ state: ui.state, config: ui.config, catalog: ui.catalog, controls: ui.controls, preview: ui.preview, request: ui.request, confirm: ui.confirm, note: ui.note, dataset: ui.dataset, section: ui.section }, store);
         if (preserveDetails) {
             el.querySelectorAll("details[id]").forEach(details => { details.open = previousDetails.has(details.id); });
         }
@@ -226,6 +227,10 @@ export async function mountAdmin(el, port, store, scope) {
             if (output)
                 output.innerHTML = renderJobStatus(status, store);
         }
+        el.querySelectorAll("[data-admin-section]").forEach(button => button.addEventListener("click", () => {
+            ui.section = button.dataset.adminSection;
+            void paint();
+        }));
         bindGenerationControls(el, ui.catalog, ui.controls, store, () => requestPreview());
         el.querySelector("#gen-reset")?.addEventListener("click", () => resetGenerationControls(el, ui.catalog, ui.controls, ui.catalog.defaults, store, () => requestPreview(true)));
         panelLayout?.dispose();
