@@ -25,22 +25,20 @@ export function mountPalette(options: PaletteOptions): void {
   const registry = new CommandRegistry();
   lifetime.add(registry.registerAll(createWorkbenchCommands(ROUTES)));
   const palette = document.querySelector<HTMLElement>("#palette")!;
-  const input = document.querySelector<HTMLInputElement>("#palette-input")!;
+  const input = document.querySelector<HTMLInputElement>("#cmd")!;
   const list = document.querySelector<HTMLUListElement>("#palette-results")!;
   const status = document.querySelector<HTMLElement>("#palette-stat")!;
   let items: PaletteItem[] = [];
   let activeIndex = -1;
   let request = 0;
-  let restoreFocus: HTMLElement | null = null;
 
   const close = (): void => {
     request += 1;
     palette.classList.remove("open");
     palette.hidden = true;
+    input.setAttribute("aria-expanded", "false");
+    input.setAttribute("aria-activedescendant", "");
     activeIndex = -1;
-    const target = restoreFocus?.isConnected ? restoreFocus : document.querySelector<HTMLElement>("#cmd");
-    restoreFocus = null;
-    target?.focus();
   };
   const context = (): CommandContext => ({
     t: (key) => store.t(key),
@@ -87,23 +85,17 @@ export function mountPalette(options: PaletteOptions): void {
     render();
   };
   const open = (): void => {
-    const active = document.activeElement as HTMLElement | null;
-    const opener = document.querySelector<HTMLElement>("#cmd");
-    restoreFocus = active && active !== document.body && active !== document.documentElement && typeof active.focus === "function" ? active : opener;
     palette.classList.add("open");
     palette.hidden = false;
-    input.value = "";
+    input.setAttribute("aria-expanded", "true");
     status.textContent = "";
-    void search("");
+    void search(input.value);
     input.focus();
   };
   const onKeydown = (event: KeyboardEvent): void => {
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
       event.preventDefault();
       open();
-    } else if (!palette.hidden && event.key === "Tab") {
-      event.preventDefault();
-      input.focus();
     } else if (!palette.hidden && event.key === "Escape") {
       close();
     }
@@ -118,25 +110,36 @@ export function mountPalette(options: PaletteOptions): void {
     } else if (event.key === "Enter") {
       event.preventDefault();
       if (activeIndex >= 0) items[activeIndex]?.go();
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      close();
     }
   };
   const onListClick = (event: MouseEvent): void => {
     const index = Number((event.target as HTMLElement).closest<HTMLElement>("li")?.dataset.i);
     items[index]?.go();
   };
-  const onBackdropClick = (event: MouseEvent): void => { if (event.target === palette) close(); };
-  const onInput = (): void => { void search(input.value); };
+  const onInput = (): void => { if (palette.hidden) open(); else void search(input.value); };
+  const onInputFocus = (): void => { if (palette.hidden) open(); };
+  const commandCenter = document.querySelector<HTMLElement>("#command-center");
+  const onPointerdown = (event: PointerEvent): void => {
+    const target = event.target;
+    const isDomNode = target !== null && typeof target === "object" && "nodeType" in target;
+    if (!palette.hidden && isDomNode && commandCenter && !commandCenter.contains(target as Node)) close();
+  };
   const commandButton = document.querySelector<HTMLElement>("#cmd");
   document.addEventListener("keydown", onKeydown);
+  document.addEventListener("pointerdown", onPointerdown);
   input.addEventListener("input", onInput);
   input.addEventListener("keydown", onInputKeydown);
+  input.addEventListener("focus", onInputFocus);
   list.addEventListener("click", onListClick);
-  palette.addEventListener("click", onBackdropClick);
   commandButton?.addEventListener("click", open);
   lifetime.add(disposable(() => document.removeEventListener("keydown", onKeydown)));
+  lifetime.add(disposable(() => document.removeEventListener("pointerdown", onPointerdown)));
   lifetime.add(disposable(() => input.removeEventListener("input", onInput)));
   lifetime.add(disposable(() => input.removeEventListener("keydown", onInputKeydown)));
+  lifetime.add(disposable(() => input.removeEventListener("focus", onInputFocus)));
   lifetime.add(disposable(() => list.removeEventListener("click", onListClick)));
-  lifetime.add(disposable(() => palette.removeEventListener("click", onBackdropClick)));
   if (commandButton) lifetime.add(disposable(() => commandButton.removeEventListener("click", open)));
 }

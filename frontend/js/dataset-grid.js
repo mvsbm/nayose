@@ -20,14 +20,14 @@ export function renderColumnPicker(model, store, columns, t) {
         return "";
     const visible = model.visibleColumns.length ? model.visibleColumns : columns;
     const items = columns
-        .map(column => `<div class="dataset-column-picker-choice"><label><input type="checkbox" data-column-visible="${esc(column)}" ${visible.includes(column) ? "checked" : ""}> ${t("visibleColumn")}</label><span>${esc(store.t(column))}</span></div>`)
+        .map(column => `<div class="dataset-column-picker-choice"><label><input type="checkbox" data-column-visible="${esc(column)}" ${visible.includes(column) ? "checked" : ""}> ${t("visibleColumn")} <span>${esc(store.t(column))}</span></label></div>`)
         .join("");
-    return `<details class="dataset-column-picker"><summary>${t("datasetColumnsPicker")}</summary><div class="dataset-column-picker-list">${items}</div><div class="toolbar"><button id="dataset-filter-apply" class="more" type="button">${t("applyColumnFilters")}</button><button id="dataset-filter-clear" class="more" type="button">${t("clearColumnFilters")}</button></div></details>`;
+    return `<details class="dataset-column-picker"><summary>${t("datasetColumnsPicker")}</summary><div class="dataset-column-picker-list">${items}</div><div class="toolbar"><button id="dataset-filter-apply" class="button button-secondary" type="button">${t("applyColumnFilters")}</button><button id="dataset-filter-clear" class="button button-secondary" type="button">${t("clearColumnFilters")}</button></div></details>`;
 }
 export function renderDatasetGrid(model, store, columns, t) {
     const visibleColumns = displayColumns(model, columns);
     if (!model.rows?.rows.length)
-        return `<p class="members">${model.request.kind === "loading" ? t("datasetLoading") : t("datasetNoRows")}</p>`;
+        return `<p class="text-meta">${model.request.kind === "loading" ? t("datasetLoading") : t("datasetNoRows")}</p>`;
     const head = visibleColumns
         .map(column => `<th scope="col" data-column="${esc(column)}" class="dataset-grid-head"><span>${esc(store.t(column))}</span><input type="search" data-column-filter="${esc(column)}" value="${esc(model.columnFilters[column] ?? "")}" placeholder="${t("datasetFilterPlaceholder")}" aria-label="${esc(store.t(column))} ${t("datasetFilterPlaceholder")}"></th>`)
         .join("");

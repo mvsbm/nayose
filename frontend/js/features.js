@@ -5,7 +5,8 @@ import { asNumber, checkedKey, clamp01, diffFields } from "./core.js";
 import { esc, str } from "./schema.js";
 import { icon } from "./icons.js";
 import { createFlipAnimator, formatNumber, renderBreadcrumb } from "./shared.js";
-import { createViewScope, disposable } from "./lifecycle.js";
+import { disposable } from "./lifecycle.js";
+import { mountView } from "./view-runtime.js";
 import { bindPanelSplit } from "./panel-layout.js";
 import { presentError } from "./api-error.js";
 const COMPARE_SPLIT_DEFAULT = 440;
@@ -24,34 +25,17 @@ const heatClass = (value, maximum) => {
         return "heat-mid";
     return "heat-low";
 };
-const mountVersions = new WeakMap();
-const mountScopes = new WeakMap();
-async function mountView(el, spec, parentScope) {
-    const version = (mountVersions.get(el) ?? 0) + 1;
-    mountVersions.set(el, version);
-    mountScopes.get(el)?.dispose();
-    const scope = createViewScope(el);
-    if (parentScope) {
-        const disposeWithParent = () => scope.dispose();
-        if (parentScope.signal.aborted)
-            scope.dispose();
-        else {
-            parentScope.signal.addEventListener("abort", disposeWithParent, { once: true });
-            scope.add(disposable(() => parentScope.signal.removeEventListener("abort", disposeWithParent)));
-        }
-    }
-    mountScopes.set(el, scope);
-    if (spec.skeleton) {
-        el.setAttribute("aria-busy", "true");
-        el.innerHTML = `<div role="status" aria-live="polite" aria-label="${esc(spec.loadingText ?? "")}">${spec.skeleton}</div>`;
-    }
-    const data = await spec.load(scope.signal);
-    if (scope.isDisposed || mountVersions.get(el) !== version)
-        return;
-    el.innerHTML = spec.render(data);
-    el.setAttribute("aria-busy", "false");
-    spec.bind?.(el, data, scope);
-}
+const metricKey = (label) => ({
+    "candidate recall": "candidate_recall", "B3 F1": "cluster_f1", "top-1 identity": "top1_identity", MRR: "mrr", review: "review_rate", "no-match": "no_match_rate",
+}[label] ?? label);
+const metricHelpKey = (label) => `${metricKey(label)}_help`;
+const translatedKey = (store, key) => store.t(key);
+const formatMetric = (metric, unit, locale) => {
+    if (metric.unit === "count")
+        return formatNumber(metric.value, locale);
+    return unit === "percent" ? `${(metric.value * 100).toFixed(1)}%` : metric.value.toFixed(4);
+};
+const localizedId = (store, id) => translatedKey(store, id);
 export async function mountSearch(el, port, store, scope) {
     await mountMatchingSearch(el, port, store, scope);
 }
@@ -94,7 +78,7 @@ export async function mountReview(el, port, store, viewScope) {
         const chartLabel = `${store.t("scoreBands")}: ${page.histogram.length}`;
         return `<div class="card"><h3>${esc(store.t("scoreBands"))}</h3>
       <div class="hist"><svg class="hist-chart" viewBox="0 0 100 100" preserveAspectRatio="none" role="img" aria-label="${esc(chartLabel)}">${bars}${mark(minP, store.t("scoreFilter"))}${pairMark}</svg></div>
-      <p class="members">${hiddenBelow(page)}</p></div>`;
+      <p class="text-meta">${hiddenBelow(page)}</p></div>`;
     };
     const refresh = (initial) => mountView(el, {
         skeleton: initial ? SKELETON() : undefined,
@@ -103,39 +87,39 @@ export async function mountReview(el, port, store, viewScope) {
         render: (page) => `<div class="panel">${crumb(store, "#/review", store.t("review"))}
       <div class="card"><div class="toolbar">
         <h3>${esc(store.t("reviewTitle"))}</h3>
-        <label class="members">${esc(store.t("scoreFilter"))}
-          <input type="range" id="minp" min="0" max="100" step="1" value="${Math.round(minP * 100)}" aria-valuetext="${Math.round(minP * 100)}%"></label>
-        <output class="members" for="minp" id="minp-val">${Math.round(minP * 100)}%</output>
-        <label class="members">${esc(store.t("pageSize"))}<select id="page-size" aria-label="${esc(store.t("pageSize"))}">
+        <label class="text-meta">${esc(store.t("scoreFilter"))}
+          <input class="slider" type="range" id="minp" min="0" max="100" step="1" value="${Math.round(minP * 100)}" aria-valuetext="${Math.round(minP * 100)}%"></label>
+        <output class="slider-output text-meta" for="minp" id="minp-val">${Math.round(minP * 100)}%</output>
+        <label class="text-meta">${esc(store.t("pageSize"))}<select id="page-size" aria-label="${esc(store.t("pageSize"))}">
           ${[25, 50, 100, 200, 500].map(n => `<option ${n === pageSize ? "selected" : ""}>${n}</option>`).join("")}
         </select></label>
-        <span class="members" id="count" role="status" aria-live="polite">${esc(store.t("reviewCount", { n: page.total, read: store.checked.size }))}</span>
-        ${filterEntity ? `<button type="button" class="chip-state warn" id="filter-clear" title="${esc(filterEntity)}">${esc(store.t("filterByEntity", { id: filterEntity }))} ${icon("close")}</button>` : ""}
-        <label class="members">${esc(store.t("reviewer"))}<input id="reviewer" class="bar" type="text" size="10" value="${esc(store.reviewer)}"></label>
-        <button type="button" class="more button-secondary" id="undo">${esc(store.t("undo"))}</button>
-        <button type="button" class="more button-secondary" id="review-prev" ${offset === 0 ? "disabled" : ""}>${esc(store.t("previous"))}</button>
-        <button type="button" class="more button-secondary" id="more" ${offset + page.rows.length >= page.total || !page.rows.length ? "disabled" : ""}>${esc(store.t("next"))}</button></div>
-      <p class="members" id="review-record-help">${esc(store.t("reviewRecordHelp"))}</p>
-      ${store.decisionLoadError ? `<div class="notice" id="decision-load-error" role="alert"><strong>${esc(store.t("decisionLoadError"))}</strong><p>${esc(store.decisionLoadError)}</p><button type="button" class="more" id="decision-reload">${esc(store.t("decisionReload"))}</button></div>` : ""}
-      ${store.decisionConflict ? `<div class="notice" id="decision-conflict" role="alert"><strong>${esc(store.t("decisionConflict"))}</strong><p>${esc(store.t("decisionConflictHelp"))}</p><button type="button" class="more" id="decision-reload">${esc(store.t("decisionReload"))}</button></div>` : ""}
-      ${store.decisionSaveError ? `<div class="notice" id="decision-save-error" role="alert"><strong>${esc(store.t("decisionSaveError"))}</strong><p>${esc(store.decisionSaveError)}</p><button type="button" class="more" id="decision-retry">${esc(store.t("decisionRetry"))}</button></div>` : ""}
+        <span class="text-meta" id="count" role="status" aria-live="polite">${esc(store.t("reviewCount", { n: page.total, read: store.checked.size }))}</span>
+        ${filterEntity ? `<button type="button" class="button button-chip warn" id="filter-clear" title="${esc(filterEntity)}">${esc(store.t("filterByEntity", { id: filterEntity }))} ${icon("close")}</button>` : ""}
+        <label class="text-meta">${esc(store.t("reviewer"))}<input id="reviewer" class="text-input" type="text" size="10" value="${esc(store.reviewer)}"></label>
+        <button type="button" class="button button-secondary" id="undo">${esc(store.t("undo"))}</button>
+        <button type="button" class="button button-secondary" id="review-prev" ${offset === 0 ? "disabled" : ""}>${esc(store.t("previous"))}</button>
+        <button type="button" class="button button-secondary" id="more" ${offset + page.rows.length >= page.total || !page.rows.length ? "disabled" : ""}>${esc(store.t("next"))}</button></div>
+      <p class="text-meta" id="review-record-help">${esc(store.t("reviewRecordHelp"))}</p>
+      ${store.decisionLoadError ? `<div class="notice" id="decision-load-error" role="alert"><strong>${esc(store.t("decisionLoadError"))}</strong><p>${esc(store.decisionLoadError)}</p><button type="button" class="button button-secondary" id="decision-reload">${esc(store.t("decisionReload"))}</button></div>` : ""}
+      ${store.decisionConflict ? `<div class="notice" id="decision-conflict" role="alert"><strong>${esc(store.t("decisionConflict"))}</strong><p>${esc(store.t("decisionConflictHelp"))}</p><button type="button" class="button button-secondary" id="decision-reload">${esc(store.t("decisionReload"))}</button></div>` : ""}
+      ${store.decisionSaveError ? `<div class="notice" id="decision-save-error" role="alert"><strong>${esc(store.t("decisionSaveError"))}</strong><p>${esc(store.decisionSaveError)}</p><button type="button" class="button button-secondary" id="decision-retry">${esc(store.t("decisionRetry"))}</button></div>` : ""}
       <p>${esc(store.t("reviewHelp"))}</p>
       ${histogramHtml(page)}
-      <div class="collection-region" tabindex="0" role="region" aria-label="${esc(store.t("reviewTitle"))}"><table><caption class="members">${esc(store.t("reviewHelp"))}</caption><thead><tr><th scope="col">${esc(store.t("recorded"))}</th><th scope="col">${esc(store.t("leftRecord"))}</th><th scope="col">${esc(store.t("rightRecord"))}</th><th scope="col">${esc(store.t("score"))}</th><th scope="col">${esc(store.t("exact"))}</th></tr></thead>
+      <div class="collection-region" tabindex="0" role="region" aria-label="${esc(store.t("reviewTitle"))}"><table><caption class="text-meta">${esc(store.t("reviewHelp"))}</caption><thead><tr><th scope="col">${esc(store.t("recorded"))}</th><th scope="col">${esc(store.t("leftRecord"))}</th><th scope="col">${esc(store.t("rightRecord"))}</th><th scope="col">${esc(store.t("score"))}</th><th scope="col">${esc(store.t("exact"))}</th></tr></thead>
       <tbody>${page.rows.map((r) => {
             const done = store.checked.has(key(r.left_record_id, r.right_record_id));
             return `<tr class="${done ? "checked" : ""}" data-l="${esc(r.left_record_id)}" data-r="${esc(r.right_record_id)}">
-          <td><button type="button" class="check ${done ? "on" : ""}" aria-pressed="${done}" aria-label="${esc(store.t(done ? "recorded" : "reviewed"))}: ${esc(r.left_record_id)} / ${esc(r.right_record_id)}">${esc(store.t(done ? "recorded" : "reviewed"))}</button></td>
+          <td><button type="button" class="button button-check ${done ? "on" : ""}" aria-pressed="${done}" aria-label="${esc(store.t(done ? "recorded" : "reviewed"))}: ${esc(r.left_record_id)} / ${esc(r.right_record_id)}">${esc(store.t(done ? "recorded" : "reviewed"))}</button></td>
           <td><a href="#/compare/${encodeURIComponent(r.left_record_id)}/${encodeURIComponent(r.right_record_id)}">${esc(r.left_record_id)}</a></td>
           <td><a href="#/compare/${encodeURIComponent(r.left_record_id)}/${encodeURIComponent(r.right_record_id)}">${esc(r.right_record_id)}</a></td>
           <td>${(asNumber(r.pair_probability) * 100).toFixed(1)}%</td><td>${asNumber(r.exact_count)}</td></tr>`;
-        }).join("") || `<tr><td colspan="5" class="members">${esc(store.t("none"))}</td></tr>`}</tbody></table></div></div></div>`,
+        }).join("") || `<tr><td colspan="5" class="text-meta">${esc(store.t("none"))}</td></tr>`}</tbody></table></div></div></div>`,
         bind: (el, page, scope) => {
             const syncRow = (tr) => {
                 const left = tr.dataset.l ?? "";
                 const right = tr.dataset.r ?? "";
                 const isRecorded = store.checked.has(key(left, right));
-                const btn = tr.querySelector("button.check");
+                const btn = tr.querySelector(".button-check");
                 tr.classList.toggle("checked", isRecorded);
                 if (!btn)
                     return;
@@ -145,7 +129,7 @@ export async function mountReview(el, port, store, viewScope) {
                 btn.textContent = store.t(isRecorded ? "recorded" : "reviewed");
             };
             el.querySelector("tbody").addEventListener("click", (e) => {
-                const btn = e.target.closest("button.check");
+                const btn = e.target.closest(".button-check");
                 const tr = e.target.closest("tr");
                 if (!btn || !tr)
                     return;
@@ -233,22 +217,29 @@ export async function mountConfusion(el, port, store, parentScope) {
         loadingText: store.t("loading"),
         load: (signal) => port.confusion(signal),
         render: (data) => {
+            const pairs = data.pairs;
+            const count = (id) => asNumber(pairs[id]);
+            const total = ["true_positives", "false_positives", "true_negatives", "false_negatives"].reduce((sum, id) => sum + count(id), 0);
+            const cell = (id, label, help, tone) => `<td class="${tone}" data-error-cell="${id}"><strong>${formatNumber(count(id), store.locale)}</strong><br><span class="text-meta">${esc(label)}</span><br><span class="text-meta">${total ? `${((count(id) / total) * 100).toFixed(2)}%` : "—"}</span><br><span class="text-meta">${esc(help)}</span></td>`;
             const actions = ["AUTO_LINK", "REVIEW", "NO_MATCH", "INSUFFICIENT_INPUT"];
             const maxCell = Math.max(1, ...data.scenarios.flatMap((s) => actions.map((a) => s.actions[a] ?? 0)));
-            const scenRows = data.scenarios
-                .map((s, index) => `<tr class="scen" data-drill-id="scenario-${index}" data-scenario="${esc(s.scenario)}"><th scope="row"><button type="button" class="more" data-scenario-trigger aria-expanded="false" aria-controls="drill">${esc(s.scenario)}</button></th>${actions
-                .map((a) => { const v = s.actions[a] ?? 0; return `<td class="heat ${heatClass(v, maxCell)}">${v}</td>`; })
-                .join("")}</tr>`)
-                .join("");
-            const pairRows = ["true_positives", "false_positives", "true_negatives", "false_negatives", "precision", "recall", "specificity", "f1", "auc"]
-                .filter((m) => m in data.pairs)
-                .map((m) => `<tr><th scope="row">${esc(store.t(m))}</th><td>${esc(asNumber(data.pairs[m]).toFixed(4))}</td></tr>`)
-                .join("");
-            return `<div class="panel">${crumb(store, "#/confusion", store.t("confusion"))}
-    <div class="card"><h3>${esc(store.t("pairTest"))}</h3><table><caption class="members">${esc(store.t("pairTest"))}</caption><tbody>${pairRows}</tbody></table></div>
-    <div class="card"><h3>${esc(store.t("queryDecisions"))}</h3>
-      <table><caption class="members">${esc(store.t("queryDecisions"))}</caption><thead><tr><th scope="col">${esc(store.t("scenario"))}</th>${actions.map((a) => `<th scope="col">${esc(a)}</th>`).join("")}</tr></thead>
-      <tbody>${scenRows}</tbody></table><div id="drill" role="region" aria-live="polite"></div></div></div>`;
+            const scenRows = data.scenarios.map((s, index) => {
+                const actual = s.actual ?? {};
+                return `<tr class="scen" data-drill-id="scenario-${index}" data-scenario="${esc(s.scenario)}"><th scope="row"><button type="button" class="button button-secondary" data-scenario-trigger aria-expanded="false" aria-controls="drill">${esc(localizedId(store, s.scenario))}</button></th>${actions.map((a) => { const v = s.actions[a] ?? 0; return `<td class="heat ${heatClass(v, maxCell)}"><strong>${v}</strong><br><span class="text-meta">${esc(store.t("actualCount", { n: actual[a] ?? 0 }))}</span></td>`; }).join("")}</tr>`;
+            }).join("");
+            const cohorts = (data.error_cohorts ?? []).map((row) => `<tr><th scope="row">${esc(localizedId(store, row.id))}</th><td>${formatNumber(row.count, store.locale)}</td></tr>`).join("");
+            const outcomes = (data.query_outcomes ?? []).map((row) => `<tr><th scope="row">${esc(localizedId(store, row.id))}</th><td>${formatNumber(row.count, store.locale)}</td></tr>`).join("");
+            return `<div class="panel">${crumb(store, "#/confusion", store.t("errorAnalysis"))}
+    <div class="card"><h2>${esc(store.t("errorAnalysis"))}</h2><p class="text-meta">${esc(store.t("errorQuestion"))}</p></div>
+    <div class="card"><h3>${esc(store.t("pairMatrix"))} · ${esc(store.t("pairTest"))}</h3><p class="text-meta">${esc(store.t("pairMatrixHelp"))}</p>
+      <div class="table-scroll"><table><caption class="text-meta">${esc(store.t("pairMatrix"))}</caption><thead><tr><th></th><th scope="col">${esc(store.t("predictedMatch"))}</th><th scope="col">${esc(store.t("predictedNonMatch"))}</th></tr></thead><tbody>
+      <tr><th scope="row">${esc(store.t("actualMatch"))}</th>${cell("true_positives", store.t("true_positives"), store.t("correctSame"), "ok")}${cell("false_negatives", store.t("false_negatives"), store.t("falseNegativeRisk"), "warn")}</tr>
+      <tr><th scope="row">${esc(store.t("actualNonMatch"))}</th>${cell("false_positives", store.t("false_positives"), store.t("falsePositiveRisk"), "bad")}${cell("true_negatives", store.t("true_negatives"), store.t("correctDifferent"), "ok")}</tr></tbody></table></div>
+      <p class="text-meta">${esc(store.t("threshold"))}: ${pairs.threshold === undefined ? "—" : pairs.threshold.toFixed(4)} · ${esc(store.t("f1"))}: ${pairs.f1 === undefined ? "—" : pairs.f1.toFixed(4)}</p></div>
+    <div class="kpi">${(data.query_outcomes ?? []).slice(0, 3).map((row) => `<div class="card"><div class="kpi-value">${formatNumber(row.count, store.locale)}</div><div class="kpi-label">${esc(localizedId(store, row.id))}</div></div>`).join("")}</div>
+    <div class="card"><h3>${esc(store.t("errorCohorts"))}</h3><p class="text-meta">${esc(store.t("queryOutcomeHelp"))}</p>${outcomes ? `<table><tbody>${outcomes}</tbody></table>` : `<p class="text-meta">${esc(store.t("noErrorData"))}</p>`}</div>
+    <div class="card"><h3>${esc(store.t("scenarioImpact"))}</h3><p class="text-meta">${esc(store.t("scenarioHelp"))}</p><table><caption class="text-meta">${esc(store.t("queryDecisions"))} · ${esc(store.t("expected"))}</caption><thead><tr><th scope="col">${esc(store.t("scenario"))}</th>${actions.map((a) => `<th scope="col">${esc(store.t(a))}</th>`).join("")}</tr></thead><tbody>${scenRows}</tbody></table><div id="drill" role="region" aria-live="polite"></div></div>
+    <details class="card"><summary>${esc(store.t("errorCohorts"))} — ${esc(store.t("topTruthStatus"))}</summary>${cohorts ? `<table><tbody>${cohorts}</tbody></table>` : `<p class="text-meta">${esc(store.t("noErrorData"))}</p>`}</details></div>`;
         },
         bind: (el, data) => {
             const drill = el.querySelector("#drill");
@@ -257,9 +248,7 @@ export async function mountConfusion(el, port, store, parentScope) {
                     const scen = str(tr.getAttribute("data-scenario"));
                     const rows = data.decisions[scen] ?? [];
                     tr.querySelector("[data-scenario-trigger]")?.setAttribute("aria-expanded", "true");
-                    drill.innerHTML = `<h4 class="muted">${esc(scen)} — ${esc(store.t("count", { n: rows.length }))}</h4>
-            <table><caption class="members">${esc(store.t("queryDecisions"))}</caption><thead><tr><th scope="col">${esc(store.t("query"))}</th><th scope="col">${esc(store.t("action"))}</th><th scope="col">${esc(store.t("topEntity"))}</th><th scope="col">${esc(store.t("score"))}</th><th scope="col">${esc(store.t("top1"))}</th></tr></thead>
-            <tbody>${rows.map((r) => `<tr><td>${esc(r.query_id)}</td><td>${esc(r.action)}</td><td>${esc(r.top_nayose_id)}</td><td>${(asNumber(r.top_probability) * 100).toFixed(1)}%</td><td>${esc(r.identity_top1_correct)}</td></tr>`).join("")}</tbody></table>`;
+                    drill.innerHTML = `<h4 class="muted">${esc(localizedId(store, scen))} — ${esc(store.t("count", { n: rows.length }))}</h4><table><caption class="text-meta">${esc(store.t("queryDecisions"))}</caption><thead><tr><th scope="col">${esc(store.t("query"))}</th><th scope="col">${esc(store.t("action"))}</th><th scope="col">${esc(store.t("topEntity"))}</th><th scope="col">${esc(store.t("score"))}</th><th scope="col">${esc(store.t("top1"))}</th></tr></thead><tbody>${rows.map((r) => `<tr><td>${esc(r.query_id)}</td><td>${esc(store.t(str(r.action)))}</td><td>${esc(r.top_nayose_id)}</td><td>${(asNumber(r.top_probability) * 100).toFixed(1)}%</td><td>${esc(r.identity_top1_correct)}</td></tr>`).join("")}</tbody></table>`;
                 };
                 tr.addEventListener("click", fire);
             });
@@ -267,7 +256,6 @@ export async function mountConfusion(el, port, store, parentScope) {
     }, parentScope);
 }
 export async function mountMetrics(el, port, store, parentScope) {
-    // F: metric unit toggle (% vs ratio) — display only
     const metricParams = new URLSearchParams(location.hash.split("?")[1] ?? "");
     let unit = metricParams.get("unit") === "ratio" ? "ratio" : "percent";
     const syncMetricUrl = () => {
@@ -275,14 +263,33 @@ export async function mountMetrics(el, port, store, parentScope) {
         url.hash = unit === "percent" ? "#/metrics" : "#/metrics?unit=ratio";
         window.history.replaceState(null, "", url);
     };
-    const flip = createFlipAnimator(".kpi .card .v");
+    const flip = createFlipAnimator(".kpi .card .kpi-value");
+    const renderGroup = (data, id, title) => {
+        const metrics = data.metric_groups?.[id] ?? [];
+        if (!metrics.length)
+            return "";
+        return `<details class="card"><summary>${esc(store.t(title))}</summary><div class="field-grid">${metrics.map((metric) => `<div><div class="text-meta">${esc(store.t(metric.id))}</div><strong>${esc(formatMetric(metric, unit, store.locale))}</strong></div>`).join("")}</div></details>`;
+    };
     const render = (data) => {
         const fmt = (v) => (unit === "percent" ? `${(v * 100).toFixed(1)}%` : v.toFixed(4));
-        return `<div class="panel">${crumb(store, "#/metrics", store.t("metrics"))}
-    <div class="card toolbar"><label class="members">${esc(store.t("units"))}<select id="met-unit"><option value="percent" ${unit === "percent" ? "selected" : ""}>%</option><option value="ratio" ${unit === "ratio" ? "selected" : ""}>0–1</option></select></label></div>
-    <div class="kpi" id="metrics-kpis">${data.kpis.map(([l, v]) => `<div class="card"><div class="v">${fmt(v)}</div><div class="l">${esc(l)}</div>${bar(v)}</div>`).join("")}</div>
-    <div class="card"><h3>${esc(store.t("entities"))}</h3><div class="v kpi-emphasis">${formatNumber(data.extras.entities ?? 0, store.locale)}</div>
-      <div class="members">${esc(store.t("edgesSummary", { n: data.extras.edges ?? 0, rate: `${((data.extras.singleton ?? 0) * 100).toFixed(1)}%` }))}</div></div></div>`;
+        const assessment = data.assessment;
+        const reasons = assessment?.reasons ?? [];
+        const reasonKeys = { fragmentation: "assessmentFragmentation", review_load: "assessmentReviewLoad", unresolved_queries: "assessmentUnresolved" };
+        const reasonText = reasons.map((reason) => `<li>${esc(store.t(reasonKeys[reason] ?? reason))}</li>`).join("");
+        const kpis = data.kpis.map(([label, value]) => `<div class="card"><div class="kpi-value">${fmt(value)}</div><div class="kpi-label">${esc(store.t(metricKey(label)))}</div><div class="text-meta">${esc(store.t(metricHelpKey(label)))}</div>${bar(value)}</div>`).join("");
+        const outcomes = (data.outcomes ?? []).map((outcome) => `<div><div class="text-meta">${esc(store.t(outcome.id))}</div><strong>${formatNumber(outcome.count, store.locale)}</strong><span class="text-meta"> · ${(outcome.rate * 100).toFixed(1)}%</span></div>`).join("");
+        const status = assessment?.status === "attention" ? "warn" : "ok";
+        return `<div class="panel">${crumb(store, "#/metrics", store.t("evaluationOverview"))}
+    <div class="card"><h2>${esc(store.t("evaluationOverview"))}</h2><p class="text-meta">${esc(store.t("evaluationQuestion"))}</p><p class="text-meta">${esc(store.t("evaluationRun"))}: ${esc(data.run_id || store.run)}</p>
+      <p><span class="chip-state ${status}">${esc(store.t(assessment?.status === "attention" ? "evaluationAttention" : "evaluationReady"))}</span></p>
+      <p class="text-meta">${esc(store.t(assessment?.status === "attention" ? "evaluationAttentionHelp" : "evaluationReadyHelp"))}</p>
+      ${reasonText ? `<h3>${esc(store.t("evaluationWhy"))}</h3><ul>${reasonText}</ul>` : ""}</div>
+    <div class="card toolbar"><label class="text-meta">${esc(store.t("units"))}<select id="met-unit"><option value="percent" ${unit === "percent" ? "selected" : ""}>%</option><option value="ratio" ${unit === "ratio" ? "selected" : ""}>0–1</option></select></label></div>
+    <div class="kpi" id="metrics-kpis">${kpis}</div>
+    ${outcomes ? `<details class="card" open><summary>${esc(store.t("evaluationOutcomes"))}</summary><div class="field-grid">${outcomes}</div></details>` : ""}
+    <div class="card"><h3>${esc(store.t("evaluationNext"))}</h3><p><a href="#/review">${esc(store.t("openReview"))}</a> · <a href="#/confusion">${esc(store.t("openErrors"))}</a> · <a href="#/compare-runs">${esc(store.t("openComparison"))}</a></p></div>
+    ${renderGroup(data, "quality", "evaluationQuality")}${renderGroup(data, "workload", "evaluationWorkload")}${renderGroup(data, "structure", "evaluationStructure")}
+    <details class="card"><summary>${esc(store.t("evaluationDetails"))} · ${esc(store.t("metrics"))}</summary><div class="text-meta">${esc(store.t("edgesSummary", { n: data.extras.edges ?? 0, rate: `${((data.extras.singleton ?? 0) * 100).toFixed(1)}%` }))}</div></details></div>`;
     };
     await mountView(el, {
         skeleton: SKELETON(),
@@ -326,9 +333,9 @@ export async function mountCompare(el, port, store, l, r, parentScope) {
             return `<div class="panel">${crumb(store, "#/review", store.t("review"))}
     <div class="diff" data-panel-split="compare">
       <div class="card"><h3>${esc(l)}</h3>${side(left, right)}</div>
-      <div class="panel-resizer" data-panel-resizer="compare" role="separator" aria-orientation="vertical" aria-label="${esc(store.t("resizePanel"))}" aria-valuemin="${COMPARE_SPLIT_MIN}" aria-valuemax="${COMPARE_SPLIT_MAX}" aria-valuenow="${COMPARE_SPLIT_DEFAULT}" tabindex="0"></div>
+      <div class="panel-resizer sash" data-panel-resizer="compare" role="separator" aria-orientation="vertical" aria-label="${esc(store.t("resizePanel"))}" aria-valuemin="${COMPARE_SPLIT_MIN}" aria-valuemax="${COMPARE_SPLIT_MAX}" aria-valuenow="${COMPARE_SPLIT_DEFAULT}" tabindex="0"></div>
       <div class="card"><h3>${esc(r)}</h3>${side(right, left)}</div>
-    </div><p class="members">${esc(store.t("diffHelp"))}</p></div>`;
+    </div><p class="text-meta">${esc(store.t("diffHelp"))}</p></div>`;
         },
         bind: (view, _rows, scope) => {
             scope.add(bindPanelSplit(view, store, {
@@ -346,8 +353,9 @@ export async function mountCompare(el, port, store, l, r, parentScope) {
 export async function mountCompareRuns(el, port, store, parentScope) {
     const runs = store.runs.map((r) => r.id);
     const compareParams = new URLSearchParams(location.hash.split("?")[1] ?? "");
-    const a = runs.includes(compareParams.get("a") ?? "") ? compareParams.get("a") : store.run;
-    const b = runs.includes(compareParams.get("b") ?? "") ? compareParams.get("b") : runs.find((r) => r !== a) ?? a;
+    const defaultBaseline = runs.find((r) => r !== store.run) ?? store.run;
+    const a = runs.includes(compareParams.get("a") ?? "") ? compareParams.get("a") : defaultBaseline;
+    const b = runs.includes(compareParams.get("b") ?? "") ? compareParams.get("b") : store.run;
     const syncCompareUrl = (left, right) => {
         const params = new URLSearchParams({ a: left, b: right });
         window.history.replaceState(null, "", `#/compare-runs?${params}`);
@@ -370,17 +378,28 @@ export async function mountCompareRuns(el, port, store, parentScope) {
                 },
                 render: ([mA, mB]) => {
                     const byA = new Map(mA.kpis), byB = new Map(mB.kpis);
+                    const isWorkload = (label) => ["review", "no-match"].includes(label);
+                    let improved = 0, regressed = 0;
                     const rows = [...new Set([...byA.keys(), ...byB.keys()])].map((label) => {
                         const va = byA.get(label) ?? 0, vb = byB.get(label) ?? 0;
                         const delta = vb - va;
-                        const cls = Math.abs(delta) > 0.005 ? (delta > 0 ? "ok" : "bad") : "blank";
-                        return `<tr><th scope="row">${esc(label)}</th><td>${(va * 100).toFixed(1)}%</td><td>${(vb * 100).toFixed(1)}%</td>
+                        const meaningful = Math.abs(delta) > 0.005;
+                        const good = isWorkload(label) ? delta < 0 : delta > 0;
+                        if (meaningful && good)
+                            improved += 1;
+                        if (meaningful && !good)
+                            regressed += 1;
+                        const cls = !meaningful ? "blank" : good ? "ok" : "bad";
+                        return `<tr><th scope="row">${esc(store.t(metricKey(label)))}</th><td>${(va * 100).toFixed(1)}%</td><td>${(vb * 100).toFixed(1)}%</td>
               <td class="${cls}">${delta >= 0 ? "+" : ""}${(delta * 100).toFixed(1)}%</td></tr>`;
                     }).join("");
                     const runA = el.querySelector("#runA").value;
                     const runB = el.querySelector("#runB").value;
-                    return `<h4 class="muted">${esc(runA)} → ${esc(runB)}</h4>
-            <table><caption class="members">${esc(store.t("compare"))}</caption><thead><tr><th scope="col">${esc(store.t("metrics"))}</th><th scope="col">${esc(store.t("runA"))}</th><th scope="col">${esc(store.t("runB"))}</th><th scope="col">${esc(store.t("delta"))}</th></tr></thead><tbody>${rows}</tbody></table>`;
+                    const verdict = regressed > improved ? "comparisonWorse" : improved > regressed ? "comparisonBetter" : "comparisonSame";
+                    const verdictClass = regressed > improved ? "bad" : improved > regressed ? "ok" : "blank";
+                    return `<div class="card"><h2>${esc(store.t("releaseComparison"))}</h2><p class="text-meta">${esc(store.t("promoteQuestion"))}</p><p><span class="chip-state ${verdictClass}">${esc(store.t(verdict))}</span></p><p class="text-meta">${esc(store.t("comparisonHelpNew"))}</p><p class="text-meta">${esc(store.t("compareHelp"))}</p></div>
+            <div class="card"><h3>${esc(store.t("baselineRun"))} → ${esc(store.t("currentRun"))}</h3><p class="muted">${esc(runA)} → ${esc(runB)}</p>
+            <table><caption class="text-meta">${esc(store.t("compare"))}</caption><thead><tr><th scope="col">${esc(store.t("metrics"))}</th><th scope="col">${esc(store.t("baselineRun"))}</th><th scope="col">${esc(store.t("currentRun"))}</th><th scope="col">${esc(store.t("change"))}</th></tr></thead><tbody>${rows}</tbody></table></div>`;
                 },
             }, parentScope);
         }
@@ -390,17 +409,17 @@ export async function mountCompareRuns(el, port, store, parentScope) {
             const message = presentError(err, store.t.bind(store));
             const currentOutput = el.querySelector("#out");
             if (currentOutput)
-                currentOutput.innerHTML = `<p class="members">${esc(store.t("error"))}: ${esc(message)}</p>`;
+                currentOutput.innerHTML = `<p class="text-meta">${esc(store.t("error"))}: ${esc(message)}</p>`;
         }
     };
     await mountView(el, {
         load: async (_signal) => undefined,
-        render: () => `<div class="panel">${crumb(store, "#/compare-runs", store.t("compare"))}
-    <div class="card"><div class="toolbar">
-      <label class="members">${esc(store.t("runA"))}<select id="runA" aria-label="${esc(store.t("runA"))}">${opts(a)}</select></label>
-      <label class="members">${esc(store.t("runB"))}<select id="runB" aria-label="${esc(store.t("runB"))}">${opts(b)}</select></label>
-      <button type="button" class="more" id="go">${esc(store.t("compare"))}</button></div>
-      <div id="out" role="region" aria-live="polite"><div class="members">${esc(store.t("compareHelp"))}</div></div></div></div>`,
+        render: () => `<div class="panel">${crumb(store, "#/compare-runs", store.t("releaseComparison"))}
+    <div class="card"><h2>${esc(store.t("releaseComparison"))}</h2><p class="text-meta">${esc(store.t("promoteQuestion"))}</p><p class="text-meta">${esc(store.t("comparisonHelpNew"))}</p><p class="text-meta">${esc(store.t("compareHelp"))}</p><div class="toolbar">
+      <label class="text-meta">${esc(store.t("baselineRun"))}<select id="runA" aria-label="${esc(store.t("baselineRun"))}">${opts(a)}</select></label>
+      <label class="text-meta">${esc(store.t("currentRun"))}<select id="runB" aria-label="${esc(store.t("currentRun"))}">${opts(b)}</select></label>
+      <button type="button" class="button button-secondary" id="go">${esc(store.t("compare"))}</button></div>
+      <div id="out" role="region" aria-live="polite"><div class="text-meta">${esc(store.t("compareHelp"))}</div></div></div></div>`,
         bind: (el) => {
             const updateUrl = () => syncCompareUrl(el.querySelector("#runA").value, el.querySelector("#runB").value);
             el.querySelector("#runA")?.addEventListener("change", updateUrl);

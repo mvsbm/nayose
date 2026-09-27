@@ -28,10 +28,10 @@ export async function mountEntityDetail(el, port, store, id, scope) {
       <p>${t("legend")}</p>
       <div class="toolbar"><label>${t("pageSize")} <select id="member-size">${[10, 25, 50, 100].map(n => `<option ${n === size ? "selected" : ""}>${n}</option>`).join("")}</select></label>
         <span id="member-count" role="status">${esc(store.t("memberRange", { first: members.length ? (page - 1) * size + 1 : 0, last: (page - 1) * size + members.length, total }))}</span>
-        <button class="more" id="member-prev" ${page <= 1 ? "disabled" : ""}>${t("previous")}</button>
-        <button class="more" id="member-next" ${(page * size >= total) ? "disabled" : ""}>${t("next")}</button></div>
-      <div class="toolbar"><span>${t("selectCompare")}</span><span id="member-selected" role="status"></span><button id="member-compare" class="more" disabled>${t("compare")}</button><button id="member-clear" class="more">${t("clearSelection")}</button></div>
-      <div class="table-scroll" tabindex="0" role="region" aria-label="${t("members")}"><table><caption class="members">${t("members")}</caption><thead><tr><th scope="col">${t("compare")}</th><th scope="col">${t("record_id")}</th><th scope="col">${t("identity")}</th><th scope="col">${t("contact")}</th><th scope="col">${t("source")}</th></tr></thead>
+        <button class="button button-secondary" id="member-prev" ${page <= 1 ? "disabled" : ""}>${t("previous")}</button>
+        <button class="button button-secondary" id="member-next" ${(page * size >= total) ? "disabled" : ""}>${t("next")}</button></div>
+      <div class="toolbar"><span>${t("selectCompare")}</span><span id="member-selected" role="status"></span><button id="member-compare" class="button button-secondary" disabled>${t("compare")}</button><button id="member-clear" class="button button-secondary">${t("clearSelection")}</button></div>
+      <div class="table-scroll" tabindex="0" role="region" aria-label="${t("members")}"><table><caption class="text-meta">${t("members")}</caption><thead><tr><th scope="col">${t("compare")}</th><th scope="col">${t("record_id")}</th><th scope="col">${t("identity")}</th><th scope="col">${t("contact")}</th><th scope="col">${t("source")}</th></tr></thead>
       <tbody>${members.map(m => {
         const rid = String(m.record_id);
         const comparisons = detail.comparisons[rid] ?? {};

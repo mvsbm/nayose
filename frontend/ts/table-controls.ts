@@ -39,13 +39,14 @@ function enhanceTable(table: HTMLTableElement, store: Store): void {
   const searchText = document.createElement("span");
   searchText.textContent = store.t("tableSearch");
   const search = document.createElement("input");
+  search.className = "text-input";
   search.type = "search";
   search.placeholder = store.t("tableSearchPlaceholder");
   search.setAttribute("aria-controls", table.id);
   searchLabel.append(searchText, search);
 
   const sortLabel = document.createElement("label");
-  sortLabel.className = "table-sort";
+  sortLabel.className = "table-tools-sort-field";
   const sortText = document.createElement("span");
   sortText.textContent = store.t("tableSort");
   const select = document.createElement("select");
@@ -64,7 +65,7 @@ function enhanceTable(table: HTMLTableElement, store: Store): void {
 
   const direction = document.createElement("button");
   direction.type = "button";
-  direction.className = "table-sort";
+  direction.className = "button button-toolbar table-tools-sort-button";
   direction.disabled = !labels.length;
   direction.dataset.direction = "ascending";
   direction.textContent = "↑";

@@ -12,9 +12,9 @@ export const ROUTES = [
   { name: "review", nav: "review", path: "#/review", titleKey: "review", group: "review", icon: "review", menu: true },
   { name: "data-entry", nav: "data-entry", path: "#/data-entry", titleKey: "dataEntry", group: "review", icon: "add", menu: true, capability: "dataEntry" },
   { name: "compare", nav: "review", path: "#/compare", titleKey: "compare", group: "review", icon: "compare", menu: false },
-  { name: "metrics", nav: "metrics", path: "#/metrics", titleKey: "metrics", group: "evaluate", icon: "metrics", menu: true },
-  { name: "confusion", nav: "confusion", path: "#/confusion", titleKey: "confusion", group: "evaluate", icon: "matrix", menu: true },
-  { name: "compare-runs", nav: "compare-runs", path: "#/compare-runs", titleKey: "compareRuns", group: "evaluate", icon: "compare", menu: true },
+  { name: "metrics", nav: "metrics", path: "#/metrics", titleKey: "evaluationOverview", group: "evaluate", icon: "metrics", menu: true },
+  { name: "confusion", nav: "confusion", path: "#/confusion", titleKey: "errorAnalysis", group: "evaluate", icon: "matrix", menu: true },
+  { name: "compare-runs", nav: "compare-runs", path: "#/compare-runs", titleKey: "releaseComparison", group: "evaluate", icon: "compare", menu: true },
   { name: "admin", nav: "admin", path: "#/admin", titleKey: "dataTrain", group: "admin", icon: "settings", menu: true, capability: "admin" },
 ] as const;
 

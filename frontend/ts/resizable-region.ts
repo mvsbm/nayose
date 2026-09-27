@@ -4,7 +4,7 @@ export interface ResizableRegionOptions {
   handle: HTMLElement;
   initialWidth: number;
   minWidth: number;
-  maxWidth: number;
+  maxWidth: number | (() => number);
   defaultWidth: number;
   step?: number;
   arrowGrowth: "forward" | "backward";
@@ -83,7 +83,7 @@ export class ResizableRegion implements Disposable {
     const next = event.key === "Home"
       ? this.options.minWidth
       : event.key === "End"
-        ? this.options.maxWidth
+        ? this.getMaxWidth()
         : this.width + delta;
     if (!delta && event.key !== "Home" && event.key !== "End") return;
     event.preventDefault();
@@ -101,13 +101,18 @@ export class ResizableRegion implements Disposable {
     document.removeEventListener("pointercancel", this.onPointerUp);
   }
 
+  private getMaxWidth(): number {
+    const value = typeof this.options.maxWidth === "function" ? this.options.maxWidth() : this.options.maxWidth;
+    return Number.isFinite(value) ? Math.max(this.options.minWidth, value) : Number.MAX_SAFE_INTEGER;
+  }
+
   private clamp(width: number): number {
-    return Math.min(this.options.maxWidth, Math.max(this.options.minWidth, Math.round(width)));
+    return Math.min(this.getMaxWidth(), Math.max(this.options.minWidth, Math.round(width)));
   }
 
   private render(): void {
     this.options.handle.setAttribute("aria-valuemin", String(this.options.minWidth));
-    this.options.handle.setAttribute("aria-valuemax", String(this.options.maxWidth));
+    this.options.handle.setAttribute("aria-valuemax", String(this.getMaxWidth()));
     this.options.handle.setAttribute("aria-valuenow", String(this.width));
   }
 }

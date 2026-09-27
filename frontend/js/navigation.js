@@ -1,10 +1,43 @@
 import { NAVIGATION_WIDTH_MAX, NAVIGATION_WIDTH_MIN, NAVIGATION_WIDTH_DEFAULT } from "./store.js";
 import { ResizableRegion } from "./resizable-region.js";
-import { NAVIGATION_GROUPS, ROUTES } from "./routes.js";
+import { NAVIGATION_GROUPS, ROUTES, routeDescriptor } from "./routes.js";
 import { esc } from "./schema.js";
 import { icon } from "./icons.js";
 const MOBILE_QUERY = "(max-width: 820px)";
-export function renderNavigation(nav, store) {
+export function renderActivityBar(bar, store) {
+    const groups = NAVIGATION_GROUPS.map((group) => {
+        const route = ROUTES.find((candidate) => candidate.menu && candidate.group === group.id);
+        if (!route)
+            return "";
+        const hidden = "capability" in group ? " hidden" : "";
+        const id = group.id === "admin" ? ' id="activity-admin"' : "";
+        return `<a class="activity-item" href="${esc(route.path)}" data-activity-group="${esc(group.id)}"${id}${hidden} data-i18n-aria="${esc(group.labelKey)}" aria-label="${esc(store.t(group.labelKey))}" title="${esc(store.t(group.labelKey))}">${icon(route.icon, "icon activity-bar-icon")}<span class="activity-item-label" data-i18n="${esc(group.labelKey)}">${esc(store.t(group.labelKey))}</span></a>`;
+    }).join("");
+    bar.innerHTML = groups;
+}
+export function setActiveSidebarGroup(nav, groupId) {
+    nav.querySelectorAll("[data-sidebar-group]").forEach((group) => {
+        group.toggleAttribute("hidden", group.dataset.sidebarGroup !== groupId);
+    });
+}
+export function renderWorkbenchTabs(tabs, store, routeName) {
+    const descriptor = routeDescriptor(routeName);
+    const routes = descriptor.group === "evaluate"
+        ? ROUTES.filter((route) => route.menu && route.group === "evaluate")
+        : [descriptor];
+    tabs.innerHTML = routes.map((route) => `<a class="workbench-tab" href="${esc(route.path)}" role="tab" aria-controls="view" aria-selected="${route.name === routeName}"${route.name === routeName ? ' aria-current="page"' : ""}>${icon(route.icon, "icon workbench-tab-icon")}<span class="workbench-tab-label" data-i18n="${esc(route.titleKey)}">${esc(store.t(route.titleKey))}</span></a>`).join("");
+}
+export function updateWorkbenchSelection(activity, tabs, routeName) {
+    const descriptor = routeDescriptor(routeName);
+    activity.querySelectorAll("[data-activity-group]").forEach((item) => {
+        const active = item.dataset.activityGroup === descriptor.group;
+        item.toggleAttribute("aria-current", active);
+    });
+    tabs.querySelectorAll("[role=tab]").forEach((item) => {
+        item.setAttribute("aria-selected", String(item.getAttribute("aria-current") === "page"));
+    });
+}
+export function renderNavigation(nav, store, activeGroup = "match") {
     const groups = NAVIGATION_GROUPS.map((group) => {
         const routes = ROUTES.filter((route) => route.menu && route.group === group.id);
         const links = routes.map((route) => {
@@ -13,11 +46,27 @@ export function renderNavigation(nav, store) {
             const id = route.name === "data-entry" ? ' id="nav-data-entry"' : route.name === "admin" ? ' id="nav-admin"' : "";
             return `<a href="${esc(route.path)}" data-nav="${esc(route.nav)}"${id}${hidden}>${icon(route.icon, "icon side-icon")}<span class="side-label" data-i18n="${esc(route.titleKey)}">${esc(store.t(route.titleKey))}</span></a>`;
         }).join("");
-        const hidden = "capability" in group ? " hidden" : "";
+        const hidden = group.id === activeGroup ? "" : " hidden";
         const id = group.id === "admin" ? ' id="nav-admin-group"' : "";
-        return `<details${id} data-nav-group="${esc(group.id)}"${hidden} open><summary data-nav-label="${esc(group.id)}"><span class="side-label" data-i18n="${esc(group.labelKey)}">${esc(store.t(group.labelKey))}</span></summary>${links}</details>`;
+        return `<section class="side-view" data-sidebar-group="${esc(group.id)}"${id}${hidden} aria-label="${esc(store.t(group.labelKey))}"><div class="side-header"><strong class="side-header-title" data-i18n="${esc(group.labelKey)}">${esc(store.t(group.labelKey))}</strong><button class="button button-toolbar side-header-action" type="button" data-i18n-aria="sidebarActions" data-i18n-title="sidebarActions" aria-label="${esc(store.t("sidebarActions"))}" title="${esc(store.t("sidebarActions"))}">${icon("more", "icon")}</button></div><details class="side-group" open><summary><span class="side-label" data-i18n="sideViews">${esc(store.t("sideViews"))}</span></summary>${links}</details></section>`;
     }).join("");
     nav.innerHTML = `<a class="side-brand" href="#/search" aria-label="Nayose"><span class="side-brand-mark" aria-hidden="true">N</span><span><strong>Nayose</strong><small data-i18n="workspaceLabel">${esc(store.t("workspaceLabel"))}</small></span></a>${groups}`;
+}
+export function mountActivityBar(bar, store, toggleNavigation) {
+    const onClick = (event) => {
+        const item = event.target.closest(".activity-item");
+        if (!item || item.hidden)
+            return;
+        const active = item.getAttribute("aria-current") === "page";
+        if (store.navigationCollapsed || active) {
+            event.preventDefault();
+            toggleNavigation();
+            if (!active)
+                window.location.hash = item.getAttribute("href") ?? "#/search";
+        }
+    };
+    bar.addEventListener("click", onClick);
+    return { destroy: () => bar.removeEventListener("click", onClick) };
 }
 function labelFor(element) {
     return element.querySelector(".side-label")?.textContent?.trim() ?? "";

@@ -3,8 +3,7 @@
 import type { EntityExplorerPage, EntityGraph } from "./entity-explorer-port.js";
 import type { HealthConfiguration, HealthResources } from "./health.js";
 export type { EntityExplorerPage, EntityGraph, EntityGraphEdge, EntityGraphNode } from "./entity-explorer-port.js";
-export type { HealthConfiguration, HealthMemory, HealthResources } from "./health.js";
-
+export type { HealthAccelerator, HealthConfiguration, HealthMemory, HealthResources, HealthTelemetry } from "./health.js";
 export interface EntityHit {
   kind?: "exact" | "semantic" | "nearest";
   signals?: string[];
@@ -29,7 +28,6 @@ export interface EntityHit {
   retrieval_sources?: string[];
   retrieval_evidence?: Array<{ source: string; field?: string; score?: number | null }>;
 }
-
 export interface EntityDetail {
   entity: Record<string, unknown>;
   members: Record<string, unknown>[];
@@ -39,7 +37,6 @@ export interface EntityDetail {
   comparisons: Record<string, Record<string, FieldComparison>>;
   merge_evidence_available: boolean;
 }
-
 export interface FieldComparison {
   left: string;
   right: string;
@@ -47,7 +44,6 @@ export interface FieldComparison {
   right_normalized: string;
   status: "exact" | "normalized" | "different" | "missing";
 }
-
 export interface CandidateEvidence {
   record: Record<string, string>;
   score: number;
@@ -55,7 +51,6 @@ export interface CandidateEvidence {
   features: Record<string, number>;
   retrieval?: Record<string, unknown>;
 }
-
 export interface PipelineNode {
   id: string;
   kind: string;
@@ -63,13 +58,11 @@ export interface PipelineNode {
   metrics: Record<string, unknown>;
   details: Record<string, unknown>;
 }
-
 export interface DecisionTrace {
   selected_candidate: string | null;
   nodes: PipelineNode[];
   edges: string[][];
 }
-
 export interface MatchCandidate {
   rank: number;
   nayose_id: string;
@@ -171,15 +164,24 @@ export interface RecommendResult {
   pipeline?: DecisionTrace | null;
 }
 
-export interface ConfusionData {
-  pairs: Record<string, number>;
-  scenarios: Array<{ scenario: string; actions: Record<string, number> }>;
-  decisions: Record<string, Array<Record<string, unknown>>>;
-}
-
+export type { EvaluationMetric, EvaluationOutcome } from "./evaluation-port.js";
+import type { EvaluationMetric, EvaluationOutcome } from "./evaluation-port.js";
 export interface MetricsViewData {
   kpis: Array<[string, number]>;
   extras: Record<string, number>;
+  run_id?: string;
+  assessment?: { status: "ready" | "attention"; reasons: string[] };
+  outcomes?: EvaluationOutcome[];
+  metric_groups?: Record<string, EvaluationMetric[]>;
+}
+
+export interface ConfusionData {
+  pairs: Record<string, number>;
+  matrix?: Array<{ id: string; count: number }>;
+  scenarios: Array<{ scenario: string; actions: Record<string, number>; actual?: Record<string, number>; total?: number }>;
+  decisions: Record<string, Array<Record<string, unknown>>>;
+  query_outcomes?: Array<{ id: string; count: number }>;
+  error_cohorts?: Array<{ id: string; count: number }>;
 }
 
 export interface RunInfo {

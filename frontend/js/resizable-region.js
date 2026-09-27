@@ -67,7 +67,7 @@ export class ResizableRegion {
         const next = event.key === "Home"
             ? this.options.minWidth
             : event.key === "End"
-                ? this.options.maxWidth
+                ? this.getMaxWidth()
                 : this.width + delta;
         if (!delta && event.key !== "Home" && event.key !== "End")
             return;
@@ -84,12 +84,16 @@ export class ResizableRegion {
         document.removeEventListener("pointerup", this.onPointerUp);
         document.removeEventListener("pointercancel", this.onPointerUp);
     }
+    getMaxWidth() {
+        const value = typeof this.options.maxWidth === "function" ? this.options.maxWidth() : this.options.maxWidth;
+        return Number.isFinite(value) ? Math.max(this.options.minWidth, value) : Number.MAX_SAFE_INTEGER;
+    }
     clamp(width) {
-        return Math.min(this.options.maxWidth, Math.max(this.options.minWidth, Math.round(width)));
+        return Math.min(this.getMaxWidth(), Math.max(this.options.minWidth, Math.round(width)));
     }
     render() {
         this.options.handle.setAttribute("aria-valuemin", String(this.options.minWidth));
-        this.options.handle.setAttribute("aria-valuemax", String(this.options.maxWidth));
+        this.options.handle.setAttribute("aria-valuemax", String(this.getMaxWidth()));
         this.options.handle.setAttribute("aria-valuenow", String(this.width));
     }
 }

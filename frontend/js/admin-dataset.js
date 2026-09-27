@@ -55,7 +55,7 @@ function renderDatasetPicker(state, store, t) {
         const current = generation.current ? ` · ${store.t("currentDataset")}` : "";
         return `<label class="dataset-picker-choice"><input type="checkbox" data-dataset-select="${esc(generation.id)}" ${checked ? "checked" : ""}><span><strong>${esc(localizedGeneration(generation, store))}${esc(current)}</strong><small>${esc(generationDescription(generation, store))}</small></span></label>`;
     }).join("");
-    return `<details class="dataset-picker-panel" open><summary>${t("datasetSelection")}</summary><fieldset class="dataset-picker"><legend class="search-workspace-visually-hidden">${t("datasetSelection")}</legend><p class="members">${t("datasetSelectionHelp")}</p><div class="dataset-picker-choice-list">${items}</div><output class="members" aria-live="polite">${t("selectedDatasets", { n: state.selectedGenerationIds.length })}</output></fieldset></details>`;
+    return `<details class="dataset-picker-panel" open><summary>${t("datasetSelection")}</summary><fieldset class="dataset-picker"><legend class="search-workspace-visually-hidden">${t("datasetSelection")}</legend><p class="text-meta">${t("datasetSelectionHelp")}</p><div class="dataset-picker-choice-list">${items}</div><output class="text-meta" aria-live="polite">${t("selectedDatasets", { n: state.selectedGenerationIds.length })}</output></fieldset></details>`;
 }
 function renderDatasetTabs(state, store) {
     const tabs = state.selectedGenerationIds.map(id => {
@@ -63,7 +63,7 @@ function renderDatasetTabs(state, store) {
         if (!generation)
             return "";
         const selected = id === state.generationId;
-        return `<button class="dataset-tabs-tab" id="dataset-tab-${esc(id)}" type="button" role="tab" aria-selected="${selected}" aria-controls="dataset-panel" data-dataset-tab="${esc(id)}">${esc(localizedGeneration(generation, store))}</button>`;
+        return `<button class="button dataset-tabs-tab" id="dataset-tab-${esc(id)}" type="button" role="tab" aria-selected="${selected}" aria-controls="dataset-panel" data-dataset-tab="${esc(id)}">${esc(localizedGeneration(generation, store))}</button>`;
     }).join("");
     return `<div class="dataset-tabs" role="tablist" aria-label="${esc(store.t("activeDataset"))}">${tabs}</div>`;
 }
@@ -73,7 +73,7 @@ function renderDatasetSummary(state, store, columns, t) {
     const generation = state.generations.find(item => item.id === state.generationId) ?? state.generations[0];
     if (!summary || !generation)
         return "";
-    return `<details class="dataset-info" open><summary><strong>${esc(localizedGeneration(generation, store))}</strong><span class="members">${esc(store.t("datasetDetails"))}</span></summary><div class="dataset-info-body"><p class="members">${esc(generationDescription(generation, store))}</p><div class="kpi"><div class="card"><span class="l">${t("datasetFingerprint")}</span><div class="v">${esc(summary.fingerprint || "—")}</div></div><div class="card"><span class="l">${t("datasetCreated")}</span><div class="v">${esc(summary.created_at || "—")}</div></div><div class="card"><span class="l">${t("datasetTableRows")}</span><div class="v">${number(descriptor?.rows ?? 0, store)}</div></div><div class="card"><span class="l">${t("datasetColumns")}</span><div class="v">${number(columns.length, store)}</div></div></div><p class="members">${esc(descriptor?.description ?? "")}</p></div></details>`;
+    return `<details class="dataset-info" open><summary><strong>${esc(localizedGeneration(generation, store))}</strong><span class="text-meta">${esc(store.t("datasetDetails"))}</span></summary><div class="dataset-info-body"><p class="text-meta">${esc(generationDescription(generation, store))}</p><div class="kpi"><div class="card"><span class="kpi-label">${t("datasetFingerprint")}</span><div class="kpi-value">${esc(summary.fingerprint || "—")}</div></div><div class="card"><span class="kpi-label">${t("datasetCreated")}</span><div class="kpi-value">${esc(summary.created_at || "—")}</div></div><div class="card"><span class="kpi-label">${t("datasetTableRows")}</span><div class="kpi-value">${number(descriptor?.rows ?? 0, store)}</div></div><div class="card"><span class="kpi-label">${t("datasetColumns")}</span><div class="kpi-value">${number(columns.length, store)}</div></div></div><p class="text-meta">${esc(descriptor?.description ?? "")}</p></div></details>`;
 }
 function renderTableOptions(state, store) {
     return TABLES.map(table => {
@@ -83,18 +83,18 @@ function renderTableOptions(state, store) {
 }
 function renderDatasetToolbar(state, store, t) {
     const pending = state.request.kind === "loading";
-    return `<div class="toolbar"><label>${t("datasetTable")} <select id="dataset-table">${renderTableOptions(state, store)}</select></label><label class="dataset-grid-search">${t("datasetSearch")} <input id="dataset-filter" type="search" value="${esc(state.query)}" placeholder="${t("datasetSearchPlaceholder")}"></label><button id="dataset-load" class="more" type="button" ${pending ? "disabled" : ""}>${t("inspectDataset")}</button></div>`;
+    return `<div class="toolbar"><label>${t("datasetTable")} <select id="dataset-table">${renderTableOptions(state, store)}</select></label><label class="dataset-grid-search">${t("datasetSearch")} <input id="dataset-filter" type="search" value="${esc(state.query)}" placeholder="${t("datasetSearchPlaceholder")}"></label><button id="dataset-load" class="button button-secondary" type="button" ${pending ? "disabled" : ""}>${t("inspectDataset")}</button></div>`;
 }
 function renderDatasetPaging(state, total, exact, first, last, t) {
     const range = exact ? t("datasetRange", { first, last, total }) : t("datasetRangeUnknown", { first, last });
     const pending = state.request.kind === "loading";
     const nextDisabled = state.rows?.has_more === false || (!state.rows?.has_more && exact && last >= total) || pending;
-    return `<div class="toolbar"><span class="members" role="status" aria-live="polite">${range}</span><button id="dataset-prev" class="more" type="button" ${state.offset === 0 || pending ? "disabled" : ""}>${t("previous")}</button><button id="dataset-next" class="more" type="button" ${nextDisabled ? "disabled" : ""}>${t("next")}</button></div>`;
+    return `<div class="toolbar"><span class="text-meta" role="status" aria-live="polite">${range}</span><button id="dataset-prev" class="button button-secondary" type="button" ${state.offset === 0 || pending ? "disabled" : ""}>${t("previous")}</button><button id="dataset-next" class="button button-secondary" type="button" ${nextDisabled ? "disabled" : ""}>${t("next")}</button></div>`;
 }
 export function renderDatasetExplorer(state, store) {
     const t = (key, values = {}) => esc(store.t(key, values));
     if (!state.generations.length)
-        return `<details id="dataset-explorer"><summary>${t("datasetExplorer")}</summary><p class="members">${t("datasetUnavailable")}</p></details>`;
+        return `<details id="dataset-explorer"><summary>${t("datasetExplorer")}</summary><p class="text-meta">${t("datasetUnavailable")}</p></details>`;
     const columns = allColumns(state);
     const total = state.rows?.total ?? 0;
     const ariaRows = total >= 0 ? total : state.rows?.rows.length ?? 0;
@@ -103,7 +103,7 @@ export function renderDatasetExplorer(state, store) {
     const exact = state.rows?.total_exact !== false && total >= 0;
     const pending = state.request.kind === "loading";
     const error = state.request.kind === "error" ? state.request.message : "";
-    return `<details id="dataset-explorer"${state.open ? " open" : ""}><summary>${t("datasetExplorer")}</summary><p>${t("datasetExplorerHelp")}</p><div class="dataset-workspace" data-panel-split="dataset-explorer"><aside class="dataset-selection-pane">${renderDatasetPicker(state, store, t)}</aside><div class="panel-resizer" data-panel-resizer="dataset-explorer" role="separator" aria-orientation="vertical" aria-label="${t("resizePanel")}" aria-valuemin="240" aria-valuemax="480" aria-valuenow="320" tabindex="0"></div><section class="dataset-content-pane"><div class="toolbar"><button id="dataset-close" class="more button-secondary" type="button">${t("closeDataset")}</button></div>${renderDatasetTabs(state, store)}${renderDatasetToolbar(state, store, t)}${renderDatasetSummary(state, store, columns, t)}${renderColumnPicker(state, store, columns, t)}<div id="dataset-panel" role="tabpanel" aria-labelledby="dataset-tab-${esc(state.generationId)}" class="dataset-grid-scroll" tabindex="0" aria-label="${t("datasetRowsCaption", { n: ariaRows })}" aria-busy="${pending}">${renderDatasetGrid({ request: state.request, rows: state.rows, visibleColumns: state.visibleColumns, columnFilters: state.columnFilters }, store, columns, t)}</div>${renderDatasetPaging(state, total, exact, first, last, t)}${error ? `<p class="notice" role="alert">${esc(error)}</p>` : ""}</section></div></details>`;
+    return `<details id="dataset-explorer"${state.open ? " open" : ""}><summary>${t("datasetExplorer")}</summary><p>${t("datasetExplorerHelp")}</p><div class="dataset-workspace" data-panel-split="dataset-explorer"><aside class="dataset-selection-pane">${renderDatasetPicker(state, store, t)}</aside><div class="panel-resizer sash" data-panel-resizer="dataset-explorer" role="separator" aria-orientation="vertical" aria-label="${t("resizePanel")}" aria-valuemin="240" aria-valuemax="480" aria-valuenow="320" tabindex="0"></div><section class="dataset-content-pane"><div class="toolbar"><button id="dataset-close" class="button button-secondary" type="button">${t("closeDataset")}</button></div>${renderDatasetTabs(state, store)}${renderDatasetToolbar(state, store, t)}${renderDatasetSummary(state, store, columns, t)}${renderColumnPicker(state, store, columns, t)}<div id="dataset-panel" role="tabpanel" aria-labelledby="dataset-tab-${esc(state.generationId)}" class="viewport dataset-grid-scroll" tabindex="0" aria-label="${t("datasetRowsCaption", { n: ariaRows })}" aria-busy="${pending}">${renderDatasetGrid({ request: state.request, rows: state.rows, visibleColumns: state.visibleColumns, columnFilters: state.columnFilters }, store, columns, t)}</div>${renderDatasetPaging(state, total, exact, first, last, t)}${error ? `<p class="notice" role="alert">${esc(error)}</p>` : ""}</section></div></details>`;
 }
 function reconcileColumns(state, columns) {
     if (!state.visibleColumns.length)

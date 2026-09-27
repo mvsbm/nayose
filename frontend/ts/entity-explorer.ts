@@ -92,7 +92,7 @@ function display(value: unknown, missing: string): string {
 
 function resultRows(page: EntityExplorerPage, state: ExplorerState, store: Store): string {
   return page.rows.map((row) => `<tr class="${row.nayose_id === state.selected ? "selected" : ""}" data-entity-select="${esc(row.nayose_id)}">
-    <th scope="row"><button type="button" class="entity-explorer-select">${esc(row.name_kanji || row.nayose_id)}</button><br><span class="members">${esc(row.nayose_id)}</span></th>
+    <th scope="row"><button type="button" class="button button-quiet entity-explorer-select">${esc(row.name_kanji || row.nayose_id)}</button><br><span class="text-meta">${esc(row.nayose_id)}</span></th>
     <td>${esc(row.name_kana || "")}</td><td>${asNumber(row.record_count)}</td>
     <td>${esc(row.party_type || "")}</td><td>${esc(row.last_seen || "")}</td>
     <td><a href="#/entity/${encodeURIComponent(row.nayose_id)}">${esc(store.t("inspectEntity"))}</a></td></tr>`).join("");
@@ -105,25 +105,25 @@ function renderSearch(page: EntityExplorerPage, state: ExplorerState, store: Sto
   const hasMore = page.has_more ?? (page.total_is_exact ? last < page.total : Boolean(page.next_cursor));
   return `<section class="card entity-explorer-search">
     <div class="toolbar"><div><p class="eyebrow">${esc(store.t("entityExplorerEyebrow"))}</p><h2>${esc(store.t("entityExplorerTitle"))}</h2></div>
-      <span class="members" role="status" aria-live="polite">${esc(store.t("entityExplorerRange", { first, last, total }))}</span></div>
+      <span class="text-meta" role="status" aria-live="polite">${esc(store.t("entityExplorerRange", { first, last, total }))}</span></div>
     <p>${esc(store.t("entityExplorerHelp"))}</p>
     <form id="entity-explorer-form" class="entity-explorer-form">
       <label class="entity-explorer-query">${esc(store.t("explorerSearch"))}<input id="entity-explorer-query" type="search" value="${esc(state.query)}" placeholder="${esc(store.t("searchPlaceholder"))}"></label>
       <label>${esc(store.t("party_type"))}<select id="entity-explorer-party"><option value="">${esc(store.t("facetAll"))}</option><option value="person" ${state.partyType === "person" ? "selected" : ""}>${esc(store.t("facetPerson"))}</option><option value="company" ${state.partyType === "company" ? "selected" : ""}>${esc(store.t("facetCompany"))}</option></select></label>
       <label>${esc(store.t("minRecords"))}<input id="entity-explorer-min" type="number" min="0" step="1" value="${state.minRecords || ""}"></label>
-      <button class="more" type="submit">${esc(store.t("search"))}</button>
+      <button class="button button-secondary" type="submit">${esc(store.t("search"))}</button>
     </form>
     <div class="toolbar entity-explorer-controls"><label>${esc(store.t("pageSize"))}<select id="entity-explorer-size">${PAGE_SIZES.map((size) => `<option value="${size}" ${size === state.size ? "selected" : ""}>${size}</option>`).join("")}</select></label>
       <label>${esc(store.t("sort"))}<select id="entity-explorer-sort"><option value="records" ${state.sort === "records" ? "selected" : ""}>${esc(store.t("sortRecords"))}</option><option value="name" ${state.sort === "name" ? "selected" : ""}>${esc(store.t("sortName"))}</option><option value="last_seen" ${state.sort === "last_seen" ? "selected" : ""}>${esc(store.t("sortLastSeen"))}</option><option value="relevance" ${state.sort === "relevance" ? "selected" : ""}>${esc(store.t("sortRelevance"))}</option></select></label>
-      <button type="button" class="more" id="entity-explorer-prev" ${state.offset <= 0 ? "disabled" : ""}>${esc(store.t("previous"))}</button><button type="button" class="more" id="entity-explorer-next" ${!hasMore || !page.next_cursor ? "disabled" : ""}>${esc(store.t("next"))}</button>
+      <button type="button" class="button button-secondary" id="entity-explorer-prev" ${state.offset <= 0 ? "disabled" : ""}>${esc(store.t("previous"))}</button><button type="button" class="button button-secondary" id="entity-explorer-next" ${!hasMore || !page.next_cursor ? "disabled" : ""}>${esc(store.t("next"))}</button>
     </div>
   </section>`;
 }
 
 function renderResults(page: EntityExplorerPage, state: ExplorerState, store: Store): string {
-  return `<section class="card entity-explorer-results" aria-labelledby="entity-explorer-results-title">
-    <div class="toolbar"><h3 id="entity-explorer-results-title">${esc(store.t("explorerResults"))}</h3><span class="members">${esc(store.t(page.search_mode === "hybrid_fallback" ? "hybridFallback" : "exactIndex"))}</span></div>
-    <div class="table-scroll" tabindex="0" role="region" aria-label="${esc(store.t("explorerResults"))}"><table><caption class="members">${esc(store.t("entityExplorerTableHelp"))}</caption><thead><tr><th scope="col">${esc(store.t("name_kanji"))}</th><th scope="col">${esc(store.t("name_kana"))}</th><th scope="col">${esc(store.t("record_count"))}</th><th scope="col">${esc(store.t("party_type"))}</th><th scope="col">${esc(store.t("last_seen"))}</th><th scope="col">${esc(store.t("action"))}</th></tr></thead><tbody>${resultRows(page, state, store) || `<tr><td colspan="6" class="members">${esc(store.t("none"))}</td></tr>`}</tbody></table></div>
+  return `<section class="card viewport entity-explorer-results" aria-labelledby="entity-explorer-results-title">
+    <div class="toolbar"><h3 id="entity-explorer-results-title">${esc(store.t("explorerResults"))}</h3><span class="text-meta">${esc(store.t(page.search_mode === "hybrid_fallback" ? "hybridFallback" : "exactIndex"))}</span></div>
+    <div class="table-scroll" tabindex="0" role="region" aria-label="${esc(store.t("explorerResults"))}"><table><caption class="text-meta">${esc(store.t("entityExplorerTableHelp"))}</caption><thead><tr><th scope="col">${esc(store.t("name_kanji"))}</th><th scope="col">${esc(store.t("name_kana"))}</th><th scope="col">${esc(store.t("record_count"))}</th><th scope="col">${esc(store.t("party_type"))}</th><th scope="col">${esc(store.t("last_seen"))}</th><th scope="col">${esc(store.t("action"))}</th></tr></thead><tbody>${resultRows(page, state, store) || `<tr><td colspan="6" class="text-meta">${esc(store.t("none"))}</td></tr>`}</tbody></table></div>
   </section>`;
 }
 
@@ -144,7 +144,7 @@ function loadingPage(state: ExplorerState): EntityExplorerPage {
 }
 
 function renderLoading(state: ExplorerState, store: Store): string {
-  return `<div class="panel entity-explorer">${renderSearch(loadingPage(state), state, store)}<div class="entity-explorer-layout"><section class="card"><p role="status" aria-live="polite">${esc(store.t("entityExplorerLoading"))}</p><div class="skel skel-detail"><div class="card"></div></div></section><aside class="card entity-explorer-detail"><p role="status" aria-live="polite">${esc(store.t("detailLoading"))}</p></aside></div></div>`;
+  return `<div class="panel entity-explorer">${renderSearch(loadingPage(state), state, store)}<div class="entity-explorer-layout"><section class="card"><p role="status" aria-live="polite">${esc(store.t("entityExplorerLoading"))}</p><div class="skel skel-detail"><div class="card"></div></div></section><aside class="card viewport entity-explorer-detail"><p role="status" aria-live="polite">${esc(store.t("detailLoading"))}</p></aside></div></div>`;
 }
 
 type FootprintKind = "record" | "policy" | "agency" | "channel";
@@ -196,11 +196,11 @@ function renderOverview(detail: EntityDetail, groups: FootprintGroup[], state: E
   const entity = detail.entity;
   const firstSeen = display(entity.first_seen, store.t("missingValue"));
   const lastSeen = display(entity.last_seen, store.t("missingValue"));
-  return `<section class="entity-explorer-overview" aria-labelledby="entity-explorer-detail-title"><div class="entity-explorer-header"><div><p class="eyebrow">${esc(store.t("entityOverview"))}</p><h2 id="entity-explorer-detail-title">${esc(display(entity.name_kanji, state.selected))}</h2><p class="members">${esc(state.selected)} · ${esc(display(entity.party_type, store.t("missingValue")))}</p></div><span class="chip-state">${esc(store.t("selectedEntity"))}</span></div><p class="members">${esc(store.t("entitySummaryDisclaimer"))}</p><div class="entity-explorer-kpis" aria-label="${esc(store.t("entityCoverage"))}">${groups.map((group) => `<div class="entity-explorer-kpi"><span>${esc(store.t(group.titleKey))}</span><strong>${group.count}</strong></div>`).join("")}</div><dl class="entity-explorer-dates"><div><dt>${esc(store.t("first_seen"))}</dt><dd>${esc(firstSeen)}</dd></div><div><dt>${esc(store.t("last_seen"))}</dt><dd>${esc(lastSeen)}</dd></div></dl><a class="more" href="#/entity/${encodeURIComponent(state.selected)}">${esc(store.t("openEntityDetail"))}</a></section>`;
+  return `<section class="entity-explorer-overview" aria-labelledby="entity-explorer-detail-title"><div class="entity-explorer-header"><div><p class="eyebrow">${esc(store.t("entityOverview"))}</p><h2 id="entity-explorer-detail-title">${esc(display(entity.name_kanji, state.selected))}</h2><p class="text-meta">${esc(state.selected)} · ${esc(display(entity.party_type, store.t("missingValue")))}</p></div><span class="chip-state">${esc(store.t("selectedEntity"))}</span></div><p class="text-meta">${esc(store.t("entitySummaryDisclaimer"))}</p><div class="entity-explorer-kpis" aria-label="${esc(store.t("entityCoverage"))}">${groups.map((group) => `<div class="entity-explorer-kpi"><span>${esc(store.t(group.titleKey))}</span><strong>${group.count}</strong></div>`).join("")}</div><dl class="entity-explorer-dates"><div><dt>${esc(store.t("first_seen"))}</dt><dd>${esc(firstSeen)}</dd></div><div><dt>${esc(store.t("last_seen"))}</dt><dd>${esc(lastSeen)}</dd></div></dl><a class="action-link" href="#/entity/${encodeURIComponent(state.selected)}">${esc(store.t("openEntityDetail"))}</a></section>`;
 }
 
 function renderFootprint(groups: FootprintGroup[], store: Store): string {
-  return `<section id="entity-explorer-footprint" class="entity-explorer-footprint" aria-labelledby="entity-explorer-footprint-title"><div class="toolbar"><div><h3 id="entity-explorer-footprint-title">${esc(store.t("entityCoverage"))}</h3><p class="members">${esc(store.t("entityCoverageHelp"))}</p></div><span class="members">${esc(store.t("observedRelationship"))}</span></div><div class="entity-explorer-footprint-grid" role="list">${groups.map((group) => `<div class="entity-explorer-footprint-group" data-footprint-kind="${group.kind}" role="listitem"><div class="entity-explorer-footprint-heading"><span>${esc(store.t(group.titleKey))}</span><strong>${group.count}</strong></div><p class="members">${esc(previewLabels(group, store))}</p></div>`).join("")}</div></section>`;
+  return `<section id="entity-explorer-footprint" class="entity-explorer-footprint" aria-labelledby="entity-explorer-footprint-title"><div class="toolbar"><div><h3 id="entity-explorer-footprint-title">${esc(store.t("entityCoverage"))}</h3><p class="text-meta">${esc(store.t("entityCoverageHelp"))}</p></div><span class="text-meta">${esc(store.t("observedRelationship"))}</span></div><div class="entity-explorer-footprint-grid" role="list">${groups.map((group) => `<div class="entity-explorer-footprint-group" data-footprint-kind="${group.kind}" role="listitem"><div class="entity-explorer-footprint-heading"><span>${esc(store.t(group.titleKey))}</span><strong>${group.count}</strong></div><p class="text-meta">${esc(previewLabels(group, store))}</p></div>`).join("")}</div></section>`;
 }
 
 const RELATION_LABELS: Record<string, string> = {
@@ -229,27 +229,27 @@ function evidenceText(edge: EntityGraph["edges"][number], store: Store): string 
 function renderEvidenceTable(graph: EntityGraph, store: Store, kind: "observed" | "potential"): string {
   const labels = nodeLabels(graph);
   const edges = graph.edges.filter((edge) => edge.kind === kind);
-  const rows = edges.map((edge) => `<tr><td><span class="relationship-badge ${edge.kind}">${esc(store.t(edge.kind === "potential" ? "potentialRelationship" : "observedRelationship"))}</span><br><span class="members">${esc(relationLabel(edge, store))}</span></td><td>${esc(labels.get(edge.target) || edge.target)}</td><td>${esc(evidenceText(edge, store))}</td></tr>`).join("");
-  return `<div class="table-scroll entity-explorer-evidence-table" tabindex="0" role="region" aria-label="${esc(store.t("evidenceTable"))}"><table><caption class="members">${esc(store.t("evidenceTableHelp"))}</caption><thead><tr><th scope="col">${esc(store.t("relationType"))}</th><th scope="col">${esc(store.t("connectedItem"))}</th><th scope="col">${esc(store.t("evidence"))}</th></tr></thead><tbody>${rows || `<tr><td colspan="3" class="members">${esc(store.t("none"))}</td></tr>`}</tbody></table></div>`;
+  const rows = edges.map((edge) => `<tr><td><span class="relationship-badge ${edge.kind}">${esc(store.t(edge.kind === "potential" ? "potentialRelationship" : "observedRelationship"))}</span><br><span class="text-meta">${esc(relationLabel(edge, store))}</span></td><td>${esc(labels.get(edge.target) || edge.target)}</td><td>${esc(evidenceText(edge, store))}</td></tr>`).join("");
+  return `<div class="table-scroll entity-explorer-evidence-table" tabindex="0" role="region" aria-label="${esc(store.t("evidenceTable"))}"><table><caption class="text-meta">${esc(store.t("evidenceTableHelp"))}</caption><thead><tr><th scope="col">${esc(store.t("relationType"))}</th><th scope="col">${esc(store.t("connectedItem"))}</th><th scope="col">${esc(store.t("evidence"))}</th></tr></thead><tbody>${rows || `<tr><td colspan="3" class="text-meta">${esc(store.t("none"))}</td></tr>`}</tbody></table></div>`;
 }
 
 function renderObservedEvidence(graph: EntityGraph, store: Store): string {
   const count = graph.edges.filter((edge) => edge.kind === "observed").length;
-  return `<details id="entity-explorer-observed" class="entity-explorer-disclosure"><summary><span>${esc(store.t("observedLinks"))}</span><span class="entity-explorer-disclosure-meta">${esc(store.t("count", { n: count }))}</span></summary><p class="members">${esc(store.t("observedEvidence"))}</p>${renderEvidenceTable(graph, store, "observed")}</details>`;
+  return `<details id="entity-explorer-observed" class="entity-explorer-disclosure"><summary><span>${esc(store.t("observedLinks"))}</span><span class="entity-explorer-disclosure-meta">${esc(store.t("count", { n: count }))}</span></summary><p class="text-meta">${esc(store.t("observedEvidence"))}</p>${renderEvidenceTable(graph, store, "observed")}</details>`;
 }
 
 function renderPotentialEvidence(graph: EntityGraph, state: ExplorerState, store: Store): string {
   const count = graph.edges.filter((edge) => edge.kind === "potential").length;
   const body = graph.potential_matches_available
     ? `<label class="entity-explorer-potential"><input id="entity-explorer-potential" type="checkbox" ${state.potential ? "checked" : ""}>${esc(store.t("includePotential"))}</label>${state.potential ? renderEvidenceTable(graph, store, "potential") : ""}`
-    : `<p class="members">${esc(store.t("potentialUnavailable"))}</p>`;
-  return `<details id="entity-explorer-potential-section" class="entity-explorer-disclosure" ${state.potential ? "open" : ""}><summary><span>${esc(store.t("potentialMatches"))}</span><span class="entity-explorer-disclosure-meta">${esc(state.potential ? store.t("count", { n: count }) : store.t("notShown"))}</span></summary><p class="members">${esc(store.t("potentialMatchesHelp"))}</p>${body}</details>`;
+    : `<p class="text-meta">${esc(store.t("potentialUnavailable"))}</p>`;
+  return `<details id="entity-explorer-potential-section" class="entity-explorer-disclosure" ${state.potential ? "open" : ""}><summary><span>${esc(store.t("potentialMatches"))}</span><span class="entity-explorer-disclosure-meta">${esc(state.potential ? store.t("count", { n: count }) : store.t("notShown"))}</span></summary><p class="text-meta">${esc(store.t("potentialMatchesHelp"))}</p>${body}</details>`;
 }
 
 function renderDetail(detail: EntityDetail | null, graph: EntityGraph | null, state: ExplorerState, store: Store): string {
-  if (!detail || !graph) return `<aside class="card entity-explorer-detail"><p class="members" role="status" aria-live="polite">${esc(state.selected ? store.t("detailLoading") : store.t("selectEntity"))}</p></aside>`;
+  if (!detail || !graph) return `<aside class="card viewport entity-explorer-detail"><p class="text-meta" role="status" aria-live="polite">${esc(state.selected ? store.t("detailLoading") : store.t("selectEntity"))}</p></aside>`;
   const groups = footprintGroups(detail, graph);
-  return `<aside class="card entity-explorer-detail" data-selected-entity="${esc(state.selected)}">${renderOverview(detail, groups, state, store)}${renderFootprint(groups, store)}${graph.truncated ? `<p class="notice">${esc(store.t("graphTruncated"))}</p>` : ""}${renderObservedEvidence(graph, store)}${renderPotentialEvidence(graph, state, store)}</aside>`;
+  return `<aside class="card viewport entity-explorer-detail" data-selected-entity="${esc(state.selected)}">${renderOverview(detail, groups, state, store)}${renderFootprint(groups, store)}${graph.truncated ? `<p class="notice">${esc(store.t("graphTruncated"))}</p>` : ""}${renderObservedEvidence(graph, store)}${renderPotentialEvidence(graph, state, store)}</aside>`;
 }
 
 function bindPotential(view: HTMLElement, state: ExplorerState): void {
@@ -313,7 +313,7 @@ export async function mountEntityExplorer(el: HTMLElement, port: ExplorerPort, s
   if (!isCurrent()) return;
   const selected = state.selected || page.rows[0]?.nayose_id || "";
   const effectiveState = { ...state, selected };
-  el.innerHTML = `<div class="panel entity-explorer">${renderSearch(page, effectiveState, store)}<div class="entity-explorer-layout" data-panel-split="entity-explorer">${renderResults(page, effectiveState, store)}<div class="panel-resizer" data-panel-resizer="entity-explorer" role="separator" aria-orientation="vertical" aria-label="${esc(store.t("resizePanel"))}" aria-valuemin="${ENTITY_SPLIT_MIN}" aria-valuemax="${ENTITY_SPLIT_MAX}" aria-valuenow="${ENTITY_SPLIT_DEFAULT}" tabindex="0"></div>${renderDetail(null, null, effectiveState, store)}</div></div>`;
+  el.innerHTML = `<div class="panel entity-explorer">${renderSearch(page, effectiveState, store)}<div class="entity-explorer-layout" data-panel-split="entity-explorer">${renderResults(page, effectiveState, store)}<div class="panel-resizer sash" data-panel-resizer="entity-explorer" role="separator" aria-orientation="vertical" aria-label="${esc(store.t("resizePanel"))}" aria-valuemin="${ENTITY_SPLIT_MIN}" aria-valuemax="${ENTITY_SPLIT_MAX}" aria-valuenow="${ENTITY_SPLIT_DEFAULT}" tabindex="0"></div>${renderDetail(null, null, effectiveState, store)}</div></div>`;
   scope.add(bindPanelSplit(el, store, {
     id: "entity-explorer",
     cssVariable: "--entity-results-width",
@@ -331,6 +331,6 @@ export async function mountEntityExplorer(el: HTMLElement, port: ExplorerPort, s
     replaceDetail(el, renderDetail(detail, graph, effectiveState, store), effectiveState);
   } catch (error) {
     if (!isCurrent()) return;
-    replaceDetail(el, `<aside class="card entity-explorer-detail"><p class="members" role="alert">${esc(store.t("detailError"))}: ${esc(presentError(error, store.t.bind(store)))}</p></aside>`, effectiveState);
+    replaceDetail(el, `<aside class="card viewport entity-explorer-detail"><p class="text-meta" role="alert">${esc(store.t("detailError"))}: ${esc(presentError(error, store.t.bind(store)))}</p></aside>`, effectiveState);
   }
 }

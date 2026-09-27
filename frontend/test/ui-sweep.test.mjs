@@ -341,10 +341,10 @@ const feels = {
   },
   review: async (page) => {
     await waitVisible(page, "#reviewer");
-    if (!(await page.locator("button.check").count())) return;
-    const reviewRows = page.locator("tbody tr").filter({ has: page.locator("button.check") });
+    if (!(await page.locator("button.button-check").count())) return;
+    const reviewRows = page.locator("tbody tr").filter({ has: page.locator("button.button-check") });
     assert.equal(
-      await reviewRows.first().locator("td").first().locator("button.check").count(),
+      await reviewRows.first().locator("td").first().locator("button.button-check").count(),
       1,
       "review progress action is not the first, decision-facing cell",
     );
@@ -353,13 +353,13 @@ const feels = {
     const siblingBefore = siblingKey
       ? await page.locator("tbody tr[data-l][data-r]").evaluateAll((rows, key) => rows.find(row => row.getAttribute("data-l") === key.left && row.getAttribute("data-r") === key.right)?.outerHTML ?? null, siblingKey)
       : null;
-    const pressed0 = await reviewRows.first().locator("button.check").getAttribute("aria-pressed");
-    await reviewRows.first().locator("button.check").click();
+    const pressed0 = await reviewRows.first().locator("button.button-check").getAttribute("aria-pressed");
+    await reviewRows.first().locator("button.button-check").click();
     await waitUiSettled(page);
-    const pressed1 = await reviewRows.first().locator("button.check").getAttribute("aria-pressed");
+    const pressed1 = await reviewRows.first().locator("button.button-check").getAttribute("aria-pressed");
     assert.notEqual(pressed0, pressed1, "review toggle did not flip aria-pressed");
     await page.locator("#undo").click();
-    const pressed2 = await reviewRows.first().locator("button.check").getAttribute("aria-pressed");
+    const pressed2 = await reviewRows.first().locator("button.button-check").getAttribute("aria-pressed");
     assert.equal(pressed2, pressed0, "undo did not restore the decision state");
     if (siblingBefore !== null && siblingKey) {
       const siblingAfter = await page.locator("tbody tr[data-l][data-r]").evaluateAll((rows, key) => rows.find(row => row.getAttribute("data-l") === key.left && row.getAttribute("data-r") === key.right)?.outerHTML ?? null, siblingKey);

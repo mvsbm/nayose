@@ -109,6 +109,89 @@ def test_no_sticky_table_cells():
             )
 
 
+def test_split_layouts_have_explicit_pane_sash_pane_ownership():
+    css = CSS.read_text(encoding="utf-8")
+    assert re.search(r"\.panel-resizer\{[^}]*grid-column:2", css)
+    assert ".sash::before" in css
+    assert ".side-resizer::before" not in css
+    assert ".admin-resizer::before" not in css
+    assert re.search(
+        r"\.entity-explorer-layout\{[^}]*grid-template-columns:[^}]*minmax\(24px,24px\)",
+        css,
+    )
+    assert re.search(r"\.entity-explorer-results\{grid-column:1", css)
+    assert re.search(r"\.entity-explorer-detail\{grid-column:3", css)
+    assert re.search(r"\.dataset-selection-pane\{grid-column:1", css)
+    assert re.search(r"\.dataset-content-pane\{grid-column:3", css)
+
+
+def test_split_pane_and_viewport_own_layout_behavior():
+    panel_layout = (REPO / "frontend" / "ts" / "panel-layout.ts").read_text(encoding="utf-8")
+    split_pane = (REPO / "frontend" / "ts" / "split-pane.ts").read_text(encoding="utf-8")
+    viewport = (REPO / "frontend" / "ts" / "viewport.ts").read_text(encoding="utf-8")
+    viewport_element = (REPO / "frontend" / "ts" / "components" / "viewport.ts").read_text(
+        encoding="utf-8"
+    )
+    assert 'from "./split-pane.js"' in panel_layout
+    assert "new ResizableRegion" not in panel_layout
+    assert "class SplitPane" in split_pane
+    assert "createViewportElementClass" in viewport_element
+    assert 'classList.contains("viewport")' in viewport
+
+
+def test_frontend_primitives_are_composable_and_migrated():
+    css = CSS.read_text(encoding="utf-8")
+    sources = "\n".join(path.read_text(encoding="utf-8") for path in [*VIEWS, INDEX])
+    for legacy in ('class="more', 'class="members', 'class="bar', 'class="check'):
+        assert legacy not in sources, f"legacy frontend primitive remains: {legacy}"
+    assert re.search(r"<button[^>]*class=\"[^\"]*\bbutton\b", sources)
+    assert re.search(r"<input[^>]*type=\"range\"", sources)
+    assert re.search(r"class=\"[^\"]*\bslider\b", sources)
+    assert ".button{" in css and ".text-meta{" in css and ".viewport{" in css
+    assert ".card{min-inline-size:0;max-inline-size:100%}" in css
+
+
+def test_component_layout_rules_have_no_conflicting_same_context_declarations():
+    """Prevent accidental later overrides of a component's layout contract.
+
+    Responsive media queries may intentionally override a component. Within a
+    cascade context, however, a repeated selector must not redefine the same
+    layout property to a different value: that is how scroll ownership bugs
+    become invisible during review.
+    """
+    layout_properties = {
+        "display",
+        "height",
+        "min-height",
+        "max-height",
+        "overflow",
+        "overflow-x",
+        "overflow-y",
+        "position",
+        "top",
+        "z-index",
+        "grid-template-columns",
+        "grid-template-rows",
+    }
+    by_selector: dict[str, dict[str, set[str]]] = {}
+    for head, body in _iter_css_rules(CSS.read_text(encoding="utf-8")):
+        declarations = _decls(body)
+        for selector in _selectors(head):
+            properties = by_selector.setdefault(selector, {})
+            for name, value in declarations.items():
+                if name in layout_properties:
+                    properties.setdefault(name, set()).add(value)
+    conflicts = [
+        f"{selector}: {name}={sorted(values)}"
+        for selector, properties in by_selector.items()
+        for name, values in properties.items()
+        if len(values) > 1
+    ]
+    assert not conflicts, (
+        "conflicting same-context component layout declarations:\n  " + "\n  ".join(conflicts)
+    )
+
+
 def _css_classes(css: str) -> set[str]:
     css = re.sub(r"/\*.*?\*/", "", css, flags=re.S)  # comment tokens are not classes
     return set(re.findall(r"\.([a-zA-Z][\w-]*)", css))
@@ -258,6 +341,9 @@ def test_views_depend_only_on_ports():
         "./panel-layout.js",
         "./api-error.js",
         "./icons.js",
+        "./view-runtime.js",
+        "./viewport.js",
+        "./performance.js",
     }
     for path in FEATURES:
         src = path.read_text(encoding="utf-8")

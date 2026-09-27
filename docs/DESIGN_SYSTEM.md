@@ -12,6 +12,18 @@ Nayose is a cross-platform operational web application. It applies Human Interfa
 
 Do not add a second route catalog, view-local color palette, runtime configuration constant, or direct HTTP/storage call.
 
+## Component vocabulary
+
+- **Panel**: a structural task region. `.panel` owns layout, spacing, and component composition; it does not add a surface, border, or scroll behavior by itself.
+- **Card**: a visual surface inside a panel. `.card` owns background, border, radius, and padding; it is not a general scroll container.
+- **Button**: an action or state change. Compose `.button` with one variant (`.button-primary`, `.button-secondary`, `.button-destructive`, `.button-toolbar`) or a focused sub-variant (`.button-icon`, `.button-filter`, `.button-quiet`, `.button-chip`, `.button-check`).
+- **Link**: navigation to a route or resource. Use `.action-link` only when a link intentionally has action emphasis; do not use button classes on links.
+- **Text**: use semantic HTML for headings and body copy, `.text-meta` for secondary/helper text, `.muted` for color-only de-emphasis, and `.kpi-label`/`.kpi-value` for metric pairs. Avoid feature names such as `members`, `l`, or `v` for general typography.
+- **Slider**: an `input[type="range"].slider` that has a localized label, explicit min/max/step, and a visible `.slider-output` for the current value.
+- **Sash**: a `role="separator"` used to resize adjacent panes. Compose the layout hook (`.side-resizer`, `.panel-resizer`, or `.admin-resizer`) with `.sash`; a sash is not a slider.
+- **Viewport**: the explicit owner of bounded scrolling. Compose `.viewport` with a pane or table region; cards and panels do not acquire scrolling implicitly. `Viewport` in `frontend/ts/viewport.ts` owns viewport event subscriptions.
+- **Slide-over**: a temporary off-canvas surface, currently the mobile navigation drawer. It is distinct from both a panel and a sash.
+
 ## Foundations
 
 - **Color**: use semantic tokens (`--surface`, `--surface-2`, `--fg`, `--muted`, `--line`, `--accent`, `--ok`, `--warn`, `--bad`). Never introduce a feature color directly in a view.
@@ -23,7 +35,7 @@ Do not add a second route catalog, view-local color palette, runtime configurati
 
 ## Workspace layout policy
 
-Resizable regions are reserved for adjacent work surfaces whose widths change how an operator compares or inspects information. The shell navigation, search results/detail, entity results/detail, record comparison, admin generation controls/preview, and dataset selection/content panes expose a keyboard-accessible sash with persisted bounds. Review, metrics, data entry, and configuration remain single-flow panels; they use disclosure controls instead of artificial split handles. Mobile collapses split panes into one column and hides the sash.
+Resizable regions are reserved for adjacent work surfaces whose widths change how an operator compares or inspects information. `SplitPane` in `frontend/ts/split-pane.ts` owns pane discovery, persisted bounds, responsive maximums, and the `ResizableRegion` interaction; `panel-layout.ts` is its compatibility facade. The shell navigation, search results/detail, entity results/detail, record comparison, admin generation controls/preview, and dataset selection/content panes expose a keyboard-accessible sash with persisted bounds. Review, metrics, data entry, and configuration remain single-flow panels; they use disclosure controls instead of artificial split handles. Mobile collapses split panes into one column and hides the sash.
 
 Every rendered table receives the shared table decorator: a localized row search, a column selector, and ascending/descending sorting. Server-backed dataset search remains authoritative; the shared control filters and sorts the currently loaded page without pretending to replace server pagination.
 
@@ -42,6 +54,10 @@ Every asynchronous component must define:
 - disposal with its parent `ViewScope`.
 
 `frontend/ts/async-state.ts` is the shared State-pattern primitive. Add feature-specific data around `AsyncState<T>` rather than recreating `pending`/`error` flag combinations.
+
+## Performance evidence
+
+`frontend/test/performance.test.mjs` is an opt-in real-browser gate. Run it with `NAYOSE_E2E=1` and the Brave executable/bundle variables; it reports and checks route-ready time, JavaScript transfer size, DOM size, and long tasks. Budgets are explicit environment overrides so target hardware can establish a baseline without weakening the hermetic default suite.
 
 ## Review gates
 

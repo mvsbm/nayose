@@ -68,8 +68,8 @@ test("e2e: search -> entity -> decisions persisted server-side", { skip: !ENABLE
 
     // review workflow: check an edge -> server-side persistence
     await navigateFresh(page, "#/review");
-    await waitVisible(page, "[data-l] button.check");
-    await page.locator("[data-l] button.check").first().click();
+    await waitVisible(page, "[data-l] button.button-check");
+    await page.locator("[data-l] button.button-check").first().click();
     const runId = await page.evaluate(() => document.querySelector("#run").value);
     await waitDecisionCount(page, runId, 1, 10000);
     const body = await page.evaluate(async id => {
@@ -236,11 +236,11 @@ test("e2e: review decision survives a page reload", { skip: !ENABLED }, async ()
     // before or after the search journey, whichever pair it happens to mark.
     const unchecked = page
       .locator("tr[data-l]")
-      .filter({ has: page.locator('button.check[aria-pressed="false"]') })
+      .filter({ has: page.locator('button.button-check[aria-pressed="false"]') })
       .first();
     await unchecked.waitFor({ state: "visible" });
     const pair = await unchecked.evaluate(el => ({ left: el.getAttribute("data-l") ?? "", right: el.getAttribute("data-r") ?? "" }));
-    await unchecked.locator("button.check").click();
+    await unchecked.locator("button.button-check").click();
     const runId = await page.evaluate(() => document.querySelector("#run").value);
     await waitDecision(page, runId, pair.left, 10000);
     await navigateFresh(page, "#/review"); // true reload: decision must survive
@@ -248,7 +248,7 @@ test("e2e: review decision survives a page reload", { skip: !ENABLED }, async ()
     await waitVisible(page, rowSelector);
     const row = page.locator(rowSelector);
     assert.ok(await row.evaluate(el => el.classList.contains("checked")), "decision restored after reload");
-    assert.equal(await row.locator("button.check").getAttribute("aria-pressed"), "true");
+    assert.equal(await row.locator("button.button-check").getAttribute("aria-pressed"), "true");
   });
 });
 
@@ -384,7 +384,7 @@ test("e2e: F knobs — entity page size + sort, metrics unit toggle", { skip: !E
     await waitVisible(page, "#met-unit");
     await page.selectOption("#met-unit", "ratio");
     await waitVisible(page, "#metrics-kpis");
-    const ratios = await page.locator("#metrics-kpis .v").allTextContents();
+    const ratios = await page.locator("#metrics-kpis .kpi-value").allTextContents();
     assert.ok(ratios.length > 0, "metrics render at least one KPI");
     assert.ok(ratios.every(value => {
       const ratio = Number(value);

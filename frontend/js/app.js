@@ -7,13 +7,17 @@ import { parseRoute } from "./core.js";
 import { mountCompare, mountCompareRuns, mountConfusion, mountEntities, mountEntity, mountMetrics, mountReview, mountSearch, } from "./features.js";
 import { mountAdmin } from "./admin-view.js";
 import { mountDataEntry } from "./data-entry-view.js";
-import { mountNavigation, renderNavigation } from "./navigation.js";
+import { mountActivityBar, mountNavigation, renderActivityBar, renderNavigation, setActiveSidebarGroup, renderWorkbenchTabs, updateWorkbenchSelection } from "./navigation.js";
 import { createViewScope, disposable, DisposableStore } from "./lifecycle.js";
 import { routeDescriptor } from "./routes.js";
 import { presentError } from "./api-error.js";
 import { createDecisionCoordinator } from "./decision-sync.js";
 import { mountPalette } from "./palette.js";
 import { observeTables } from "./table-controls.js";
+import { formatBytes, formatPercent, formatTemperature, renderResourceStatus } from "./health-view.js";
+import { esc } from "./schema.js";
+import { markFrontend, measureFrontend } from "./performance.js";
+import { defineComponents } from "./components/register.js";
 const VIEWS = {
     search: (v, p, s, _args, scope) => mountSearch(v, p, s, scope),
     review: (v, p, s, _args, scope) => mountReview(v, p, s, scope),
@@ -27,12 +31,16 @@ const VIEWS = {
     "data-entry": (v, p, s, _args, scope) => mountDataEntry(v, p, s, scope),
 };
 export async function boot(opts = {}) {
+    markFrontend("boot-start");
+    defineComponents();
     const store = opts.store ?? new Store();
     const port = opts.port ?? createPort();
     const lifetime = new DisposableStore();
     lifetime.add(disposable(() => store.matching.cancel()));
     const capabilities = { admin: false, dataEntry: false };
     const view = document.querySelector("main#view");
+    const statusBar = document.querySelector("#workbench-status");
+    statusBar.innerHTML = `<span class="status-bar-item">● ${esc(store.t("ready"))}</span>`;
     let activeView;
     let activeViewScope;
     let tableObserver;
@@ -45,6 +53,8 @@ export async function boot(opts = {}) {
         document.title = `${store.t(currentRoute.titleKey)} — Nayose`;
         document.querySelectorAll("[data-i18n]").forEach(el => { el.textContent = store.t(el.dataset.i18n); });
         document.querySelectorAll("[data-i18n-aria]").forEach(el => el.setAttribute("aria-label", store.t(el.dataset.i18nAria)));
+        document.querySelectorAll("[data-i18n-title]").forEach(el => { el.title = store.t(el.dataset.i18nTitle); });
+        document.querySelectorAll(".activity-item").forEach(el => { el.title = el.getAttribute("aria-label") ?? ""; });
         document.querySelectorAll("[data-i18n-placeholder]").forEach(el => el.setAttribute("placeholder", store.t(el.dataset.i18nPlaceholder)));
         const theme = document.querySelector("#theme");
         if (theme) {
@@ -79,15 +89,25 @@ export async function boot(opts = {}) {
         lifetime.add(disposable(() => systemTheme.removeEventListener("change", onSystemTheme)));
     }
     const primaryNavigation = document.querySelector("#primary-navigation");
-    renderNavigation(primaryNavigation, store);
+    const activityBar = document.querySelector("#activity-bar");
+    const workbenchTabs = document.querySelector("#workbench-tabs");
+    const initialRoute = parseRoute(location.hash);
+    renderActivityBar(activityBar, store);
+    renderNavigation(primaryNavigation, store, routeDescriptor(initialRoute.name).group);
+    renderWorkbenchTabs(workbenchTabs, store, initialRoute.name);
     const navigationController = mountNavigation(document.querySelector(".shell"), primaryNavigation, document.querySelector("#nav-resizer"), document.querySelector("#nav-toggle"), document.querySelector("#nav-scrim"), store);
     lifetime.add(disposable(navigationController.destroy));
+    const activityController = mountActivityBar(activityBar, store, navigationController.toggle);
+    lifetime.add(disposable(activityController.destroy));
     const paint = async (html) => {
         view.innerHTML = `<div class="panel">${html}</div>`;
         view.focus({ preventScroll: true });
     };
     const navigate = async () => {
         const ticket = ++navigation;
+        const routeStart = `route-start-${ticket}`;
+        const routeReady = `route-ready-${ticket}`;
+        markFrontend(routeStart);
         activeView?.dispatchEvent(new window.Event("unmount"));
         activeViewScope?.dispose();
         tableObserver?.dispose();
@@ -97,8 +117,10 @@ export async function boot(opts = {}) {
         activeViewScope = createViewScope(target);
         view.replaceChildren(target);
         if (!store.runs.length) {
-            await paint(`<div class="empty"><h2>${esc(store.t("noRun"))}</h2><p>${esc(store.t("noRunHelp"))}</p><button type="button" class="more" id="retry-runs">${esc(store.t("retry"))}</button></div>`);
+            await paint(`<div class="empty"><h2>${esc(store.t("noRun"))}</h2><p>${esc(store.t("noRunHelp"))}</p><button type="button" class="button button-secondary" id="retry-runs">${esc(store.t("retry"))}</button></div>`);
             target.dataset.viewReady = "true";
+            markFrontend(routeReady);
+            measureFrontend(routeReady, routeStart, routeReady);
             return;
         }
         const route = parseRoute(location.hash);
@@ -106,6 +128,9 @@ export async function boot(opts = {}) {
         const navRoute = descriptor.nav;
         document.querySelector("#view-title").textContent = store.t(descriptor.titleKey);
         document.title = `${store.t(descriptor.titleKey)} — Nayose`;
+        renderWorkbenchTabs(workbenchTabs, store, route.name);
+        updateWorkbenchSelection(activityBar, workbenchTabs, route.name);
+        setActiveSidebarGroup(primaryNavigation, descriptor.group);
         document.querySelectorAll(".side a[data-nav]").forEach((a) => a.setAttribute("aria-current", a.getAttribute("data-nav") === navRoute ? "page" : ""));
         document.querySelectorAll(".side details[data-nav-group]").forEach((group) => {
             if (group.querySelector(`[data-nav="${navRoute}"]`))
@@ -115,16 +140,21 @@ export async function boot(opts = {}) {
         const render = VIEWS[route.name];
         try {
             await (render ? render(target, port, store, route.args, activeViewScope) : mountSearch(target, port, store, activeViewScope));
-            if (!lifetime.isDisposed && ticket === navigation)
+            if (!lifetime.isDisposed && ticket === navigation) {
                 target.dataset.viewReady = "true";
+                markFrontend(routeReady);
+                measureFrontend(routeReady, routeStart, routeReady);
+            }
         }
         catch (err) {
             if (lifetime.isDisposed || ticket !== navigation)
                 return;
             const message = presentError(err, store.t.bind(store));
-            target.innerHTML = `<div class="empty"><p>${esc(store.t("error"))}: ${esc(message)}</p><button class="more" id="retry" type="button">${esc(store.t("retry"))}</button></div>`;
+            target.innerHTML = `<div class="empty"><p>${esc(store.t("error"))}: ${esc(message)}</p><button class="button button-secondary" id="retry" type="button">${esc(store.t("retry"))}</button></div>`;
             target.querySelector("#retry")?.addEventListener("click", () => void navigate());
             target.dataset.viewReady = "true";
+            markFrontend(routeReady);
+            measureFrontend(routeReady, routeStart, routeReady);
         }
     };
     const onHashChange = () => { void navigate(); };
@@ -136,6 +166,7 @@ export async function boot(opts = {}) {
     lifetime.add(disposable(() => languageButton.removeEventListener("click", switchLanguage)));
     lifetime.add(disposable(store.on("locale", () => {
         localizeShell();
+        void renderHealth();
         if (parseRoute(location.hash).name !== "admin")
             void navigate();
     })));
@@ -177,6 +208,7 @@ export async function boot(opts = {}) {
     const picked = store.runs.find((r) => r.id === store.run);
     fp.textContent = picked?.fingerprint ? `${store.t("fingerprintLabel")} ${esc(picked.fingerprint)}` : "";
     port.run(store.run);
+    statusBar.innerHTML = `<span class="status-bar-item">● ${esc(store.t("ready"))}</span><span class="status-bar-item">${esc(store.run)}</span>`;
     store.reviewer = store.read("nayose.reviewer") ?? "";
     const decisionCoordinator = createDecisionCoordinator(store, port, lifetime);
     let runChange = 0;
@@ -203,7 +235,8 @@ export async function boot(opts = {}) {
         capabilities.admin = cap.capable;
         capabilities.dataEntry = cap.capable;
         if (cap.capable) {
-            document.querySelectorAll("#nav-admin-group, #nav-data-entry").forEach(n => n.removeAttribute("hidden"));
+            document.querySelectorAll("#nav-admin-group, #nav-data-entry, #activity-admin").forEach(n => n.removeAttribute("hidden"));
+            setActiveSidebarGroup(primaryNavigation, routeDescriptor(parseRoute(location.hash).name).group);
         }
         try {
             localStorage.removeItem("nayose.adminToken");
@@ -213,7 +246,7 @@ export async function boot(opts = {}) {
     catch (error) {
         if (!lifetime.isDisposed) {
             strip.hidden = false;
-            strip.innerHTML = `<span class="warn">${esc(store.t("statusUnavailable"))}</span><button type="button" class="more" id="capability-retry">${esc(store.t("retry"))}</button>`;
+            strip.innerHTML = `<span class="warn">${esc(store.t("statusUnavailable"))}</span><button type="button" class="button button-secondary" id="capability-retry">${esc(store.t("retry"))}</button>`;
             strip.querySelector("#capability-retry")?.addEventListener("click", () => window.location.reload());
         }
         console.warn("capability check failed", error);
@@ -262,8 +295,23 @@ export async function boot(opts = {}) {
         lifetime.add(disposable(() => densityButton.removeEventListener("click", onDensityClick)));
     // E — system status strip (visibility of system status): health poll drives it
     let healthController;
+    let healthTimer;
     let healthRequest = 0;
+    const scheduleHealthPoll = (delayMs) => {
+        if (healthTimer !== undefined)
+            lifetime.clearTimeout(healthTimer);
+        if (delayMs <= 0)
+            return;
+        healthTimer = lifetime.addTimeout(() => {
+            healthTimer = undefined;
+            void renderHealth();
+        }, delayMs);
+    };
     const renderHealth = async () => {
+        if (healthTimer !== undefined) {
+            lifetime.clearTimeout(healthTimer);
+            healthTimer = undefined;
+        }
         healthController?.abort();
         healthController = new AbortController();
         const request = ++healthRequest;
@@ -284,6 +332,19 @@ export async function boot(opts = {}) {
             const memory = resources?.memory;
             const storage = resources?.storage;
             const policy = resources?.policy;
+            const telemetry = resources?.telemetry;
+            const gpuAccelerator = resources?.accelerators?.find(accelerator => accelerator.kind === "cuda" || accelerator.kind === "rocm");
+            const gpuIsUnified = policy?.device === "mps" || policy?.device === "mlx_gpu";
+            const gpuMemoryLabel = gpuIsUnified ? store.t("sharedMemory") : store.t("vramAvailable");
+            const gpuMemoryBytes = telemetry?.gpu_memory_available_bytes ?? (gpuIsUnified ? memory?.available_bytes : gpuAccelerator?.available_memory_bytes);
+            const gpuMemory = gpuMemoryBytes == null ? "—" : formatBytes(gpuMemoryBytes);
+            const telemetryDetails = [
+                telemetry?.cpu_usage_percent != null ? `<div><dt>${esc(store.t("cpuUsage"))}</dt><dd>${esc(formatPercent(telemetry.cpu_usage_percent))}</dd></div>` : "",
+                telemetry?.cpu_temperature_celsius != null ? `<div><dt>${esc(store.t("temperature"))}</dt><dd>${esc(formatTemperature(telemetry.cpu_temperature_celsius))}</dd></div>` : "",
+                telemetry?.gpu_usage_percent != null ? `<div><dt>${esc(store.t("gpuUsage"))}</dt><dd>${esc(formatPercent(telemetry.gpu_usage_percent))}</dd></div>` : "",
+                telemetry?.gpu_temperature_celsius != null ? `<div><dt>${esc(store.t("temperature"))}</dt><dd>${esc(formatTemperature(telemetry.gpu_temperature_celsius))}</dd></div>` : "",
+                gpuMemoryBytes != null ? `<div><dt>${esc(gpuMemoryLabel)}</dt><dd>${esc(gpuMemory)}</dd></div>` : "",
+            ].filter(Boolean).join("");
             const resourceSummary = resources
                 ? ` · ${esc(resources.machine)} · ${esc(resources.available_cpus)}/${esc(resources.cpu_count)} ${esc(store.t("cpu"))} · ${esc(policy?.process_workers ?? "—")} ${esc(store.t("workers"))} · ${esc(formatBytes(memory?.available_bytes ?? 0))} ${esc(store.t("ramAvailable"))} · ${esc(formatBytes(storage?.available_bytes ?? 0))} ${esc(store.t("storageAvailable"))}`
                 : "";
@@ -292,6 +353,7 @@ export async function boot(opts = {}) {
           <div><dt>${esc(store.t("host"))}</dt><dd>${esc(resources.operating_system)}</dd></div>
           <div><dt>${esc(store.t("architecture"))}</dt><dd>${esc(resources.machine)}</dd></div>
           <div><dt>${esc(store.t("cpu"))}</dt><dd>${esc(resources.available_cpus)} / ${esc(resources.cpu_count)}</dd></div>
+          ${telemetryDetails}
           <div><dt>${esc(store.t("workers"))}</dt><dd>${esc(policy?.process_workers ?? "—")}</dd></div>
           <div><dt>${esc(store.t("configuredDevice"))}</dt><dd>${esc(policy?.device ?? "—")}</dd></div>
           <div><dt>${esc(store.t("batchSize"))}</dt><dd>${esc(policy?.embedding_batch_size ?? "—")}</dd></div>
@@ -306,29 +368,33 @@ export async function boot(opts = {}) {
                 ? `<span class="bad">${esc(store.t("lowStorage"))}</span>`
                 : "";
             strip.hidden = false;
+            statusBar.innerHTML = `<span class="status-bar-item">● ${esc(store.t("ready"))}</span><span class="status-bar-item">${esc(h.run ?? store.run)}</span><span class="status-bar-item">${h.engine_warm ? esc(store.t("engineWarm")) : esc(store.t("engineCold"))}</span>${renderResourceStatus(h.resources, store)}`;
             const sessionRecords = store.checked.size
                 ? ` · ${esc(store.t("sessionRecords", { n: store.checked.size }))}`
                 : "";
             strip.innerHTML = `<b>${esc(store.t("runningRun"))}:</b> ${esc(h.run ?? "—")} · ${fpBadge} · ${engine}${resourceSummary}${sessionRecords} ${lowStorage}
         ${resourcePanel}
         <details><summary>${esc(store.t("apiStats"))}</summary><table><thead><tr><th scope="col">${esc(store.t("endpoint"))}</th><th scope="col">${esc(store.t("hits"))}</th><th scope="col">${esc(store.t("total"))}</th></tr></thead><tbody>${stats || `<tr><td colspan="3">—</td></tr>`}</tbody></table>
-        <p class="members">${esc(store.t("healthNow", { t: (h.now_utc ?? "").slice(0, 19).replace("T", " ") }))}</p></details>`;
+        <p class="text-meta">${esc(store.t("healthNow", { t: (h.now_utc ?? "").slice(0, 19).replace("T", " ") }))}</p></details>`;
+            const configuredIntervalMs = (h.configuration?.telemetry_interval_seconds ?? 1) * 1000;
+            scheduleHealthPoll(opts.healthIntervalMs ?? configuredIntervalMs);
         }
         catch (error) {
             if (lifetime.isDisposed || request !== healthRequest || healthController?.signal.aborted)
                 return;
             strip.hidden = false;
-            strip.innerHTML = `<span class="warn">${esc(store.t("statusUnavailable"))}</span><button type="button" class="more" id="health-retry">${esc(store.t("retry"))}</button>`;
+            statusBar.innerHTML = `<span class="status-bar-item">! ${esc(store.t("statusUnavailable"))}</span>`;
+            strip.innerHTML = `<span class="warn">${esc(store.t("statusUnavailable"))}</span><button type="button" class="button button-secondary" id="health-retry">${esc(store.t("retry"))}</button>`;
             strip.querySelector("#health-retry")?.addEventListener("click", () => void renderHealth());
+            scheduleHealthPoll(opts.healthIntervalMs ?? 1000);
             console.warn("health check failed", error);
         }
     };
     lifetime.add(disposable(store.on("checked", () => void renderHealth())));
     lifetime.add(disposable(() => healthController?.abort()));
     void renderHealth();
-    const healthIntervalMs = opts.healthIntervalMs ?? 30000;
-    if (healthIntervalMs > 0)
-        lifetime.addInterval(() => { void renderHealth(); void refreshRuns(); }, healthIntervalMs);
+    if (opts.healthIntervalMs !== 0)
+        lifetime.addInterval(() => { void refreshRuns(); }, 30000);
     mountPalette({
         port,
         store,
@@ -339,19 +405,6 @@ export async function boot(opts = {}) {
     await navigate();
     return { destroy: cleanup };
 }
-const formatBytes = (value) => {
-    if (!Number.isFinite(value) || value < 0)
-        return "—";
-    const units = ["B", "KiB", "MiB", "GiB", "TiB"];
-    let amount = value;
-    let unit = 0;
-    while (amount >= 1024 && unit < units.length - 1) {
-        amount /= 1024;
-        unit += 1;
-    }
-    return `${amount.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
-};
-const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 // Real browser: auto-start. Tests import this module with a ?boot=N query
 // (to control instantiation) and call boot() themselves — no side effects on import.
 if (new URL(import.meta.url).searchParams.get("boot") === null) {

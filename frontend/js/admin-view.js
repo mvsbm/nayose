@@ -12,7 +12,7 @@ import { asyncError, asyncIdle, asyncLoading, asyncReady } from "./async-state.j
 function unavailableCard(store) {
     const wrapper = document.createElement("div");
     wrapper.className = "panel";
-    wrapper.innerHTML = `<div class="empty"><h3>${esc(store.t("adminDisabledTitle"))}</h3><p>${esc(store.t("adminDisabledHelp"))}</p><button id="admin-retry" type="button" class="more">${esc(store.t("retry"))}</button></div>`;
+    wrapper.innerHTML = `<div class="empty"><h3>${esc(store.t("adminDisabledTitle"))}</h3><p>${esc(store.t("adminDisabledHelp"))}</p><button id="admin-retry" type="button" class="button button-secondary">${esc(store.t("retry"))}</button></div>`;
     return wrapper;
 }
 export async function mountAdmin(el, port, store, scope) {

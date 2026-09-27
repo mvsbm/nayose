@@ -7,6 +7,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const ROOT = join(import.meta.dirname, "..");
+const { SplitPane } = await import(join(ROOT, "js/split-pane.js"));
+const { Viewport, findViewport } = await import(join(ROOT, "js/viewport.js"));
 
 const ENTITIES = [
   { nayose_id: "N000000001", name_kanji: "佐藤 太郎", name_kana: "サトウ タロウ", phone: "090-1234-5678", postal_code: "1000001", record_count: 2, score: 0.91 },
@@ -95,8 +97,9 @@ const mockPort = {
         memory: { available_bytes: 8 * 1024 ** 3, total_bytes: 16 * 1024 ** 3, process_rss_bytes: 2 * 1024 ** 3, cgroup_limit_bytes: null },
         storage: { path: "/data", available_bytes: 50 * 1024 ** 3, total_bytes: 100 * 1024 ** 3, reserve_bytes: 20 * 1024 ** 3 },
         policy: { device: "mps", process_workers: 1, cpu_threads: null, model_threads: null, embedding_batch_size: 32 },
+        telemetry: { cpu_usage_percent: 37, cpu_temperature_celsius: 58, gpu_usage_percent: null, gpu_temperature_celsius: null, gpu_memory_total_bytes: null, gpu_memory_available_bytes: null },
       },
-      configuration: { hash: "config123456789", schema_version: 1, source: "nayose.toml + environment overrides" },
+      configuration: { hash: "config123456789", schema_version: 1, source: "nayose.toml + environment overrides", telemetry_interval_seconds: 1 },
     });
   },
   adminCapability() {
@@ -161,7 +164,13 @@ const mockPort = {
     return Promise.resolve({ total: rows.length, rows, histogram: [[0, 2]], pair_auto_threshold: 0.5 });
   },
   metrics() {
-    return Promise.resolve({ kpis: [["candidate recall", 0.99], ["B3 F1", 0.96]], extras: { entities: 2, edges: 3, singleton: 0.2 } });
+    return Promise.resolve({
+      kpis: [["candidate recall", 0.99], ["B3 F1", 0.96]],
+      extras: { entities: 2, edges: 3, singleton: 0.2 },
+      assessment: { status: "attention", reasons: ["review_load"] },
+      outcomes: [{ id: "REVIEW", count: 6, rate: 0.6 }, { id: "AUTO_LINK", count: 4, rate: 0.4 }],
+      metric_groups: { quality: [{ id: "candidate_recall", value: 0.99, unit: "ratio" }] },
+    });
   },
   metricsFor(run) {
     return Promise.resolve({ kpis: [["candidate recall", run === "runB" ? 0.95 : 0.99], ["B3 F1", 0.96]], extras: {} });
@@ -226,6 +235,8 @@ beforeEach(async () => {
   globalThis.location = window.location;
   globalThis.localStorage = window.localStorage;
   globalThis.sessionStorage = window.sessionStorage;
+  globalThis.HTMLElement = window.HTMLElement;
+  globalThis.customElements = window.customElements;
   window.scrollTo = () => {};
   window.HTMLElement.prototype.scrollIntoView = () => {};
 });
@@ -269,7 +280,16 @@ test("navigation shell uses one route-driven sidebar and persists its state", as
   assert.equal(resizer.getAttribute("aria-valuenow"), "420");
   assert.equal(nav.hasAttribute("inert"), false);
   assert.equal(document.querySelector('.side a[aria-current="page"]').dataset.nav, "search");
+  assert.equal(document.querySelectorAll("#activity-bar .activity-item").length, 4, "workbench activity rail is incomplete");
+  assert.equal(document.querySelector('#activity-bar .activity-item[aria-current]').dataset.activityGroup, "match");
+  window.location.hash = "#/metrics";
+  await wait(30);
+  assert.equal(document.querySelector('#activity-bar .activity-item[aria-current]').dataset.activityGroup, "evaluate");
+  assert.equal(document.querySelectorAll("#workbench-tabs [role=tab]").length, 3, "evaluation tabs are incomplete");
+  assert.equal(document.querySelector('#workbench-tabs [aria-current="page"]').textContent.trim(), "評価の概要");
 
+  window.location.hash = "#/search";
+  await wait(30);
   toggle.click();
   assert.equal(shell.dataset.navCollapsed, "true");
   assert.equal(toggle.getAttribute("aria-expanded"), "false");
@@ -279,10 +299,12 @@ test("navigation shell uses one route-driven sidebar and persists its state", as
 
   toggle.click();
   assert.equal(shell.dataset.navCollapsed, "false", "toolbar control did not restore the sidebar");
-  document.querySelector('.side a[data-nav="review"]').click();
+  document.querySelector('.activity-item[data-activity-group="review"]').click();
   await wait(30);
   assert.equal(window.location.hash, "#/review");
   assert.equal(document.querySelector('.side a[aria-current="page"]').dataset.nav, "review");
+  assert.equal(document.querySelector('.side-view[data-sidebar-group="review"]').hidden, false);
+  assert.equal(document.querySelector('.side-view[data-sidebar-group="match"]').hidden, true);
 
   document.dispatchEvent(new window.KeyboardEvent("keydown", { key: "b", ctrlKey: true, bubbles: true }));
   assert.equal(shell.dataset.navCollapsed, "true", "Ctrl+B did not collapse the primary sidebar");
@@ -329,6 +351,41 @@ test("appearance: auto resolves system theme and density persists through the St
   assert.equal(document.documentElement.dataset.density, "compact");
 });
 
+test("SplitPane owns pane bounds, persistence, and Viewport owns scrolling", async () => {
+  await boot();
+  const split = document.createElement("div");
+  split.dataset.panelSplit = "primitive-test";
+  split.innerHTML = '<nayose-viewport class="viewport"></nayose-viewport><div data-panel-resizer role="separator"></div>';
+  document.body.append(split);
+  const storage = {
+    read: (key) => window.localStorage.getItem(key),
+    write: (key, value) => window.localStorage.setItem(key, value),
+  };
+  const pane = SplitPane.mount(document.body, storage, {
+    id: "primitive-test",
+    cssVariable: "--test-width",
+    defaultWidth: 300,
+    minWidth: 100,
+    maxWidth: 500,
+    getMaxWidth: () => 500,
+    pointerSide: "left",
+  });
+  assert.ok(pane);
+  const handle = split.querySelector("[data-panel-resizer]");
+  handle.dispatchEvent(new window.KeyboardEvent("keydown", { key: "End", bubbles: true }));
+  assert.equal(handle.getAttribute("aria-valuenow"), "500");
+  assert.equal(split.style.getPropertyValue("--test-width"), "500px");
+  assert.equal(JSON.parse(storage.read("nayose.layout.primitive-test")).width, 500);
+  const viewport = findViewport(split, ".viewport");
+  assert.ok(viewport instanceof Viewport);
+  assert.equal(viewport.element, split.querySelector(".viewport"));
+  assert.ok(viewport.element.shadowRoot?.querySelector('[part="scrollport"]'));
+  viewport.element.scrollTop = 120;
+  assert.equal(viewport.scrollTop, 120);
+  pane.dispose();
+  viewport.dispose();
+});
+
 test("content panel sashes resize and persist while chrome stays independent", async () => {
   await boot();
   const searchSash = document.querySelector('[data-panel-resizer="search-workspace"]');
@@ -337,6 +394,11 @@ test("content panel sashes resize and persist while chrome stays independent", a
   searchSash.dispatchEvent(new window.KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
   assert.equal(searchSash.getAttribute("aria-valuenow"), "456");
   assert.equal(JSON.parse(localStorage.getItem("nayose.layout.search-workspace")).width, 456);
+  searchSash.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Home", bubbles: true }));
+  assert.equal(searchSash.getAttribute("aria-valuenow"), "0");
+  assert.equal(JSON.parse(localStorage.getItem("nayose.layout.search-workspace")).width, 0);
+  searchSash.dispatchEvent(new window.KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+  assert.equal(searchSash.getAttribute("aria-valuenow"), "16");
   assert.equal(document.querySelector(".app-bar").querySelector("[data-panel-resizer]"), null, "top bar must not be resizable");
   assert.equal(document.querySelector("#status-strip").querySelector("[data-panel-resizer]"), null, "status bar must not be resizable");
 
@@ -360,6 +422,8 @@ test("search: typing renders live cards and selection loads detail in place", as
   assert.equal(hits[0].getAttribute("href"), "#/search?entity=N000000001");
   assert.equal(document.querySelector("#stat").textContent, "1 件");
   assert.match(hits[0].textContent, /類似検索（文字ベース） 91%/, "semantic similarity chip rendered when present");
+  assert.equal(document.querySelector(".search-workspace-results").getAttribute("aria-busy"), "false");
+  assert.equal(document.querySelector("#search-filter-menu").hidden, false);
   hits[0].dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true, cancelable: true }));
   await wait(30);
   assert.equal(window.location.hash, "#/search?q=%E4%BD%90%E8%97%A4&entity=N000000001");
@@ -378,7 +442,7 @@ test("palette: ⌘K opens, keyboard focus reaches entity, Enter navigates", asyn
   await boot();
   document.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true }));
   assert.ok(!document.querySelector("#palette").hidden);
-  const input = document.querySelector("#palette-input");
+  const input = document.querySelector("#cmd");
   input.value = "佐藤";
   input.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
   await wait(200);
@@ -393,21 +457,25 @@ test("palette: ⌘K opens, keyboard focus reaches entity, Enter navigates", asyn
   assert.ok(window.location.hash.startsWith("#/entity/"));
 });
 
-test("palette: dialog semantics, focus trap/restore, and action vocabulary", async () => {
+test("palette: command center dropdown semantics and action vocabulary", async () => {
   await boot();
   const cmd = document.querySelector("#cmd");
   const palette = document.querySelector("#palette");
   cmd.click();
-  assert.equal(palette.getAttribute("role"), "dialog");
-  assert.equal(palette.getAttribute("aria-modal"), "true");
-  assert.equal(document.activeElement.id, "palette-input");
-  document.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
-  assert.equal(document.activeElement.id, "palette-input", "focus escaped the command dialog");
+  assert.equal(cmd.getAttribute("aria-haspopup"), "listbox");
+  assert.equal(cmd.getAttribute("aria-expanded"), "true");
+  assert.equal(palette.hidden, false);
+  assert.equal(document.activeElement.id, "cmd");
   document.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
   assert.equal(palette.hidden, true);
-  assert.equal(document.activeElement.id, "cmd", "focus was not restored to the opener");
+  assert.equal(cmd.getAttribute("aria-expanded"), "false");
+  assert.equal(document.activeElement.id, "cmd", "focus was not retained by the command center");
+  const outside = document.querySelector(".side-brand");
   cmd.click();
-  const input = document.querySelector("#palette-input");
+  outside.dispatchEvent(new dom.window.MouseEvent("pointerdown", { bubbles: true }));
+  assert.equal(palette.hidden, true, "outside interaction did not close the command dropdown");
+  cmd.click();
+  const input = document.querySelector("#cmd");
   input.value = "density";
   input.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
   await wait(40);
@@ -436,20 +504,20 @@ test("review: rows render, 既読 toggles run-scoped server state, 取り消し 
   assert.ok(document.querySelector("#review-record-help"));
   const sibling = rows[1];
   const siblingHtml = sibling.outerHTML;
-  rows[0].querySelector("button.check").click();
+  rows[0].querySelector("button.button-check").click();
   await wait(20);
-  assert.match(rows[0].querySelector("button.check").textContent, /記録済|Recorded/);
+  assert.match(rows[0].querySelector("button.button-check").textContent, /記録済|Recorded/);
   assert.strictEqual(document.querySelectorAll("#view tbody tr")[1], sibling, "toggle re-rendered a sibling row");
   assert.equal(sibling.outerHTML, siblingHtml, "toggle changed an unrelated row");
   await wait(600);
   assert.equal(mockPort.savedDecisions.length, 1, "checked decision was not persisted for the active run");
   document.querySelector("#undo").click();
-  assert.match(document.querySelector("#view tbody button.check").textContent, /既読|Reviewed/);
+  assert.match(document.querySelector("#view tbody button.button-check").textContent, /既読|Reviewed/);
   await wait(80);
-  document.querySelector("#view tbody button.check").click();
+  document.querySelector("#view tbody button.button-check").click();
   document.dispatchEvent(new window.KeyboardEvent("keydown", { key: "z", metaKey: true, bubbles: true }));
   await wait(80);
-  assert.match(document.querySelector("#view tbody button.check").textContent, /既読|Reviewed/, "Command-Z did not undo the review decision");
+  assert.match(document.querySelector("#view tbody button.button-check").textContent, /既読|Reviewed/, "Command-Z did not undo the review decision");
   await wait(600);
   assert.equal(mockPort.savedDecisions.length, 0, "undo restored the server decision state");
 });
@@ -492,7 +560,7 @@ test("run changes reload only the selected run and cannot persist stale decision
     await boot({ runs: [{ id: "runA", current: true, fingerprint: "a" }, { id: "runB", current: false, fingerprint: "b" }] });
     window.location.hash = "#/review";
     await wait(100);
-    document.querySelector("#view tbody button.check").click();
+    document.querySelector("#view tbody button.button-check").click();
     document.querySelector("#run").value = "runB";
     document.querySelector("#run").dispatchEvent(new dom.window.Event("change", { bubbles: true }));
     await wait(120);
@@ -513,7 +581,7 @@ test("decision conflicts are visible and can reload the server revision", async 
   window.location.hash = "#/review";
   await wait(100);
   mockPort.decisionRevision = 1;
-  document.querySelector("#view tbody button.check").click();
+  document.querySelector("#view tbody button.button-check").click();
   await wait(700);
   assert.ok(document.querySelector("#decision-conflict"), "conflict notice was not rendered");
   document.querySelector("#decision-reload").click();
@@ -531,7 +599,7 @@ test("decision save failures remain visible and offer a retry", async () => {
     await boot();
     window.location.hash = "#/review";
     await wait(100);
-    document.querySelector("#view tbody button.check").click();
+    document.querySelector("#view tbody button.button-check").click();
     await wait(650);
     assert.ok(document.querySelector("#decision-save-error"), "save failure was hidden");
     assert.ok(document.querySelector("#decision-retry"), "save failure had no recovery action");
@@ -550,7 +618,7 @@ test("cross-run diff view renders metrics delta table", async () => {
   await wait(120);
   const table = document.querySelector("#out table");
   assert.ok(table, "diff table rendered");
-  assert.match(table.textContent, /candidate recall/);
+  assert.match(table.textContent, /候補再現率|Candidate recall/);
   assert.match(table.textContent, /−|\+|%/);
 });
 
@@ -561,6 +629,9 @@ test("metrics: KPI cards + bars render from port", async () => {
   const cards = [...document.querySelectorAll("#view .kpi .card")];
   assert.equal(cards.length, 2);
   assert.ok(cards[0].querySelector("progress.meter"), "accessible progress meter present");
+  assert.match(document.querySelector("#view").textContent, /確認が必要です|Needs attention/);
+  assert.match(document.querySelector("#view").textContent, /レビューに回るクエリ|Sent to review/);
+  assert.match(document.querySelector("#view").textContent, /次に確認すること|What to inspect next/);
 });
 test("MemoProxy: memoizes reads, clears on run switch, never caches mutations", async () => {
   const { MemoProxy } = await import(join(ROOT, "js/infra.js"));
@@ -662,13 +733,32 @@ test("search workspace removes the separate match-input editor", async () => {
   const bar = document.querySelector(".search-workspace-bar");
   assert.ok(bar);
   assert.equal(bar.classList.contains("is-compact"), false);
-  Object.defineProperty(window, "scrollY", { configurable: true, value: 120 });
-  window.dispatchEvent(new dom.window.Event("scroll"));
+  const view = document.querySelector(".search-workspace-results");
+  view.scrollTop = 120;
+  view.dispatchEvent(new dom.window.Event("scroll"));
   assert.equal(bar.classList.contains("is-compact"), true);
-  Object.defineProperty(window, "scrollY", { configurable: true, value: 0 });
-  window.dispatchEvent(new dom.window.Event("scroll"));
+  view.scrollTop = 0;
+  view.dispatchEvent(new dom.window.Event("scroll"));
   assert.equal(bar.classList.contains("is-compact"), false);
   assert.equal(document.querySelector("#search-detail").hidden, true);
+});
+
+test("search workspace exposes an animated loading state while results are pending", async () => {
+  let resolveSearch;
+  const originalEntities = mockPort.entities;
+  mockPort.entities = () => new Promise((resolve) => { resolveSearch = resolve; });
+  await boot();
+  const input = document.querySelector("#q");
+  input.value = "佐藤";
+  input.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+  await wait(180);
+  assert.equal(document.querySelector(".search-workspace-results").getAttribute("aria-busy"), "true");
+  assert.ok(document.querySelector(".search-workspace-results .search-workspace-loading"));
+  assert.equal(document.querySelectorAll(".search-workspace-loading-row").length, 4);
+  resolveSearch({ rows: [], semantic: false, suggestion: null });
+  await wait(30);
+  assert.equal(document.querySelector(".search-workspace-results").getAttribute("aria-busy"), "false");
+  mockPort.entities = originalEntities;
 });
 
 test("language preference restores on boot and translates every route", async () => {
@@ -759,6 +849,15 @@ test("status strip renders health: run, fingerprint and engine state", async () 
   assert.match(strip.textContent, /RAM available|空きRAM/);
   assert.match(strip.textContent, /Resource details|リソース詳細/);
   assert.match(strip.textContent, /config123456|設定ハッシュ/);
+  const statusBar = document.querySelector("#workbench-status");
+  assert.match(statusBar.textContent, /CPU/);
+  assert.match(statusBar.textContent, /GPU/);
+  assert.match(statusBar.textContent, /RAM|空きRAM/);
+  assert.match(statusBar.textContent, /Storage|ストレージ/);
+  assert.equal(statusBar.querySelector('[data-resource="gpu"]').textContent.includes("mps"), true);
+  assert.match(statusBar.querySelector('[data-resource="cpu"]').textContent, /37%|使用率/);
+  assert.match(statusBar.querySelector('[data-resource="cpu"]').textContent, /58°C|温度/);
+  assert.match(statusBar.querySelector('[data-resource="gpu"]').textContent, /VRAM|空きVRAM|Shared memory|共有メモリ/);
 });
 
 test("admin capability has no separate token and workspace opens immediately", async () => {
@@ -913,7 +1012,7 @@ test("tables provide shared search and sorting controls", async () => {
   const sort = tools.querySelector("select");
   sort.value = "3";
   sort.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
-  const direction = tools.querySelector("button.table-sort");
+  const direction = tools.querySelector("button.table-tools-sort-button");
   direction.click();
   assert.match(table.tBodies[0].rows[0].textContent, /R0000000000/, "table sort controls did not remain usable after filtering");
 });

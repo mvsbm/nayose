@@ -1,6 +1,7 @@
 import type { Storage } from "./storage.js";
 import { DisposableStore } from "./lifecycle.js";
-import { ResizableRegion } from "./resizable-region.js";
+import { SplitPane, type SplitPaneOptions } from "./split-pane.js";
+import type { ConfigurableSplitPane } from "./components/split-pane.js";
 
 export interface PanelLayoutState {
   previewWidth: number;
@@ -36,98 +37,55 @@ function writeState(storage: Storage, state: PanelLayoutState): void {
 
 export function bindPanelLayout(root: HTMLElement, storage: Storage): DisposableStore {
   const lifetime = new DisposableStore();
-  const workbench = root.querySelector<HTMLElement>("[data-panel-layout='admin-workbench']");
-  const handle = root.querySelector<HTMLElement>("[data-panel-resizer='preview']");
   const toggle = root.querySelector<HTMLButtonElement>("#gen-preview-toggle");
   const body = root.querySelector<HTMLElement>("#gen-preview-body");
-  if (!workbench || !handle || !toggle || !body) return lifetime;
+  if (!toggle || !body) return lifetime;
 
   const state = readState(storage);
-  const renderWidth = (width: number): void => {
-    state.previewWidth = width;
-    workbench.style.setProperty("--preview-width", `${width}px`);
-    handle.setAttribute("aria-valuetext", `${width}px`);
-  };
-  const updateWidth = (width: number): void => {
-    renderWidth(width);
-    writeState(storage, state);
-  };
+  const split = SplitPane.mount(root, storage, {
+    id: "admin-workbench",
+    cssVariable: "--preview-width",
+    defaultWidth: state.previewWidth,
+    minWidth: MIN_PREVIEW_WIDTH,
+    maxWidth: MAX_PREVIEW_WIDTH,
+    pointerSide: "right",
+    splitSelector: "[data-panel-layout='admin-workbench']",
+    handleSelector: "[data-panel-resizer='preview']",
+    persistWidth: width => {
+      state.previewWidth = width;
+      writeState(storage, state);
+    },
+  });
+  if (split) lifetime.add(split);
   const renderCollapse = (collapsed: boolean): void => {
     state.previewCollapsed = collapsed;
     body.hidden = collapsed;
     toggle.setAttribute("aria-expanded", String(!collapsed));
     toggle.textContent = collapsed ? (toggle.dataset.expandLabel ?? "Expand") : (toggle.dataset.collapseLabel ?? "Collapse");
   };
-  const updateCollapse = (collapsed: boolean): void => {
-    renderCollapse(collapsed);
+  renderCollapse(state.previewCollapsed);
+  const onToggle = (): void => {
+    renderCollapse(!state.previewCollapsed);
     writeState(storage, state);
   };
-
-  renderWidth(state.previewWidth);
-  renderCollapse(state.previewCollapsed);
-  const resizable = new ResizableRegion({
-    handle,
-    initialWidth: state.previewWidth,
-    minWidth: MIN_PREVIEW_WIDTH,
-    maxWidth: MAX_PREVIEW_WIDTH,
-    defaultWidth: DEFAULT_STATE.previewWidth,
-    arrowGrowth: "backward",
-    pointerWidth: (_startWidth, _startClientX, clientX) => workbench.getBoundingClientRect().right - clientX,
-    onWidthChange: updateWidth,
-  });
-  lifetime.add(resizable);
-  const onToggle = (): void => updateCollapse(!state.previewCollapsed);
   toggle.addEventListener("click", onToggle);
   lifetime.add({ dispose: () => toggle.removeEventListener("click", onToggle) });
   return lifetime;
 }
 
-export interface PanelSplitOptions {
-  id: string;
-  cssVariable: string;
-  defaultWidth: number;
-  minWidth: number;
-  maxWidth: number;
-  pointerSide: "left" | "right";
-  mobileQuery?: string;
-}
+export type PanelSplitOptions = SplitPaneOptions;
 
 export function bindPanelSplit(root: HTMLElement, storage: Storage, options: PanelSplitOptions): DisposableStore {
   const lifetime = new DisposableStore();
   const split = root.querySelector<HTMLElement>(`[data-panel-split="${options.id}"]`);
-  const handle = split?.querySelector<HTMLElement>("[data-panel-resizer]");
-  if (!split || !handle) return lifetime;
-
-  const storageKey = `nayose.layout.${options.id}`;
-  let initialWidth = options.defaultWidth;
-  try {
-    const parsed = JSON.parse(storage.read(storageKey) ?? "null") as { version?: unknown; width?: unknown } | null;
-    const storedWidth = parsed?.version === 1 || parsed?.version === undefined ? Number(parsed?.width) : Number.NaN;
-    if (Number.isFinite(storedWidth)) initialWidth = storedWidth;
-  } catch {
-    initialWidth = options.defaultWidth;
+  if (split?.localName === "nayose-split-pane") {
+    const component = split as ConfigurableSplitPane;
+    component.configure(storage, options);
+    lifetime.add(component);
+    return lifetime;
   }
-  const media = options.mobileQuery ? window.matchMedia?.(options.mobileQuery) : null;
-  const renderWidth = (width: number): void => split.style.setProperty(options.cssVariable, `${width}px`);
-  const persistWidth = (width: number): void => {
-    renderWidth(width);
-    storage.write(storageKey, JSON.stringify({ version: 1, width }));
-  };
-  renderWidth(Math.min(options.maxWidth, Math.max(options.minWidth, Math.round(initialWidth))));
-  const resizable = new ResizableRegion({
-    handle,
-    initialWidth,
-    minWidth: options.minWidth,
-    maxWidth: options.maxWidth,
-    defaultWidth: options.defaultWidth,
-    arrowGrowth: options.pointerSide === "left" ? "forward" : "backward",
-    isDisabled: () => media?.matches ?? false,
-    pointerWidth: (startWidth, startClientX, clientX) => options.pointerSide === "left"
-      ? startWidth + clientX - startClientX
-      : startWidth + startClientX - clientX,
-    onWidthChange: persistWidth,
-  });
-  lifetime.add(resizable);
+  const binding = SplitPane.mount(root, storage, options);
+  if (binding) lifetime.add(binding);
   return lifetime;
 }
 

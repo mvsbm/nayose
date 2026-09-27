@@ -19,7 +19,7 @@ export async function mountDataEntry(el, port, store, viewScope) {
     let importRequest = asyncIdle();
     const checking = () => isAsyncLoading(matchRequest);
     const importing = () => isAsyncLoading(importRequest);
-    const input = (field) => `<label>${t(field)}<input class="bar" data-field="${field}" value="${esc(store.manualDraft[field] ?? "")}" autocomplete="${field === "name_kanji" ? "name" : field === "email" ? "email" : field === "phone" ? "tel" : "off"}"></label>`;
+    const input = (field) => `<label>${t(field)}<input class="text-input" data-field="${field}" value="${esc(store.manualDraft[field] ?? "")}" autocomplete="${field === "name_kanji" ? "name" : field === "email" ? "email" : field === "phone" ? "tel" : "off"}"></label>`;
     const refresh = async () => {
         if (viewScope.isDisposed)
             return;
@@ -30,14 +30,14 @@ export async function mountDataEntry(el, port, store, viewScope) {
         catch (error) {
             notice = recovery(error);
             if (!viewScope.isDisposed)
-                el.innerHTML = `<div class="panel"><p class="notice" role="alert">${esc(notice)}</p><button id="de-retry" type="button" class="more">${t("retry")}</button></div>`;
+                el.innerHTML = `<div class="panel"><p class="notice" role="alert">${esc(notice)}</p><button id="de-retry" type="button" class="button button-secondary">${t("retry")}</button></div>`;
             el.querySelector("#de-retry")?.addEventListener("click", () => void refresh());
             return;
         }
         if (viewScope.isDisposed)
             return;
         const rows = list.rows
-            .map(r => `<tr data-mid="${esc(String(r.record_id))}"><th scope="row">${esc(String(r.record_id))}</th><td>${esc(String(r.name_kanji ?? ""))}</td><td>${esc(String(r.phone ?? ""))}</td><td><button type="button" class="more undo-m">${t("undo")}</button></td></tr>`)
+            .map(r => `<tr data-mid="${esc(String(r.record_id))}"><th scope="row">${esc(String(r.record_id))}</th><td>${esc(String(r.name_kanji ?? ""))}</td><td>${esc(String(r.phone ?? ""))}</td><td><button type="button" class="button button-secondary undo-m">${t("undo")}</button></td></tr>`)
             .join("");
         const currentRecord = () => Object.fromEntries([...el.querySelectorAll("[data-field]")].map(i => [i.dataset.field, i.value.trim()]));
         const registerReady = () => sameRecord(store.manualMatchRecord, currentRecord());
@@ -49,18 +49,18 @@ export async function mountDataEntry(el, port, store, viewScope) {
         <li data-entry-step="3"><span>3</span>${t("entryStepRegister")}</li>
       </ol>
       <div class="field-grid">${ENTRY_FIELDS.map(input).join("")}</div>
-      <div class="toolbar"><button id="de-check" class="more button-primary" type="button" ${checking() ? "disabled" : ""}>${t("checkMatch")}</button>
-        <button id="de-register" class="more button-secondary" type="button" ${registerReady() ? "" : "disabled"}>${t("register")}</button></div>
+      <div class="toolbar"><button id="de-check" class="button button-primary" type="button" ${checking() ? "disabled" : ""}>${t("checkMatch")}</button>
+        <button id="de-register" class="button button-secondary" type="button" ${registerReady() ? "" : "disabled"}>${t("register")}</button></div>
       <p id="de-status" role="status" aria-live="polite">${esc(store.manualMatchSummary)}</p>
       <div id="de-match" class="panel"></div></section>
     <section class="card"><h2>${t("importTitle")}</h2><p>${t("importHelp")}</p>
       <label>${t("csvFile")}<input type="file" id="de-file" accept=".csv,text/csv" aria-label="${t("csvFile")}"></label>
-      <div class="toolbar"><button id="de-dry" class="more button-secondary" type="button" ${!store.manualImportRows.length || importing() ? "disabled" : ""}>${t("dryRun")}</button>
-        <button id="de-import" class="more button-primary" type="button" ${!store.manualImportRows.length || !store.manualImportReady || importing() ? "disabled" : ""}>${t("confirmImport")}</button></div>
+      <div class="toolbar"><button id="de-dry" class="button button-secondary" type="button" ${!store.manualImportRows.length || importing() ? "disabled" : ""}>${t("dryRun")}</button>
+        <button id="de-import" class="button button-primary" type="button" ${!store.manualImportRows.length || !store.manualImportReady || importing() ? "disabled" : ""}>${t("confirmImport")}</button></div>
       <p id="de-import-status" role="status" aria-live="polite"></p>
-      <div id="de-preview">${store.manualImportRows.length ? `<p class="members">${esc(store.t("parsedRows", { n: store.manualImportRows.length }))}</p>` : ""}</div></section>
+      <div id="de-preview">${store.manualImportRows.length ? `<p class="text-meta">${esc(store.t("parsedRows", { n: store.manualImportRows.length }))}</p>` : ""}</div></section>
     <section class="card"><h2>${t("manualList")} (${esc(list.count)})</h2>
-      <div class="table-scroll" tabindex="0" role="region" aria-label="${t("manualList")}"><table><caption class="members">${t("manualList")}</caption><thead><tr><th scope="col">${t("tableId")}</th><th scope="col">${t("tableName")}</th><th scope="col">${t("tablePhone")}</th><th scope="col">${t("action")}</th></tr></thead><tbody>${rows || `<tr><td colspan="4">${t("none")}</td></tr>`}</tbody></table></div></section>
+      <div class="table-scroll" tabindex="0" role="region" aria-label="${t("manualList")}"><table><caption class="text-meta">${t("manualList")}</caption><thead><tr><th scope="col">${t("tableId")}</th><th scope="col">${t("tableName")}</th><th scope="col">${t("tablePhone")}</th><th scope="col">${t("action")}</th></tr></thead><tbody>${rows || `<tr><td colspan="4">${t("none")}</td></tr>`}</tbody></table></div></section>
     ${notice ? `<p class="notice" role="status">${esc(notice)}</p>` : ""}</div>`;
         const setEntryStep = (step) => {
             el.querySelectorAll("[data-entry-step]").forEach(item => {
@@ -180,7 +180,7 @@ export async function mountDataEntry(el, port, store, viewScope) {
                 store.manualImportReady = false;
                 el.querySelector("#de-dry").disabled = rows.length === 0;
                 el.querySelector("#de-import").disabled = true;
-                el.querySelector("#de-preview").innerHTML = `<p class="members">${esc(store.t("parsedRows", { n: rows.length }))}</p>`;
+                el.querySelector("#de-preview").innerHTML = `<p class="text-meta">${esc(store.t("parsedRows", { n: rows.length }))}</p>`;
             }
             catch (error) {
                 store.manualImportRows = [];
