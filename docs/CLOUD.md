@@ -1,16 +1,11 @@
 # Cloud-native Nayose: git, GitHub, Docker, and instant environments
 
-## 1. Git & GitHub workflow (this repo, enforced)
+## 1. Git & GitHub workflow
 
-**Branching — trunk-based GitHub Flow.** `main` is always deployable. Work on
-short-lived `feat/<name>` / `fix/<name>` branches, open a PR, merge after the
-gate passes. No long-lived branches, no gitflow ceremony — the repo is a
-single small team.
-
-**Commits — Conventional Commits** (already the house style):
-`feat(ui):`, `fix(api):`, `refactor(synthetic):`, `docs:`, `test:`,
-`build(docker):`. Scope = layer. Raise PRs with 1 logical change; land with a
-squash merge so `main` history stays bisectable.
+The authoritative branching, commit, review, and release policy lives in
+[`CONTRIBUTING.md`](../CONTRIBUTING.md). This repository uses protected-trunk
+GitHub Flow with short-lived branches, Conventional Commits, required checks,
+and squash merges; it does not use long-lived GitFlow branches.
 
 **The gate — one command, two places.** `python -m api.cli audit repo`
 (ruff, mypy, tsc, npm test, pytest incl. schema-contract, arch-contract and
@@ -24,8 +19,9 @@ frontend gate) is the definition of done:
 
 **GitHub settings checklist:**
 
-- **Branch protection on `main`**: require PR, require the `Audit gate`
-  status check, require up-to-date branch, disallow force-push.
+- **Branch protection on `main`**: require PR, the `Audit gate` and
+  `Data + train smoke (E2E)` checks, an up-to-date branch, resolved
+  conversations, linear history, and disallow deletion or force-push.
 - **Release**: tag `vX.Y.Z` on `main` → CI builds + pushes the GHCR image
   (`ghcr.io/<org>/nayose:vX.Y.Z`, `vX.Y`). `run_manifest.json` in each bundle
   already records config_hash + data_fingerprint — treat it as the model

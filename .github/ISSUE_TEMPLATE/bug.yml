@@ -1,0 +1,58 @@
+name: Bug report
+description: Report a reproducible defect without sensitive data
+title: "bug: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: Do not include credentials, customer data, private model artifacts, or vulnerability details. Use the process in SECURITY.md for security reports.
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Expected outcome
+      description: What should have happened?
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What happened instead? Include sanitized errors or logs.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Provide the smallest deterministic sequence, including commands and inputs.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      placeholder: v3.0.0 or commit SHA
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Matching and search
+        - Data generation
+        - Training and bundles
+        - API and persistence
+        - Frontend
+        - CI, packaging, or deployment
+        - Documentation
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Operating system, Python/Node versions, device, and relevant sanitized configuration.
+    validations:
+      required: true
