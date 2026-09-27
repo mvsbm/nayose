@@ -607,8 +607,14 @@ def test_recommend_accepts_validated_threshold_overrides(client):
 def test_metrics_and_confusion(client):
     met = client.get("/api/metrics" + Q).json()
     assert met["kpis"][0][0] == "candidate recall" and met["kpis"][0][1] == pytest.approx(0.994)
+    assert met["assessment"]["status"] == "attention"
+    assert "unresolved_queries" in met["assessment"]["reasons"]
+    assert met["metric_groups"]["quality"][0]["id"] == "candidate_recall"
+    assert met["outcomes"][0]["id"] == "AUTO_LINK"
     conf = client.get("/api/confusion" + Q).json()
     assert conf["pairs"]["auc"] == pytest.approx(0.9999)
+    assert conf["matrix"][0] == {"id": "true_positives", "count": 3553}
+    assert conf["scenarios"][0]["actual"]["AUTO_LINK"] == 1
     assert conf["scenarios"][0]["scenario"] == "existing_stable"
     assert conf["decisions"]["existing_stable"][0]["query_id"] == "Q0000000000"
 
