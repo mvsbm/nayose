@@ -11,11 +11,15 @@ _USAGE = """Usage: nayose benchmark <command> [options]
 Commands:
   runtime     Measure cold load and warm recommendation latency
   measure     Measure a complete descendant process tree
+  external    Evaluate a local dirty-record benchmark
+  resolution  Evaluate the production resolver against Nayose truth
 """
 
 _ROUTES = {
     "runtime": "api.commands.runtime",
     "measure": "api.commands.measure",
+    "external": "api.commands.benchmark_external",
+    "resolution": "api.commands.benchmark_resolution",
 }
 
 
