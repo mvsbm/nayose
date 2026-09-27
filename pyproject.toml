@@ -13,7 +13,7 @@ dependencies = [
     "pandas>=2.2",
     "pykakasi>=2.3",
     "jaconv>=0.3",
-    "phonenumbers>=8.13",
+    "phonenumbers>=9.0.40",
     "datasets>=2.19",
     "pyarrow>=14",
 ]
