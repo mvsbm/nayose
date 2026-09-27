@@ -97,6 +97,22 @@ def normalize_dob(raw: Any) -> str:
     return f"{d[:4]}-{d[4:6]}-{d[6:]}" if len(d) == 8 else d
 
 
+def normalize_search_field(field: str, raw: Any) -> str:
+    normalizers = {
+        "name_kanji": normalize_name,
+        "name_kana": normalize_kana,
+        "name_romaji": normalize_romaji,
+        "phone": normalize_phone,
+        "postal_code": normalize_postal,
+        "address": normalize_address,
+        "email": normalize_email,
+        "date_birth": normalize_dob,
+        "party_type": normalize_name,
+    }
+    normalizer = normalizers.get(field)
+    return normalizer(raw) if normalizer is not None else _compact(raw)
+
+
 def normalize_query_fields(query: str) -> dict[str, str]:
     """Normalize one free-text query into the server-owned field views."""
     has_digit = any(char.isdigit() for char in query)

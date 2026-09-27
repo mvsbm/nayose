@@ -12,8 +12,8 @@ from dataclasses import dataclass
 from time import perf_counter
 from typing import Any, Protocol
 
-from api.domain.normalize import normalize_query_fields
-from api.domain.search import SearchFilters
+from api.domain.normalize import normalize_query_fields, normalize_search_field
+from api.domain.search import SearchFilters, structured_query_fields
 
 
 @dataclass(frozen=True)
@@ -24,6 +24,7 @@ class QueryPlan:
     likely_fields: tuple[str, ...]
     field_weights: dict[str, float]
     filters: SearchFilters
+    structured_fields: tuple[tuple[str, str], ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -32,6 +33,7 @@ class QueryPlan:
             "normalized_fields": self.normalized_fields,
             "likely_fields": list(self.likely_fields),
             "field_weights": self.field_weights,
+            "structured_fields": [field for field, _value in self.structured_fields],
             "filters": self.filters.as_dict(),
         }
 
@@ -135,13 +137,17 @@ class QueryInterpreter:
         useful = (
             tuple(token for token in tokens if token.casefold() not in self._STOPWORDS) or tokens
         )
+        structured_fields = structured_query_fields(raw)
         fields = ["name_kanji", "name_kana", "name_romaji"]
         weights = {field: 1.0 for field in fields}
+        for index, (field, _value) in enumerate(structured_fields):
+            weights[field] = 4.0 - index * 0.25
         for rule in self.rules:
             signal = rule.detect(raw)
             if signal:
                 fields.extend(signal.fields)
-                weights.update(signal.weights)
+                for field, weight in signal.weights.items():
+                    weights[field] = max(weights.get(field, 0.0), weight)
         return QueryPlan(
             raw_query=raw,
             tokens=useful,
@@ -149,6 +155,7 @@ class QueryInterpreter:
             likely_fields=tuple(dict.fromkeys(fields)),
             field_weights=weights,
             filters=filters or SearchFilters(),
+            structured_fields=structured_fields,
         )
 
 
@@ -346,7 +353,11 @@ class ExactFieldRankStrategy:
         match_field = hit.get("match_field")
         if match_field:
             fields.append(str(match_field))
-        return max((plan.field_weights.get(field, 0.0) for field in fields), default=0.0)
+        priority = max((plan.field_weights.get(field, 0.0) for field in fields), default=0.0)
+        for field, query_value in plan.structured_fields:
+            if query_value and normalize_search_field(field, hit.get(field, "")) == query_value:
+                priority = max(priority, plan.field_weights.get(field, 0.0) + 10.0)
+        return priority
 
 
 class ScoreRankStrategy:
@@ -354,6 +365,7 @@ class ScoreRankStrategy:
         return sorted(
             hits,
             key=lambda hit: (
+                -ExactFieldRankStrategy._field_priority(hit, plan),
                 -float(hit.get("score") or 0),
                 -int(hit.get("record_count") or 0),
                 str(hit.get("nayose_id") or ""),
@@ -539,13 +551,11 @@ class SearchService:
             )
             fuzzy = self.ranker.rank(self._apply_filters(fuzzy, plan.filters), plan, "fuzzy")
         nearest = fuzzy
-        exact_head = exact[:8]
         merged = self.merger.merge(
             [
-                ("exact", exact_head),
+                ("exact", exact),
                 ("semantic", ranked or []),
                 ("fuzzy", fuzzy),
-                ("exact", exact),
             ],
             limit,
         )

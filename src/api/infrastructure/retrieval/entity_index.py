@@ -10,7 +10,8 @@ from typing import Any
 
 import pandas as pd
 
-from api.domain.search import SearchFilters
+from api.domain.normalize import normalize_search_field
+from api.domain.search import SearchFilters, structured_query_fields
 from api.infrastructure.read_model.bundle_reader import (
     ENTITY_COLUMNS,
     ENTITY_SEARCH_COLUMNS,
@@ -23,6 +24,22 @@ from api.infrastructure.retrieval.entity_search import _prefecture
 
 class EntityCursorError(ValueError):
     pass
+
+
+def _normalized_expression(field: str, qualifier: str = "") -> str:
+    column = f"{qualifier}{field}"
+    if field in {"phone", "postal_code", "date_birth"}:
+        digits = f"regexp_replace(CAST({column} AS VARCHAR), '[^0-9]', '', 'g')"
+        if field == "phone":
+            return (
+                f"CASE WHEN starts_with({digits}, '81') AND length({digits}) > 10 "
+                f"THEN '0' || substr({digits}, 3) ELSE {digits} END"
+            )
+        return digits
+    if field == "email":
+        compact = f"regexp_replace(CAST({column} AS VARCHAR), '[\\s\\-.]+', '', 'g')"
+        return f"lower({compact})"
+    return f"lower(CAST({column} AS VARCHAR))"
 
 
 class EntitySearchRepository:
@@ -133,7 +150,7 @@ class EntitySearchRepository:
             visible_frame = frame.loc[:, list(select_columns)]
             rows = visible_frame.where(pd.notna(visible_frame), None).to_dict("records")
             if q.strip():
-                self._decorate_exact(rows, search_columns, patterns, con, run_dir)
+                self._decorate_exact(rows, search_columns, patterns, con, run_dir, q)
             return {
                 "rows": rows,
                 "total": total,
@@ -161,20 +178,38 @@ class EntitySearchRepository:
         run_dir = snapshot.run_dir
         conditions: list[str] = []
         params: list[Any] = []
-        patterns = tuple(self._pattern(token) for token in self._query_tokens(q))
+        tokens = self._query_tokens(q)
+        patterns = tuple(self._pattern(token) for token in tokens)
+        structured = structured_query_fields(q) if len(tokens) == 1 else ()
         if q.strip():
             reference = str(snapshot.data_dir / "reference_records.parquet")
             mapping = str(run_dir / "record_to_nayose.parquet")
-            for pattern in patterns:
-                field_sql, field_params = self._match_sql(search_columns, pattern)
-                conditions.append(
-                    f"({field_sql} OR nayose_id IN (SELECT DISTINCT m.nayose_id "
-                    f"FROM read_parquet('{reference}') r "
-                    f"JOIN read_parquet('{mapping}') m USING(record_id) "
-                    f"WHERE regexp_matches(CAST(r.policy_id AS VARCHAR), ?) "
-                    f"OR regexp_matches(CAST(r.agency_id AS VARCHAR), ?)))"
-                )
-                params.extend([*field_params, pattern, pattern])
+            structured_conditions = 0
+            if structured:
+                for field, value in structured:
+                    if field not in search_columns:
+                        continue
+                    canonical = _normalized_expression(field)
+                    observed = _normalized_expression(field, "r.")
+                    conditions.append(
+                        f"({canonical} = ? OR nayose_id IN (SELECT DISTINCT m.nayose_id "
+                        f"FROM read_parquet('{reference}') r "
+                        f"JOIN read_parquet('{mapping}') m USING(record_id) "
+                        f"WHERE {observed} = ?))"
+                    )
+                    params.extend([value, value])
+                    structured_conditions += 1
+            if not structured_conditions:
+                for pattern in patterns:
+                    field_sql, field_params = self._match_sql(search_columns, pattern)
+                    conditions.append(
+                        f"({field_sql} OR nayose_id IN (SELECT DISTINCT m.nayose_id "
+                        f"FROM read_parquet('{reference}') r "
+                        f"JOIN read_parquet('{mapping}') m USING(record_id) "
+                        f"WHERE regexp_matches(CAST(r.policy_id AS VARCHAR), ?) "
+                        f"OR regexp_matches(CAST(r.agency_id AS VARCHAR), ?)))"
+                    )
+                    params.extend([*field_params, pattern, pattern])
         if filters and filters.party_type and "party_type" in available:
             conditions.append("lower(CAST(party_type AS VARCHAR)) = lower(?)")
             params.append(filters.party_type)
@@ -214,25 +249,37 @@ class EntitySearchRepository:
                 ("COALESCE(CAST(last_seen AS VARCHAR), '')", "DESC", []),
                 ("CAST(nayose_id AS VARCHAR)", "ASC", []),
             ]
-        priority_columns = (
-            "name_kanji",
-            "name_kana",
-            "name_romaji",
-            "phone",
-            "email",
-            "postal_code",
-            "date_birth",
-            "party_type",
-            "address",
+        structured_fields = structured_query_fields(q) if len(patterns) == 1 else ()
+        structured_order = tuple(field for field, _value in structured_fields)
+        priority_columns = tuple(
+            dict.fromkeys(
+                (
+                    *structured_order,
+                    "name_kanji",
+                    "name_kana",
+                    "name_romaji",
+                    "phone",
+                    "email",
+                    "postal_code",
+                    "date_birth",
+                    "party_type",
+                    "address",
+                )
+            )
         )
         cases: list[str] = []
         params: list[str] = []
+        structured_values = dict(structured_fields)
         for rank, column in enumerate(priority_columns):
             if column not in search_columns:
                 continue
-            clauses = [f"regexp_matches(CAST({column} AS VARCHAR), ?)" for _ in patterns]
-            cases.append(f"WHEN ({' OR '.join(clauses)}) THEN {rank}")
-            params.extend(patterns)
+            if column in structured_values:
+                cases.append(f"WHEN {_normalized_expression(column)} = ? THEN {rank}")
+                params.append(structured_values[column])
+            else:
+                clauses = [f"regexp_matches(CAST({column} AS VARCHAR), ?)" for _ in patterns]
+                cases.append(f"WHEN ({' OR '.join(clauses)}) THEN {rank}")
+                params.extend(patterns)
         if not cases:
             return [("CAST(nayose_id AS VARCHAR)", "ASC", [])]
         return [
@@ -339,14 +386,21 @@ class EntitySearchRepository:
         patterns: tuple[str, ...],
         con: Any,
         run_dir: Path,
+        query: str,
     ) -> None:
         twin_counts = self._twin_counts(con, run_dir)
+        structured_values = dict(structured_query_fields(query))
         for row in rows:
             row["kind"] = "exact"
             row["signals"] = [
                 column
                 for column in search_columns
                 if any(re.search(pattern, str(row.get(column, ""))) for pattern in patterns)
+                or (
+                    column in structured_values
+                    and normalize_search_field(column, row.get(column, ""))
+                    == structured_values[column]
+                )
             ]
             kana = str(row.get("name_kana", "")).replace(" ", "")
             row["twin_count"] = max(0, twin_counts.get(kana, 1) - 1)

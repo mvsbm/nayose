@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from api.application.search import (
     EntitySearchRequest,
+    IntentAwareRanker,
     QueryInterpreter,
     SearchFilters,
     SearchService,
@@ -51,6 +54,44 @@ def test_query_interpreter_selects_structured_intent():
     assert plan.field_weights["email"] > plan.field_weights["name_kanji"]
 
 
+def test_structured_query_intent_is_high_confidence():
+    interpreter = QueryInterpreter()
+
+    phone = interpreter.interpret("+81 (90) 1234-5678")
+    postal = interpreter.interpret("１００−０００１")
+
+    assert phone.structured_fields == (("phone", "09012345678"),)
+    assert postal.structured_fields == (("postal_code", "1000001"),)
+    assert phone.field_weights["phone"] > phone.field_weights["name_kanji"]
+    assert postal.field_weights["postal_code"] > postal.field_weights["name_kanji"]
+
+
+@pytest.mark.parametrize(
+    ("split", "query", "field", "value"),
+    [
+        ("train", "090-1234-5678", "phone", "09012345678"),
+        ("validation", "+81 90 1234 5678", "phone", "09012345678"),
+        ("test", "100-0001", "postal_code", "1000001"),
+    ],
+)
+def test_structured_evidence_beats_high_semantic_score(
+    split: str, query: str, field: str, value: str
+):
+    plan = QueryInterpreter().interpret(query)
+    hits = [
+        hit("semantic-name", field="name_kanji", score=0.99),
+        {
+            **hit("structured-match", field="semantic", score=0.10),
+            field: value,
+        },
+    ]
+
+    ranked = IntentAwareRanker().rank(hits, plan, "semantic")
+
+    assert split in {"train", "validation", "test"}
+    assert [row["nayose_id"] for row in ranked] == ["structured-match", "semantic-name"]
+
+
 def test_candidate_merger_keeps_provenance_after_reaching_limit():
     from api.application.search import CandidateMerger
 
@@ -66,6 +107,22 @@ def test_candidate_merger_keeps_provenance_after_reaching_limit():
     assert [row["nayose_id"] for row in rows] == ["same"]
     assert rows[0]["retrieval_sources"] == ["exact", "semantic"]
     assert [item["source"] for item in rows[0]["retrieval_evidence"]] == ["exact", "semantic"]
+
+
+def test_exact_candidates_are_never_displaced_by_semantic_candidates():
+    exact = FakeRetriever([hit(f"exact-{index}", field="phone") for index in range(10)])
+    semantic = FakeRetriever([hit("semantic", field="name_kanji", score=0.99)])
+    service = SearchService(
+        exact=exact,
+        fuzzy=FakeRetriever([]),
+        semantic=semantic,
+        suggest=lambda *_: None,
+    )
+
+    rows = service.search("run", "09012345678", limit=20)["rows"]
+
+    assert [row["nayose_id"] for row in rows[:10]] == [f"exact-{index}" for index in range(10)]
+    assert rows[10]["nayose_id"] == "semantic"
 
 
 def test_search_service_merges_candidates_and_applies_filters():

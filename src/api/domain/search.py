@@ -2,8 +2,25 @@
 
 from __future__ import annotations
 
+import re
+import unicodedata as ud
 from dataclasses import dataclass
 from typing import Any
+
+from api.domain.normalize import normalize_email, normalize_phone, normalize_postal
+
+
+def structured_query_fields(query: str) -> tuple[tuple[str, str], ...]:
+    """Return high-confidence structured fields for a single-value query."""
+    raw = ud.normalize("NFKC", query.strip())
+    digits = re.sub(r"\D+", "", raw)
+    if "@" in raw:
+        return (("email", normalize_email(raw)),)
+    if len(digits) == 7:
+        return (("postal_code", normalize_postal(raw)),)
+    if len(digits) in {10, 11} or (digits.startswith("81") and len(digits) == 12):
+        return (("phone", normalize_phone(raw)),)
+    return ()
 
 
 @dataclass(frozen=True)
