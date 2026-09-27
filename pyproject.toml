@@ -35,7 +35,7 @@ matcher = [
 ]
 neural = [
     "torch>=2.2",
-    "transformers>=4.40",
+    "transformers>=5.17.0",
     "sentence-transformers>=2.7",
     "usearch>=2.1",
 ]
