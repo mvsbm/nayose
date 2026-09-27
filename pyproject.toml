@@ -44,7 +44,7 @@ mlx = [
     "mlx-lm>=0.31",
 ]
 performance = [
-    "polars>=1.0",
+    "polars>=1.44.2",
 ]
 serve = [
     "fastapi>=0.110",
