@@ -147,12 +147,16 @@ def _validate_locked_profile(args: argparse.Namespace) -> None:
         )
 
 
-def _env_for(args: argparse.Namespace) -> dict[str, str]:
+def _env_for(
+    args: argparse.Namespace,
+    *,
+    resource_manager: ResourceManager | None = None,
+) -> dict[str, str]:
     """Build the headless environment, including the locked F2LLM profile."""
     _validate_locked_profile(args)
     config = load_config()
     locked = args.model_family in {"f2llm", "f2llm_330m"}
-    manager = ResourceManager(resource_state_dir(Path(args.models_dir)))
+    manager = resource_manager or ResourceManager(resource_state_dir(Path(args.models_dir)))
     plan = manager.plan(
         workload="training",
         requested_device=args.device,

@@ -1,7 +1,7 @@
 import json
 from argparse import Namespace
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -33,6 +33,7 @@ def test_cli_routes_resource_planning_to_capacity_owner() -> None:
 
 def test_locked_f2llm_profile_freezes_mps_runtime_settings(tmp_path: Path) -> None:
     from api.commands.lifecycle import _env_for
+    from api.infrastructure.runtime.resource_manager import ComputePlan, ResourceManager
 
     args = Namespace(
         data_dir=str(tmp_path / "data"),
@@ -45,7 +46,21 @@ def test_locked_f2llm_profile_freezes_mps_runtime_settings(tmp_path: Path) -> No
         exact_mode="hybrid",
     )
 
-    environment = _env_for(args)
+    manager = Mock(spec=ResourceManager)
+    manager.plan.return_value = ComputePlan(
+        workload="training",
+        device="mps",
+        accelerator="mps",
+        framework="torch",
+        cpu_threads=8,
+        model_threads=8,
+        process_workers=1,
+        available_memory_bytes=16 << 30,
+        memory_budget_bytes=15 << 30,
+        environment=(),
+    )
+
+    environment = _env_for(args, resource_manager=manager)
 
     assert environment["NAYOSE_DEVICE"] == "mps"
     assert environment["NAYOSE_PAIR_MODEL"] == "lightgbm"
