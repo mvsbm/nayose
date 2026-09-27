@@ -173,6 +173,7 @@ def _validate_document(document: Mapping[str, Any]) -> None:
             "default_reviewer",
             "device",
             "exact_mode",
+            "telemetry_interval_seconds",
         },
         "embedding": {
             "model_id",
@@ -462,6 +463,7 @@ KNOWN_ENV_VARS = frozenset(
         "NAYOSE_REVIEWER_DEFAULT",
         "NAYOSE_DEVICE",
         "NAYOSE_EXACT_MODE",
+        "NAYOSE_TELEMETRY_INTERVAL_SECONDS",
         "NAYOSE_EMBEDDING_MODEL",
         "NAYOSE_EMBEDDING_REVISION",
         "NAYOSE_MODEL_FAMILY",
@@ -584,6 +586,11 @@ def _runtime_from_env(env: Mapping[str, str]) -> RuntimeConfig:
         or "web",
         device=_env_text(env, "NAYOSE_DEVICE", str(SERVING_DEFAULTS["device"])) or F2LLM_MPS_DEVICE,
         exact_mode=_env_text(env, "NAYOSE_EXACT_MODE", str(SERVING_DEFAULTS["exact_mode"])),
+        telemetry_interval_seconds=_env_float(
+            env,
+            "NAYOSE_TELEMETRY_INTERVAL_SECONDS",
+            float(SERVING_DEFAULTS["telemetry_interval_seconds"]),
+        ),
         operational_db=operational,
     )
 

@@ -6,6 +6,8 @@ import importlib
 import json
 import os
 import platform
+import re
+import subprocess
 import sys
 from contextlib import suppress
 from dataclasses import dataclass, replace
@@ -40,6 +42,9 @@ from nayose.config import PerformanceConfig, is_f2llm_model, load_config
 resource_module: Any = None
 with suppress(ImportError):
     resource_module = importlib.import_module("resource")
+psutil_module: Any = None
+with suppress(ImportError):
+    psutil_module = importlib.import_module("psutil")
 
 _MEMORY_RESERVE_RATIO = 0.10
 _MEMORY_RESERVE_MINIMUM = 1 << 30
@@ -66,6 +71,26 @@ class AcceleratorSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class RuntimeTelemetry:
+    cpu_usage_percent: float | None
+    cpu_temperature_celsius: float | None
+    gpu_usage_percent: float | None
+    gpu_temperature_celsius: float | None
+    gpu_memory_total_bytes: int | None
+    gpu_memory_available_bytes: int | None
+
+    def as_dict(self) -> dict[str, float | int | None]:
+        return {
+            "cpu_usage_percent": self.cpu_usage_percent,
+            "cpu_temperature_celsius": self.cpu_temperature_celsius,
+            "gpu_usage_percent": self.gpu_usage_percent,
+            "gpu_temperature_celsius": self.gpu_temperature_celsius,
+            "gpu_memory_total_bytes": self.gpu_memory_total_bytes,
+            "gpu_memory_available_bytes": self.gpu_memory_available_bytes,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class ResourceSnapshot:
     operating_system: str
     machine: str
@@ -74,6 +99,7 @@ class ResourceSnapshot:
     cpu_quota_cpus: float | None
     memory: MemorySnapshot
     accelerators: tuple[AcceleratorSnapshot, ...]
+    telemetry: RuntimeTelemetry | None = None
 
     def accelerator(self, kind: str) -> AcceleratorSnapshot | None:
         return next((item for item in self.accelerators if item.kind == kind), None)
@@ -104,6 +130,7 @@ class ResourceSnapshot:
                 }
                 for item in self.accelerators
             ],
+            "telemetry": self.telemetry.as_dict() if self.telemetry else None,
         }
 
 
@@ -148,6 +175,7 @@ class HostResourceProbe:
                 cgroup_available,
             ),
             accelerators=tuple(_accelerators(total, available)),
+            telemetry=_runtime_telemetry(),
         )
 
 
@@ -504,10 +532,16 @@ def _torch_memory(torch: Any) -> tuple[str, int | None, int | None]:
 
 def _memory() -> tuple[int, int, int | None, int | None]:
     total = available = 0
-    with suppress(OSError, ValueError):
-        page = int(os.sysconf("SC_PAGE_SIZE"))
-        total = int(os.sysconf("SC_PHYS_PAGES")) * page
-        available = int(os.sysconf("SC_AVPHYS_PAGES")) * page
+    if psutil_module is not None:
+        with suppress(AttributeError, OSError, RuntimeError, TypeError, ValueError):
+            virtual = psutil_module.virtual_memory()
+            total = int(virtual.total)
+            available = int(virtual.available)
+    if not total:
+        with suppress(OSError, ValueError):
+            page = int(os.sysconf("SC_PAGE_SIZE"))
+            total = int(os.sysconf("SC_PHYS_PAGES")) * page
+            available = int(os.sysconf("SC_AVPHYS_PAGES")) * page
     limit = _cgroup_memory_limit()
     current = _cgroup_memory_current()
     if limit is not None:
@@ -563,3 +597,104 @@ def _process_rss_bytes() -> int:
         return 0
     value = int(resource_module.getrusage(resource_module.RUSAGE_SELF).ru_maxrss)
     return value if sys.platform == "darwin" else value * 1024
+
+
+def _runtime_telemetry() -> RuntimeTelemetry:
+    cpu_usage = _cpu_usage_percent()
+    cpu_temperature = _cpu_temperature_celsius()
+    gpu_usage, gpu_temperature, gpu_total, gpu_available = _nvidia_smi()
+    if gpu_usage is None:
+        gpu_usage, gpu_temperature, gpu_total, gpu_available = _apple_gpu_ioreg()
+    return RuntimeTelemetry(
+        cpu_usage,
+        cpu_temperature,
+        gpu_usage,
+        gpu_temperature,
+        gpu_total,
+        gpu_available,
+    )
+
+
+def _cpu_usage_percent() -> float | None:
+    if psutil_module is None:
+        return None
+    with suppress(AttributeError, OSError, RuntimeError, TypeError, ValueError):
+        value = float(psutil_module.cpu_percent(interval=0.05))
+        return value if 0 <= value <= 100 else None
+    return None
+
+
+def _cpu_temperature_celsius() -> float | None:
+    if psutil_module is None:
+        return None
+    with suppress(AttributeError, OSError, RuntimeError, TypeError, ValueError):
+        sensors = psutil_module.sensors_temperatures()
+        values = [
+            float(reading.current)
+            for name, readings in sensors.items()
+            if any(token in name.casefold() for token in ("cpu", "package", "core", "tdie"))
+            for reading in readings
+            if reading.current is not None
+        ]
+        return max(values) if values else None
+    return None
+
+
+def _nvidia_smi() -> tuple[float | None, float | None, int | None, int | None]:
+    command = (
+        "nvidia-smi",
+        "--query-gpu=utilization.gpu,temperature.gpu,memory.total,memory.free",
+        "--format=csv,noheader,nounits",
+    )
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=0.75, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None, None, None, None
+    line = next((item.strip() for item in result.stdout.splitlines() if item.strip()), "")
+    values = [item.strip() for item in line.split(",")]
+    if result.returncode != 0 or len(values) != 4:
+        return None, None, None, None
+    try:
+        return (
+            _percent(values[0]),
+            float(values[1]),
+            int(float(values[2]) * 1024 * 1024),
+            int(float(values[3]) * 1024 * 1024),
+        )
+    except (TypeError, ValueError):
+        return None, None, None, None
+
+
+def _apple_gpu_ioreg() -> tuple[float | None, float | None, int | None, int | None]:
+    if sys.platform != "darwin":
+        return None, None, None, None
+    try:
+        result = subprocess.run(
+            ("ioreg", "-l", "-w", "0", "-r", "-c", "IOAccelerator"),
+            capture_output=True,
+            text=True,
+            timeout=0.75,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None, None, None, None
+    if result.returncode != 0:
+        return None, None, None, None
+    line = next(
+        (item for item in result.stdout.splitlines() if "PerformanceStatistics" in item),
+        "",
+    )
+    match = re.search(r'"Device Utilization %"=(\d+(?:\.\d+)?)', line)
+    if match is None:
+        match = re.search(r'"Renderer Utilization %"=(\d+(?:\.\d+)?)', line)
+    if match is None:
+        return None, None, None, None
+    try:
+        return _percent(match.group(1)), None, None, None
+    except (TypeError, ValueError):
+        return None, None, None, None
+
+
+def _percent(value: str) -> float | None:
+    parsed = float(value)
+    return parsed if 0 <= parsed <= 100 else None

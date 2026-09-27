@@ -697,6 +697,14 @@ def test_health_reports_current_run(client):
     assert body["configuration"]["schema_version"] == 1
     assert body["configuration"]["hash"]
     assert body["configuration"]["source"] == "nayose.toml + environment overrides"
+    assert body["configuration"]["telemetry_interval_seconds"] == 1
+    telemetry = body["resources"]["telemetry"]
+    assert {
+        "cpu_usage_percent",
+        "cpu_temperature_celsius",
+        "gpu_usage_percent",
+        "gpu_memory_available_bytes",
+    } <= set(telemetry)
 
 
 def test_empty_run_id_resolves_to_current(client):

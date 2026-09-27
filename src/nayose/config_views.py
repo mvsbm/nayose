@@ -135,6 +135,7 @@ class RuntimeConfig:
     default_reviewer: str = str(SERVING_DEFAULTS["default_reviewer"])
     device: str = str(SERVING_DEFAULTS["device"])
     exact_mode: str = str(SERVING_DEFAULTS["exact_mode"])
+    telemetry_interval_seconds: float = float(SERVING_DEFAULTS["telemetry_interval_seconds"])
     operational_db: Path | None = field(
         default_factory=lambda: Path(_PATH_DEFAULTS["operational_db"])
     )
@@ -148,6 +149,8 @@ class RuntimeConfig:
             raise ConfigurationError("Nayose neural serving is locked to MPS")
         if self.exact_mode not in EXACT_MODES:
             raise ConfigurationError(f"exact_mode must be one of {EXACT_MODES}")
+        if self.telemetry_interval_seconds <= 0:
+            raise ConfigurationError("telemetry_interval_seconds must be positive")
         if self.auth_mode == "trusted_proxy" and _is_loopback(self.bind_host):
             raise ConfigurationError("trusted_proxy authentication must not bind to loopback")
         if (

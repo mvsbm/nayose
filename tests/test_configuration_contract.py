@@ -49,6 +49,7 @@ def test_snapshot_resolves_environment_overrides_once() -> None:
             "NAYOSE_USE_DENSE": "0",
             "NAYOSE_EXACT_MODE": "exact_only",
             "NAYOSE_CANDIDATE_CAP": "7",
+            "NAYOSE_TELEMETRY_INTERVAL_SECONDS": "2.5",
         }
     )
 
@@ -60,6 +61,7 @@ def test_snapshot_resolves_environment_overrides_once() -> None:
     assert snapshot.embedding.batch_size == 32
     assert snapshot.training.embedding_backend == "pytorch_mps"
     assert snapshot.storage.reserve_minimum_bytes == 20 << 30
+    assert snapshot.runtime.telemetry_interval_seconds == pytest.approx(2.5)
 
 
 def test_storage_policy_environment_overrides_are_validated() -> None:
@@ -126,6 +128,8 @@ def test_unknown_nayose_environment_key_fails_closed() -> None:
 def test_cross_field_validation_rejects_invalid_combinations() -> None:
     with pytest.raises(ConfigurationError, match="between 1 and 65535"):
         RuntimeConfig(port=0)
+    with pytest.raises(ConfigurationError, match="telemetry_interval_seconds must be positive"):
+        RuntimeConfig(telemetry_interval_seconds=0)
     with pytest.raises(ConfigurationError, match="must not bind to loopback"):
         RuntimeConfig(auth_mode="trusted_proxy", bind_host="127.0.0.1")
     with pytest.raises(ConfigurationError, match="locked to MPS"):

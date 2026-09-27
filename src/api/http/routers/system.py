@@ -160,6 +160,7 @@ def health_details(
             "hash": snapshot.config_hash,
             "schema_version": snapshot.schema_version,
             "source": "nayose.toml + environment overrides",
+            "telemetry_interval_seconds": snapshot.runtime.telemetry_interval_seconds,
         },
         "runtime_error": runtime_error,
         "engine_warm": services.recommend.engine_ready(current["id"] if current else "")

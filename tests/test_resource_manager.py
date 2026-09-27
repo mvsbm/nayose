@@ -4,6 +4,7 @@ import json
 import os
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
@@ -66,6 +67,19 @@ def snapshot(*accelerators: str) -> ResourceSnapshot:
             AcceleratorSnapshot(kind, "test", kind, True, 8 << 30, 7 << 30) for kind in accelerators
         ),
     )
+
+
+def test_apple_gpu_probe_reads_ioaccelerator_utilization(monkeypatch: pytest.MonkeyPatch) -> None:
+    import api.infrastructure.runtime.resource_manager as resources
+
+    output = '"PerformanceStatistics" = {"Device Utilization %"=17,"Alloc system memory"=42}'
+    monkeypatch.setattr(resources.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        resources.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout=output),
+    )
+    assert resources._apple_gpu_ioreg() == (17.0, None, None, None)
 
 
 def test_resource_state_dir_follows_models_run_layout(tmp_path: Path) -> None:
