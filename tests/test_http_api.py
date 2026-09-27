@@ -908,6 +908,12 @@ def test_entities_search_by_policy_agency_and_exposes_signals(client):
     email = client.get("/api/entities" + Q + "&q=sato@example.jp").json()
     assert email["exact"][0]["nayose_id"] == "N000000001"
     assert "email" in email["exact"][0]["signals"]
+    phone = client.get("/api/entities" + Q + "&q=09012345678").json()
+    assert phone["exact"][0]["nayose_id"] == "N000000001"
+    assert "phone" in phone["exact"][0]["signals"]
+    postal = client.get("/api/entities" + Q + "&q=１００−０００１").json()
+    assert postal["exact"][0]["nayose_id"] == "N000000001"
+    assert "postal_code" in postal["exact"][0]["signals"]
     party = client.get("/api/entities" + Q + "&q=person").json()
     assert party["exact"][0]["nayose_id"] == "N000000001"
     assert "party_type" in party["exact"][0]["signals"]
