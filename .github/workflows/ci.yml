@@ -61,7 +61,7 @@ jobs:
             --metrics /tmp/nayose-metrics/typescript.json
       - name: Upload audit metrics
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: audit-metrics
           path: /tmp/nayose-metrics
@@ -121,7 +121,7 @@ jobs:
             --browser-metrics /tmp/nayose-metrics/browser.json
       - name: Upload E2E failure artifacts
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-artifacts
           path: /tmp/nayose-e2e-artifacts-*/*
@@ -129,7 +129,7 @@ jobs:
           retention-days: 14
       - name: Upload workflow metrics
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: smoke-workflow-metrics
           path: /tmp/nayose-metrics
@@ -137,7 +137,7 @@ jobs:
           retention-days: 14
       - name: Upload pipeline ledgers
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: smoke-pipeline-ledgers
           path: |
@@ -146,7 +146,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
       - name: Upload bundle artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: smoke-bundle
           path: |
